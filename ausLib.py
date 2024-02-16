@@ -290,10 +290,10 @@ def max_mean_process(ds: xarray.Dataset,
         print(result)
         return result
 
-    msk = (ds.isfile == 1) & ds.rainrate.isnull()
+    msk = (ds.isfile == 1)
     if mask is not None:
         msk = msk & mask
-    mean_rain = xarray.where(msk, 0.0, rain).resample({time_dim: mean_resample}).mean(skipna=True)
+    mean_rain = xarray.where(msk,rain.fillna(0.0), np.nan).resample({time_dim: mean_resample}).mean(skipna=False)
 
     my_logger.debug(f"mean computed using {mean_resample} for {mean_rain[time_dim][[0, -1]].values} {memory_use()}")
 
@@ -311,9 +311,9 @@ def max_mean_process(ds: xarray.Dataset,
 
     max_rain = rain.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
     mean_rain = rain.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
-    indx = xarray.where(bad, 0.0, rain).argmax(dim=time_dim, keep_attrs=True)
-    max_time = rain[time_dim].isel({time_dim: indx}).where(~bad).rename(
-        'time_max_rain').drop(time_dim)  # max times for this season
+    #indx = xarray.where(bad, 0.0, rain).argmax(dim=time_dim, keep_attrs=True)
+    max_time = rain.idxmax(time_dim).rename(
+        'time_max_rain').drop_vars(time_dim,errors='ignore')  # max times for this season
 
     base_name = ds.rainrate.attrs['long_name']
 
@@ -402,10 +402,14 @@ def process_radar(data_set: xarray.Dataset,
     result = resamp.map(max_mean_process, shortcut=True,mean_resample=mean_resample, time_dim=time_dim, mask=mask, minf_mean=min_mean)
 
     my_logger.debug(f"Processed data and loading data {memory_use()}")
-    latitude = data_set.latitude.isel({time_dim: 0}).squeeze().drop(
-        time_dim).load()  # generating multiple values so just want first one
-    longitude = data_set.longitude.isel({time_dim: 0}).squeeze().drop(
-        time_dim).load()  # generating multiple values so just want first one
+    try:
+        latitude = data_set.latitude.isel({time_dim: 0}).drop_vars(
+            time_dim,errors='ignore').load()  # generating multiple values so just want first one
+        longitude = data_set.longitude.isel({time_dim: 0}).drop_vars(
+            time_dim,errors='ignore').load()  # generating multiple values so just want first one
+    except ValueError: # no time_dim probably
+        latitude = data_set.latitude
+        longitude = data_set.longitude
     for var in ["time_max_rain", "max_rain", "mean_rain"]:
         result[var] = result[var].assign_coords(latitude=latitude,
                                                 longitude=longitude)

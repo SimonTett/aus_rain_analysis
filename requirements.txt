@@ -34,3 +34,4 @@ nc-time-axis~=1.4
 timezonefinder
 numba
 matplotlib
+ffmpeg

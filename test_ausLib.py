@@ -39,7 +39,7 @@ class test_ausLib(unittest.TestCase):
         self.assertEqual(len(series),nrec)
         # and fraction missing should be as expected.
         percent_missing = float(100*series.isnull().sum())/nrec
-        self.assertAlmostEquals(percent_missing,meta_data.loc['Percent missing data'],places=2)
+        self.assertAlmostEqual(percent_missing,meta_data.loc['Percent missing data'],places=2)
 
     def test_gsdp_metadata(self):
         # test gsdp_metadata
