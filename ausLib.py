@@ -1,5 +1,7 @@
 # Library for australian analysis.
+import os
 import pathlib
+import sys
 
 import numpy as np
 import xarray
@@ -247,10 +249,11 @@ def max_mean_process(ds: xarray.Dataset,
     (or None if no non-missing data).
 
     """
-    def empty_ds(example_da:xarray.DataArray,
-                  variables:typing.Union[typing.List[str],str],
-                  vars_time:typing.Union[typing.List[str],str]
-                  ) -> xarray.Dataset:
+
+    def empty_ds(example_da: xarray.DataArray,
+                 variables: typing.Union[typing.List[str], str],
+                 vars_time: typing.Union[typing.List[str], str]
+                 ) -> xarray.Dataset:
         """
         Return an empty dataset
         :param example_da:
@@ -260,62 +263,59 @@ def max_mean_process(ds: xarray.Dataset,
         """
         # deal with singleton vars
         if isinstance(variables, str):
-            variables=[variables]
-        if isinstance(vars_time,str):
-            vars_time=[vars_time]
+            variables = [variables]
+        if isinstance(vars_time, str):
+            vars_time = [vars_time]
 
         # generates vars
-        result=dict()
+        result = dict()
         for var in variables:
-            result[var]=example_da.where(False).rename(var)
+            result[var] = example_da.where(False).rename(var)
         for var in vars_time:
-            result[var] = example_da.where(False,pd.NaT)
-            result[var].attrs.pop('units')# remove the units here.
-        result=xarray.Dataset(result)
+            result[var] = example_da.where(False).rename(var).astype('<M8[ns]')
+            result[var].attrs.pop('units')  # remove the units here.
+        result = xarray.Dataset(result)
         return result
 
     rain = ds.rainrate
     fraction = ds.isfile.resample({time_dim: mean_resample}).mean(skipna=True)
-
     ok = fraction >= minf_mean
-    max_fraction = ok.mean(time_dim)  # fraction of OK hours.
-    max_count = ok.sum(time_dim) # count of OK hours
-    if float(max_fraction) == 0: # no data..
-        my_logger.warning(f"No data for {fraction[time_dim][[0-1]].values}")
-        result = empty_ds(rain.isel({time_dim:0},drop=True),
-                        ["max_rain", "mean_rain"],
-                          "max_time_rain")
-        result["max_fraction"]=max_fraction.load()
-        result["max_count"] = max_count.load()
-        print(result)
+    max_fraction = ok.mean(time_dim).load()  # fraction of OK hours.
+    max_count = ok.astype('int').sum(time_dim).load()  # count of OK hours
+    if int(max_count) == 0:  # no data..
+        my_logger.warning(f"No data for {fraction[time_dim][[0, -1]].values}")
+        result = empty_ds(rain.isel({time_dim: 0}, drop=True),
+                          ["max_rain", "mean_rain"],
+                          "time_max_rain")
+        result["max_fraction"] = max_fraction.load()
+        result["max_count"] = max_count
+
         return result
 
     msk = (ds.isfile == 1)
     if mask is not None:
         msk = msk & mask
-    mean_rain = xarray.where(msk,rain.fillna(0.0), np.nan).resample({time_dim: mean_resample}).mean(skipna=False)
-
+    r = rain.fillna(0.0).where(msk)  # replace nans with 0 and apply mask.
+    mean_rain = r.resample({time_dim: mean_resample}).mean(skipna=True)
     my_logger.debug(f"mean computed using {mean_resample} for {mean_rain[time_dim][[0, -1]].values} {memory_use()}")
 
-    rain = mean_rain.sel({time_dim: ok}).compute()
-    my_logger.debug(f"rain computed for  {rain[time_dim][0].values} {memory_use()}")
+    rain = mean_rain.sel({time_dim: ok}).load()  # select out where data OK and then compute the mean.
+    my_logger.debug(f"rain computed for  {rain[time_dim].values[0]} {memory_use()}")
     bad = rain.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
     if bad.all():
         my_logger.warning(f"All missing at {bad[time_dim].isel[[0, -1]]}")
-        result = empty_ds(rain.isel({time_dim:0}).squeeze(),
-                        ["max_rain", "mean_rain"],
-                          "max_time_rain")
-        result["max_fraction"]=max_fraction
+        result = empty_ds(rain.isel({time_dim: 0}).squeeze(),
+                          ["max_rain", "mean_rain"],
+                          "time_max_rain")
+        result["max_fraction"] = max_fraction
         result["max_count"] = max_count
         return result
 
     max_rain = rain.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
     mean_rain = rain.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
-    #indx = xarray.where(bad, 0.0, rain).argmax(dim=time_dim, keep_attrs=True)
-    max_time = rain.idxmax(time_dim).rename(
-        'time_max_rain').drop_vars(time_dim,errors='ignore')  # max times for this season
+    max_time = rain.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
 
-    base_name = ds.rainrate.attrs['long_name']
+    base_name = ds.rainrate.attrs['long_name'] + f" mean {mean_resample}"
 
     max_fraction.attrs['long_name'] = "Fraction present " + base_name
     max_fraction.attrs['units'] = '1'
@@ -324,13 +324,13 @@ def max_mean_process(ds: xarray.Dataset,
 
     result = xarray.Dataset(
         dict(max_rain=max_rain, time_max_rain=max_time, mean_rain=mean_rain,
-             max_fraction=max_fraction,max_count=max_count,
-             # , fraction=fraction
+             max_fraction=max_fraction, max_count=max_count,
              )
     )
 
     result.attrs.update(ds.attrs)
     my_logger.info(f"max computed for  {ds[time_dim][[0, -1]].values} {memory_use()}")
+
     return result
 
 
@@ -392,31 +392,31 @@ def process_radar(data_set: xarray.Dataset,
 
       """
     # TODO add in time-bounds and change time co-ord to be the centre of the interval.
-    # Takes about 10 mins to process a year of 1km radar data to monthly data.
+    # Takes about 2 mins to process a year of 1km radar data to monthly data.
     my_logger.info(f"Starting data processing. {memory_use()}")
 
     if mask is None:
         mask = gen_mask(data_set.rainrate, radar_range=radar_range)
 
     resamp = data_set.drop_vars(['longitude', 'latitude']).resample({time_dim: max_resample})
-    result = resamp.map(max_mean_process, shortcut=True,mean_resample=mean_resample, time_dim=time_dim, mask=mask, minf_mean=min_mean)
+    result = resamp.map(max_mean_process, shortcut=True, mean_resample=mean_resample, time_dim=time_dim, mask=mask,
+                        minf_mean=min_mean)
 
     my_logger.debug(f"Processed data and loading data {memory_use()}")
-    try:
-        latitude = data_set.latitude.isel({time_dim: 0}).drop_vars(
-            time_dim,errors='ignore').load()  # generating multiple values so just want first one
-        longitude = data_set.longitude.isel({time_dim: 0}).drop_vars(
-            time_dim,errors='ignore').load()  # generating multiple values so just want first one
-    except ValueError: # no time_dim probably
-        latitude = data_set.latitude
-        longitude = data_set.longitude
+    coords = dict()
+    for c in ['latitude', 'longitude']:
+        try:  # potentially generating multiple values so just want first one
+            coords[c] = data_set[c].isel({time_dim: 0}).squeeze(drop=True).drop_vars(time_dim).load()
+        except ValueError:  # no time so jus have the coord
+            coords[c] = data_set[c].load()
+
     for var in ["time_max_rain", "max_rain", "mean_rain"]:
-        result[var] = result[var].assign_coords(latitude=latitude,
-                                                longitude=longitude)
+        result[var] = result[var].assign_coords(**coords)
         if var != 'time_max_rain':
             result[var].attrs.update(data_set.rainrate.attrs)
     my_logger.debug(f"Added co-ordinates {memory_use()}")
-    base_name = result.max_rain.attrs['long_name']
+
+    base_name = result.max_rain.attrs['long_name'] + f" mean {mean_resample}"
     result.max_rain.attrs['long_name'] = max_resample + " max " + base_name
     result.mean_rain.attrs['long_name'] = max_resample + " mean " + base_name
     result.time_max_rain.attrs['long_name'] = max_resample + "  time of max" + base_name
@@ -552,24 +552,75 @@ def max_radar(files: typing.Union[typing.List[pathlib.Path], pathlib.Path],
         chunks = {}
 
     # open up the files
-    input_dataset = xarray.open_mfdataset(files, chunks=chunks,parallel=True)
+    input_dataset = xarray.open_mfdataset(files, chunks=chunks, parallel=True)
 
     # now read them
 
     ds = process_radar(input_dataset, mean_resample=mean_resample, max_resample=max_resample,
                        time_dim=time_dim).compute()
+
     my_logger.info("Processed  radar")
     encode = dict(zlib=True, complevel=5)
     ds.encoding.update(encode)
     # set the time_max_rain units to days since 1970-0-01
-    ds.time_max_rain.encoding['units']= "hours since 1970-01-01T00:00"
-    #for var in ['max_rain','mean_rain']:
-    #    ds[var].encoding.update(encode)
+    ds.time_max_rain.encoding['units'] = "hours since 1970-01-01T00:00"
     my_logger.info("Writing data out")
     # make dir for output
-    outfile.parent.mkdir(parents=True,exist_ok=True)
+    outfile.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(outfile, format='NETCDF4')  # write out
     # to make concatenation of datasets here worth writing out fraction to separate file.
+    # That woulc require recomputing it..
     my_logger.info(f"Wrote data to {outfile}")
 
     return ds  # and return.
+
+
+def dask_client() -> 'dask.distributed.Client':
+    """
+    Start or connect to an existing dask client. Address for server stored in $DASK_SCHEDULER_ADDRESS
+    :return: dask.distributed.Client
+    """
+    import dask.distributed
+    try:
+        dask_sa = os.environ['DASK_SCHEDULER_ADDRESS']
+        my_logger.warning(f"already got client at {dask_sa}")
+        client = dask.distributed.get_client(dask_sa, timeout='2s')  # fails. FIX if ever want client
+    except KeyError:
+        client = dask.distributed.Client(timeout='2s')
+        dask_sa = client.scheduler_info()['address']  # need to dig deep into dask doc to get this!
+        os.environ['DASK_SCHEDULER_ADDRESS'] = dask_sa
+        my_logger.warning(f"Starting new Dask client on {dask_sa}. Available in $DASK_SCHEDULER_ADDRESS ")
+    my_logger.warning(f"Dashboard for client at {client.dashboard_link}")
+    return client
+
+
+# set up logging
+def init_log(log: logging.Logger,
+             level: str,
+             log_file: typing.Optional[typing.Union[pathlib.Path, str]] = None,
+             mode: str = 'a'):
+    """
+    Set up logging on a logger! Will clear any existing logging
+    :param log: logger to be changed
+    :param level: level to be set.
+    :param log_file:  if provided pathlib.Path to log to file
+    :param mode: mode to open log file with (a  -- append or w -- write)
+    :return: nothing -- existing log is modified.
+    """
+    log.handlers.clear()
+    log.setLevel(level)
+    formatter = logging.Formatter('%(asctime)s %(levelname)s:  %(message)s',
+                                  datefmt='%Y-%m-%d %H:%M:%S')
+    ch = logging.StreamHandler(sys.stderr)
+    ch.setFormatter(formatter)
+    log.addHandler(ch)
+    # add a file handler.
+    if log_file:
+        if isinstance(log_file, str):
+            log_file = pathlib.Path(log_file)
+        log_file.parent.mkdir(exist_ok=True, parents=True)
+        fh = logging.FileHandler(log_file, mode=mode + 't')  #
+        fh.setLevel(level)
+        fh.setFormatter(formatter)
+        log.addHandler(fh)
+    log.propagate = False

@@ -37,36 +37,25 @@ if __name__ == "__main__":
         level = 'INFO'
     else:
         level = 'WARNING'
-
+    mode = 'a'
+    if args.overwrite:
+        mode = 'w'
     log = logging.getLogger(ausLib.__name__)
-    log.handlers.clear()
-    log.setLevel(level)
-    formatter = logging.Formatter('%(asctime)s %(levelname)s:  %(message)s',
-                                  datefmt='%Y-%m-%d %H:%M:%S')
-    ch = logging.StreamHandler(sys.stderr)
-    ch.setFormatter(formatter)
-    log.addHandler(ch)
-    # add a file handler.
-    if args.log_file:
-        file = pathlib.Path(args.log_file)
-        file.parent.mkdir(exist_ok=True,parents=True)
-        if not args.overwrite and file.exists():
-            raise ValueError(f"Overwrite not set and file {file} exists")
-        fh = logging.FileHandler(file, mode='w')  # clean out existing log file
-        fh.setLevel(level)
-        fh.setFormatter(formatter)
-        log.addHandler(fh)
-    log.propagate = False
+
+    ausLib.init_log(log, level, log_file=args.log_file, mode=mode)
 
     output = pathlib.Path(args.OUTPUT)
     # run glob on everything
     inputs = []
-    for f in sorted(args.INPUTS):
+    for f in args.INPUTS:
         inputs += glob.glob(f)
+    # check have some files -- if not exit
+    if len(inputs) == 0:
+        raise FileNotFoundError(f"No files found from expanding {args.INPUTS}")
     # and then convert to paths
     inputs = [pathlib.Path(f) for f in sorted(inputs)]
 
-    # check all files exist. Complain if not and die.
+    # check all files exist. Complain if not and die. While doing this work out the year to make chunking easier.
     # seems to be needed to run on gadi
     files_ok = True
     years = dict()
@@ -79,19 +68,18 @@ if __name__ == "__main__":
     if not files_ok:
         raise FileExistsError("Some files do not exist")
 
-    chunks = dict(zip(args.coordinate_names[0:2], [51, 51, 72]))  # guess for good chunking values.
+    # chunks = dict(zip(args.coordinate_names[0:2], [51, 51, 72]))  # guess for good chunking values.
     chunks = {}  # default
     if args.dask:
-        import dask.distributed
-        client = dask.distributed.Client(None, timeout='2s')
-        log.warning(f"Starting dask client on {client.dashboard_link}")
-
+        client = ausLib.dask_client()
 
     if args.year_chunk:
+        output_files=[] # where we are going to put the chunks. These will be deleted at the end.
         year_values = sorted(list(years.keys()))
         result_list = []
         for year in year_values:
             output_file = output.parent / (output.stem + f"_{year}.nc")
+            output_files.append(output_file)
             input_files = years[year]
             log.info(f"Processing {len(input_files)} files for year {year} and writing to {output_file}")
             result_list += [ausLib.max_radar(input_files, output_file,
@@ -107,6 +95,11 @@ if __name__ == "__main__":
         log.info("Writing data  out")
         result.to_netcdf(output, format='NETCDF4')
         log.info(f"Wrote data to {output}")
+        # remove all the output files
+        for f in output_files:
+            f.unlink()
+            log.debug(f"Deleted {f}")
+        log.info("Removed all year_chunk output files")
     else:
         result = ausLib.max_radar(inputs, output,
                                   mean_resample=args.mean_resample,
