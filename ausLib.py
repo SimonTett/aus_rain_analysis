@@ -278,58 +278,64 @@ def max_mean_process(ds: xarray.Dataset,
         return result
 
     rain = ds.rainrate
-    fraction = ds.isfile.resample({time_dim: mean_resample}).mean(skipna=True)
+    # compute fraction of times with rain. Hopefully, useful to detect radar "clutter".
+    rain_samples = ds.isfile.sum(keep_attrs=True).load()
+    rain_samples.attrs['long_name']= 'Total samples'
+    rain_fraction= (rain > 0.0).sum(time_dim,skipna=True, min_count=1, keep_attrs=True)
+    rain_fraction = (rain_fraction/float(rain_samples)).load()
+    rain_fraction.attrs.update(long_name = 'Fraction of time with rain')
+    rain_fraction.attrs.pop('units')
+
+
+    fraction = ds.isfile.resample({time_dim: mean_resample}).mean(skipna=True,min_count=1)
     ok = fraction >= minf_mean
-    max_fraction = ok.mean(time_dim).load()  # fraction of OK hours.
-    max_count = ok.astype('int').sum(time_dim).load()  # count of OK hours
+    max_fraction = ok.mean(time_dim).load()  # fraction of OK hours for max/mean etc
+    max_count = ok.astype('int').sum(time_dim).load()  # count of hours with enough data.
     if int(max_count) == 0:  # no data..
         my_logger.warning(f"No data for {fraction[time_dim][[0, -1]].values}")
         result = empty_ds(rain.isel({time_dim: 0}, drop=True),
-                          ["max_rain", "mean_rain"],
+                          ["max_rain", "mean_rain","median_rain"],
                           "time_max_rain")
-        result["max_fraction"] = max_fraction.load()
-        result["max_count"] = max_count
-
-        return result
-
-    msk = (ds.isfile == 1)
-    if mask is not None:
-        msk = msk & mask
-    r = rain.fillna(0.0).where(msk)  # replace nans with 0 and apply mask.
-    mean_rain = r.resample({time_dim: mean_resample}).mean(skipna=True)
-    my_logger.debug(f"mean computed using {mean_resample} for {mean_rain[time_dim][[0, -1]].values} {memory_use()}")
-
-    rain = mean_rain.sel({time_dim: ok}).load()  # select out where data OK and then compute the mean.
-    my_logger.debug(f"rain computed for  {rain[time_dim].values[0]} {memory_use()}")
-    bad = rain.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
-    if bad.all():
-        my_logger.warning(f"All missing at {bad[time_dim].isel[[0, -1]]}")
-        result = empty_ds(rain.isel({time_dim: 0}).squeeze(),
-                          ["max_rain", "mean_rain"],
-                          "time_max_rain")
-        result["max_fraction"] = max_fraction
-        result["max_count"] = max_count
-        return result
-
-    max_rain = rain.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
-    mean_rain = rain.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
-    max_time = rain.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
-
+        #result["max_fraction"] = max_fraction.load()
+        #result["max_count"] = max_count
+        #result["raw_count"] = rain_count
+    else:
+        msk = (ds.isfile == 1)
+        if mask is not None:
+            msk = msk & mask
+        r = rain.fillna(0.0).where(msk)  # replace nans with 0 and apply mask.
+        mean_rain = r.resample({time_dim: mean_resample}).mean(skipna=True)
+        my_logger.debug(f"mean computed using {mean_resample} for {mean_rain[time_dim][[0, -1]].values} {memory_use()}")
+        rain = mean_rain.sel({time_dim: ok}).load()  # select out where data OK and then compute the mean.
+        my_logger.debug(f"rain computed for  {rain[time_dim].values[0]} {memory_use()}")
+        bad = rain.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
+        if bad.all():
+            my_logger.error(f"All missing at {bad[time_dim].isel[[0, -1]]}")
+        # do the actual computation.
+        median_rain = rain.median(time_dim,keep_attrs=True, skipna=True).rename('median_rain')
+        max_rain = rain.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
+        mean_rain = rain.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
+        max_time = rain.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
+        result = xarray.Dataset(dict(median_rain=median_rain,max_rain=max_rain,
+                      mean_rain=mean_rain,max_time=max_time))
+    # now have result either from empty case or stnd one,
     base_name = ds.rainrate.attrs['long_name'] + f" mean {mean_resample}"
+    for k in result.variables:
+        comp = k.split('_')[0]
+        result[k].attrs['long_name'] = comp+" "+base_name
 
     max_fraction.attrs['long_name'] = "Fraction present " + base_name
-    max_fraction.attrs['units'] = '1'
+    max_fraction.attrs.pop('units')
+    result[f'fraction_{mean_resample}'] = max_fraction
     max_count.attrs['long_name'] = "Count present " + base_name
-    max_count.attrs['units'] = '1'
-
-    result = xarray.Dataset(
-        dict(max_rain=max_rain, time_max_rain=max_time, mean_rain=mean_rain,
-             max_fraction=max_fraction, max_count=max_count,
-             )
-    )
+    max_count.attrs.pop('units')
+    result[f'count_{mean_resample}'] = max_count
+    result['rain_fraction'] = rain_fraction
+    result['rain_fraction']=rain_fraction
+    result['rain_samples'] = rain_samples
 
     result.attrs.update(ds.attrs)
-    my_logger.info(f"max computed for  {ds[time_dim][[0, -1]].values} {memory_use()}")
+    my_logger.info(f"Summaries computed for  {ds[time_dim][[0, -1]].values} {memory_use()}")
 
     return result
 
