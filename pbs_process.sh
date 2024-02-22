@@ -13,14 +13,39 @@
 #PBS -N process_radar
 #PBS -o /home/561/st7295/aus_rain_analysis/sydney/pbs_output
 #PBS -e /home/561/st7295/aus_rain_analysis/sydney/pbs_output
-# Takes 32 minutes to run 24 years for Grafton data. Needs a lot of Memory so might as well use CPUs to run in parallel.
-# While Sydney takes about 2 minute/year to process
+# Melbourne takes  about 4 minutes  to process a year.
+
+export name=adelaide # name of place. Lowercase and in lookup table.
+export year=2020 # year to process. Do not set if want to process everything
+echo "Name is $name"
 cd /home/561/st7295/aus_rain_analysis || exit # make sure we are in the right directory
 . ./setup.sh # setup software and then run the processing
-name='port_hedland' # name of radar
-number=16 # number of radar
-cmd="./comp_radar_max.py /g/data/rq0/level_2/${number}/RAINRATE/${number}_*rainrate.nc radar/${name}/processed_radar_${name}.nc\
- --overwrite --verbose --dask --log_file radar/${name}/processed_radar_${name}.log --year_chunk"
+
+declare -A radar_numbers # translation from names to numbers for the radars
+radar_numbers=([adelaide]=46 [melbourne]=2 [wtakone]=52 [sydney]=3 [brisbane]=50 [canberra]=40 \
+  [cairns]=19 [mornington]=36 [grafton]=28 [newcastle]=4 [gladstone]=23)
+number=${radar_numbers[${name}]}
+
+if [[ -z "${number}" ]]
+then
+  echo "failed to find ${name} in radar_numbers table. Exiting"
+  exit 1
+fi
+
+pattern="${number}_*rainrate.nc"
+output="radar/${name}/processed_${name}.nc"
+log_file="radar/${name}/processed_${name}.log"
+extra="--year_chunk"
+if [[ -n "${year}" ]]
+then
+  pattern="${number}_${year}*rainrate.nc"
+  output="radar/${name}/processed_${year}_${name}.nc"
+  log_file="radar/${name}/processed_${year}_${name}.log"
+  extra=""
+fi
+cmd="./comp_radar_max.py /g/data/rq0/level_2/${number}/RAINRATE/${pattern} ${output} \
+ --overwrite --verbose --dask --log_file ${log_file} ${extra}"
  echo "cmd is: ${cmd}"
- $($cmd)  # executing cmd
+ result=$($cmd)  # executing cmd
+ echo $result
 
