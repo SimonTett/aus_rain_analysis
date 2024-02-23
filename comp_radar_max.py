@@ -28,8 +28,11 @@ if __name__ == "__main__":
     parser.add_argument("--dask", action='store_true', help="If set will start dask.distributed Client.")
     parser.add_argument("--log_file", help='Name of logging file for log output. ')
     parser.add_argument("--year_chunk", action='store_true',
-                        help="""Process each calendar year separately based on file name. 
-                        This runs considerably faster than reading in all data and processing in one go but means no seasonal processing.""")
+                        help="""Process each calendar year separately based on file name. This runs considerably 
+                        faster than reading in all data and processing in one go but means no seasonal processing.""")
+    parser.add_argument("--cache", action="store_true",
+                        help="""When running with --year_chunk save each year. If cached files exist they will be loaded.""")
+    parser.add_argument("--keep_cache",action="store_true",help='Keep cached files at end of processing')
     args = parser.parse_args()
     if args.verbose >= 2:
         level = 'DEBUG'
@@ -74,36 +77,56 @@ if __name__ == "__main__":
         client = ausLib.dask_client()
 
     if args.year_chunk:
-        output_files=[] # where we are going to put the chunks. These will be deleted at the end.
+        # shoudl probably store the processing options to properly cache...
+        output_files=[] # where we are going to put the annual chunks.
         year_values = sorted(list(years.keys()))
         result_list = []
         for year in year_values:
-            output_file = output.parent / (output.stem + f"_{year}.nc")
-            output_files.append(output_file)
-            input_files = years[year]
-            log.info(f"Processing {len(input_files)} files for year {year} and writing to {output_file}")
-            result_list += [ausLib.max_radar(input_files, output_file,
-                                             mean_resample=args.mean_resample,
-                                             max_resample=args.max_resample,
-                                             chunks=chunks,
-                                             overwrite=args.overwrite,
-                                             time_dim=args.coordinate_names[2])]
+            if args.cache:
+                output_file = output.parent / "cache"/(output.stem + f"_cache_{year}.nc")
+                output_files.append(output_file)
+            else:
+                output_file=None
+            if args.cache and output_file and output_file.exists():
+                log.info(f"Loading existing file {output_file}")
+                cached_result = xarray.load_dataset(output_file)
+                result_list.append(cached_result)
+            else:
+                input_files = years[year]
+                files_missing = 0
+                for f in input_files:
+                    if not f.exists():
+                        log.warning(f"File {f} does not exist. ")
+                        files_missing += 1
+                if files_missing > 0:
+                    raise  FileNotFoundError(f"{files_missing} files do not exist")
+                log.info(f"Processing {len(input_files)} files for year {year} and writing to {output_file}")
+                result_list += [ausLib.summary_radar(input_files, output_file,
+                                                     mean_resample=args.mean_resample,
+                                                     summary_resample=args.max_resample,
+                                                     chunks=chunks,
+                                                     overwrite=args.overwrite,
+                                                     time_dim=args.coordinate_names[2])]
 
         # end of processing
         log.info("Concatenating all years")
         result = xarray.concat(result_list, dim=args.coordinate_names[2])
         log.info("Writing data  out")
+        # make dir if needed
+        output.parent.mkdir(parents=True,exist_ok=True)
         result.to_netcdf(output, format='NETCDF4')
         log.info(f"Wrote data to {output}")
         # remove all the output files
-        for f in output_files:
-            f.unlink()
-            log.debug(f"Deleted {f}")
-        log.info("Removed all year_chunk output files")
+        if not args.keep_cache:
+            for f in output_files:
+                f.unlink()
+                log.debug(f"Deleted {f}")
+            if len(output_files):
+                log.info(f"Removed {len(output_files)} year_chunk cached output files")
     else:
-        result = ausLib.max_radar(inputs, output,
-                                  mean_resample=args.mean_resample,
-                                  max_resample=args.max_resample,
-                                  chunks=chunks,
-                                  overwrite=args.overwrite,
-                                  time_dim=args.coordinate_names[2])
+        result = ausLib.summary_radar(inputs, output,
+                                      mean_resample=args.mean_resample,
+                                      summary_resample=args.max_resample,
+                                      chunks=chunks,
+                                      overwrite=args.overwrite,
+                                      time_dim=args.coordinate_names[2])

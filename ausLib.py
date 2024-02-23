@@ -230,45 +230,53 @@ def gen_mask(example_data_array: xarray.DataArray,
     return mask
 
 
-def max_mean_process(ds: xarray.Dataset,
-                     mean_resample: str = '1h',
-                     time_dim: str = 'time',
-                     minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
+def summary_process(ds: xarray.Dataset,
+                    mean_resample: str = '1h',
+                    time_dim: str = 'time',
+                    rain_threshold: float = 0.1,
+                    minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
     """
     Process dataset for max (and mean & time of max).
 
     Args:
-        minf_mean: The minimum fraction data used to compute a time-mean. Data with a fraction below this are ignored.
+        ds: dataset to be processed. Must contain rainrate and isfile.
+        mean_resample: the resample period to generate means.
+        minf_mean: The minimum fraction data used to compute a time-mean. Data with a fraction below this are ignored when computing summaries.
         time_dim: the name of the time dimension
-        ds: dataset to be processed. Should contain the variables:
-            rain -- rainrate
+        rain_threshold: the threshold above which rain is counted and used in the median.
 
 
-    Returns:dataset containing maximum values, time of max values and mean values.
-    (or None if no non-missing data).
+
+    Returns:dataset containing summary values. These are:
+         max_rain, time_max_rain, median_rain, mean_rate. median_rain is only for values > rain_threshold.
+    Also includes some count values.
+                f'count_{mean_resample}': number of mean non-missing values
+            f'samples_{mean_resample}': Total number of values
+            rain_count: Count of rain values above threshold
+            rain_samples: Total number of possible samples.
 
     """
 
     def empty_ds(example_da: xarray.DataArray,
-                 variables: typing.Union[typing.List[str], str],
+                 non_time_variables: typing.Union[typing.List[str], str],
                  vars_time: typing.Union[typing.List[str], str]
                  ) -> xarray.Dataset:
         """
         Return an empty dataset
         :param example_da:
-        :param variables:
+        :param non_time_variables:
         :param vars_time:
         :return: empty dataset.
         """
         # deal with singleton vars
-        if isinstance(variables, str):
-            variables = [variables]
+        if isinstance(non_time_variables, str):
+            non_time_variables = [non_time_variables]
         if isinstance(vars_time, str):
             vars_time = [vars_time]
 
         # generates vars
         result = dict()
-        for var in variables:
+        for var in non_time_variables:
             result[var] = example_da.where(False).rename(var)
         for var in vars_time:
             result[var] = example_da.where(False).rename(var).astype('<M8[ns]')
@@ -280,22 +288,19 @@ def max_mean_process(ds: xarray.Dataset,
     # compute # of times with rain. Hopefully, useful to detect radar "clutter".
     rain_samples = ds.isfile.sum(keep_attrs=True).load()
     rain_samples.attrs['long_name'] = 'Total samples'
-    rain_count = (rain > 0.0).sum(time_dim, skipna=True, min_count=1, keep_attrs=True)
-    rain_count.attrs.update(long_name='# times with rain')
-    rain_count.attrs.pop('units', None)
+    rain_count = (rain > rain_threshold).sum(time_dim, skipna=True, min_count=1, keep_attrs=True)
+    rain_count.attrs.update(long_name=f'# times with rain >{rain_threshold}')
 
     fraction = ds.isfile.resample({time_dim: mean_resample}).mean(skipna=True)
     ok = fraction >= minf_mean
     count_of_mean = ok.astype('int').sum(time_dim).load()  # count of mean samples with enough data.
-    samples_of_mean = ok.count() # count of mean samples
+    samples_of_mean = ok.count()  # count of mean samples
     if int(count_of_mean) == 0:  # no data..
         my_logger.warning(f"No data for {fraction[time_dim][[0, -1]].values}")
         result = empty_ds(rain.isel({time_dim: 0}, drop=True),
                           ["max_rain", "mean_rain", "median_rain"],
                           "time_max_rain")
-        # result["max_fraction"] = max_fraction.load()
-        # result["max_count"] = max_count
-        # result["raw_count"] = rain_count
+
     else:
         msk = (ds.isfile == 1)
         r = rain.fillna(0.0).where(msk)  # replace nans with 0 and apply mask.
@@ -307,43 +312,40 @@ def max_mean_process(ds: xarray.Dataset,
         if bad.all():
             my_logger.error(f"All missing at {bad[time_dim].isel[[0, -1]]}")
         # do the actual computation.
-        median_rain = rain.median(time_dim, keep_attrs=True, skipna=True).rename('median_rain')
+        msk = rain > rain_threshold  # mask for rain threshold.
+        median_rain = rain.where(msk).median(time_dim, keep_attrs=True, skipna=True).rename('median_rain')
         max_rain = rain.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
         mean_rain = rain.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
         time_max_rain = rain.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
         result = xarray.Dataset(dict(median_rain=median_rain, max_rain=max_rain,
                                      mean_rain=mean_rain, time_max_rain=time_max_rain))
-    # now have result either from empty case or stnd one,
+    # now have result either from empty case or std one,
+    # now set the meta data.
     base_name = ds.rainrate.attrs['long_name'] + f" mean {mean_resample}"
     variables = [v for v in result.variables if v.endswith("_rain")]
-
     for k in variables:
         if k.startswith("time_"):
-            comp = "time of "+k.split('_')[1]
+            comp = "time of " + k.split('_')[1]
         else:
             comp = k.split('_')[0]
         result[k].attrs['long_name'] = comp + " " + base_name
-
+    # append min for median,
+    result.median_rain.attrs['long_name'] += f' for rain > {rain_threshold} mm/h'
     count_of_mean.attrs['long_name'] = f"Count of present {mean_resample} samples " + base_name
     samples_of_mean.attrs['long_name'] = f"{mean_resample} samples " + base_name
     counts_ds = xarray.Dataset(
         {
-            f'count_{mean_resample}':count_of_mean,
-            f'samples_{mean_resample}':samples_of_mean,
+            f'count_{mean_resample}': count_of_mean,
+            f'samples_{mean_resample}': samples_of_mean,
             "rain_count": rain_count,
             "rain_samples": rain_samples
         }
     )
     for v in counts_ds.variables:
         counts_ds[v].attrs.pop('units', None)
-
     result = result.merge(counts_ds)
-
-
-
-    result.attrs.update(ds.attrs)
+    result.attrs.update(ds.attrs)  # preserve initial metadata.
     my_logger.info(f"Summaries computed for  {ds[time_dim][[0, -1]].values} {memory_use()}")
-
     return result
 
 
@@ -364,15 +366,15 @@ def process_gsdp_record(gsdp_record: pd.Series,
 
     """
     resamp = gsdp_record.resample(resample_max)
-    all = gsdp_record.isnull().resample(resample_max).count()
-    fraction = (resamp.count() / all).rename('fraction')
-    max = resamp.max().rename("max_rain")
+    count_data = gsdp_record.isnull().resample(resample_max).count()
+    fraction = (resamp.count() / count_data).rename('fraction')
+    max_rain = resamp.max().rename("max_rain")
     time_max = resamp.apply(pd.Series.idxmax).rename("time_max_rain")
     # fix the type for time_max
     time_max = time_max.astype(gsdp_record.index.dtype)
     mean = resamp.mean().rename("mean_rain")  # need to convert to mm/season?
-    total = (mean * all).rename('total_rain')
-    df = pd.DataFrame([max, mean, total, fraction, time_max]).T
+    total = (mean * count_data).rename('total_rain')
+    df = pd.DataFrame([max_rain, mean, total, fraction, time_max]).T
     for s in ['max_rain', 'mean_rain', 'total_rain', 'fraction']:
         df[s] = df[s].astype('float')
     df['time_max'] = df['time_max_rain'].astype(gsdp_record.index.dtype)
@@ -380,26 +382,22 @@ def process_gsdp_record(gsdp_record: pd.Series,
     return df
 
 
-def process_radar(data_set: xarray.Dataset,
-                  mean_resample: str = '1h',
-                  min_mean: float = 0.8,
-                  max_resample: str = 'QS-DEC',
-                  time_dim: str = 'time',
+def process_radar(data_set: xarray.Dataset, mean_resample: str = '1h', min_mean: float = 0.8,
+                  summary_resample: str = 'QS-DEC', time_dim: str = 'time',
                   mask: typing.Optional[xarray.DataArray] = None,
-                  radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3),  # values empirically tuned.
-                  ) -> xarray.Dataset:
+                  radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3)) -> xarray.Dataset:
     """
     Compute max rainfall on mean rainfall from 6 minute radar rainfall data.
 
       :param data_set: dataset to be processed. Must contain rainrate, isfile, latitude and longitude
       :param mean_resample: time period to resample data to compute mean
       :param min_mean: min fraction of samples to compute mean.
-      :param max_resample : time period to resample meaned data to compute max.
+      :param summary_resample : time period to resample meaned data to compute summary data.
       :param time_dim:dimension that is time
       :param mask: Bool mask. Where False summary data will be set to missing.
       :param radar_range: 2 element tuple, element o is distance from centre to be in radar coverage -- element 1 the max radar coverage.
-        missing values inside this range  will be set to zero if isfile is 1 but only if mask not provided,
-      :return: max of meaned data with missing data dealt with...
+        missing values inside this range  will be set to zero if isfile is 1 but only if mask not provided.
+      :return: summary data.
 
 
       """
@@ -410,8 +408,8 @@ def process_radar(data_set: xarray.Dataset,
     if mask is None:
         mask = gen_mask(data_set.rainrate, radar_range=radar_range)
 
-    resamp = data_set.drop_vars(['longitude', 'latitude']).resample({time_dim: max_resample})
-    result = resamp.map(max_mean_process, shortcut=True, mean_resample=mean_resample, time_dim=time_dim,
+    resamp = data_set.drop_vars(['longitude', 'latitude']).resample({time_dim: summary_resample})
+    result = resamp.map(summary_process, shortcut=True, mean_resample=mean_resample, time_dim=time_dim,
                         minf_mean=min_mean)
 
     my_logger.debug(f"Processed data and loading data {memory_use()}")
@@ -422,20 +420,14 @@ def process_radar(data_set: xarray.Dataset,
         except ValueError:  # no time so jus have the coord
             coords[c] = data_set[c].load()
 
-    variables = [v for v in result.variables if (v != 'x' and 'x' in result[v].coords )] # things that are spatial
+    variables = [v for v in result.variables if (v != 'x' and 'x' in result[v].coords)]  # things that are spatial
     for var in variables:
         result[var] = result[var].assign_coords(**coords)
         if mask is not None:
             result[var] = result[var].where(mask)
         my_logger.debug(f"added long/lat coords to {var}")
-        if var != 'time_max_rain':
-            result[var].attrs.update(data_set.rainrate.attrs)
     my_logger.debug(f"Added co-ordinates {memory_use()}")
 
-    # base_name = result.max_rain.attrs['long_name'] + f" mean {mean_resample}"
-    # result.max_rain.attrs['long_name'] = max_resample + " max " + base_name
-    # result.mean_rain.attrs['long_name'] = max_resample + " mean " + base_name
-    # result.time_max_rain.attrs['long_name'] = max_resample + "  time of max" + base_name
     my_logger.debug(f"Set attributes {memory_use()}")
     result.attrs.update(data_set.attrs)
     logging.info(f"processed data for {memory_use()}")
@@ -534,30 +526,27 @@ def resample_max(data_array: xarray.DataArray,
     return result  # return it.
 
 
-def max_radar(files: typing.Union[typing.List[pathlib.Path], pathlib.Path],
-              outfile: pathlib.Path,
-              mean_resample: str = '1h',
-              max_resample: str = 'MS',
-              time_dim: str = 'time',
-              chunks: typing.Optional[typing.Dict[str, int]] = None,
-              overwrite: bool = False) -> xarray.Dataset:
+def summary_radar(files: typing.Union[typing.List[pathlib.Path], pathlib.Path],
+                  outfile: typing.Optional[pathlib.Path],
+                  mean_resample: str = '1h',
+                  summary_resample: str = 'MS',
+                  time_dim: str = 'time',
+                  chunks: typing.Optional[typing.Dict[str, int]] = None,
+                  overwrite: bool = False) -> xarray.Dataset:
     """
 
     :param files: List of (or single) pathlib.Path's to be read in and processed
-    :param outfile: Output path -- where data will be written to.
+    :param outfile: Output path -- where data will be written to. If None nothing will be written to!
     :param mean_resample: resample period for mean
-    :param max_resample: resample period for max (computed on mean)
+    :param summary_resample: resample period for summary stats (computed on mean_resampled data)
     :param time_dim: Name of time dimension
     :param chunks: Chunk. See xarray.open_dataset for details.
     :param overwrite: If True overwrite existing data.
-    :param outfile_non_time_dim-- if not None then any variables that have
     :return: dataset of processed data.
 
     """
 
-    my_logger.info(f"outfile is: {outfile}")
-
-    if not overwrite and outfile.exists():
+    if not overwrite and outfile and outfile.exists():
         raise FileExistsError(f"{outfile} exists and overwrite is False")
     # convert singleton args into lists.
 
@@ -572,7 +561,7 @@ def max_radar(files: typing.Union[typing.List[pathlib.Path], pathlib.Path],
 
     # now read them
 
-    ds = process_radar(input_dataset, mean_resample=mean_resample, max_resample=max_resample,
+    ds = process_radar(input_dataset, mean_resample=mean_resample, summary_resample=summary_resample,
                        time_dim=time_dim).compute()
 
     my_logger.info("Processed  radar")
@@ -580,15 +569,14 @@ def max_radar(files: typing.Union[typing.List[pathlib.Path], pathlib.Path],
     ds.encoding.update(encode)
     # set the time_max_rain units to days since 1970-0-01
     ds.time_max_rain.encoding['units'] = "hours since 1970-01-01T00:00"
-    my_logger.info("Writing data out")
-    # make dir for output
-    outfile.parent.mkdir(parents=True, exist_ok=True)
-    ds.to_netcdf(outfile, format='NETCDF4')  # write out
-    # to make concatenation of datasets here worth writing out fraction to separate file.
-    # That woulc require recomputing it..
-    my_logger.info(f"Wrote data to {outfile}")
 
-    return ds  # and return.
+    if outfile:  # want to write data out
+        my_logger.info("Writing data out")
+        outfile.parent.mkdir(parents=True, exist_ok=True)  # make dir for output
+        ds.to_netcdf(outfile, format='NETCDF4')  # write out
+        my_logger.info(f"Wrote data to {outfile}")
+
+    return ds  # and return the dataset.
 
 
 def dask_client() -> 'dask.distributed.Client':
