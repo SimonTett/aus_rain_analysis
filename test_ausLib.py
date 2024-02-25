@@ -5,14 +5,14 @@ import numpy as np
 import pandas as pd
 import xarray
 import ausLib
-
+import numpy.testing as nptest
 test_dir = pathlib.Path("test_data")
 class test_ausLib(unittest.TestCase):
 
     def test_process_radar(self):
-        dataSet = xarray.open_mfdataset(test_dir/"28_19980924_rainrate.nc")
-        # test is to just run the code!
-        dataSet = ausLib.process_radar(dataSet)
+        ds = xarray.load_dataset(test_dir/"28_19980924_rainrate.nc")
+
+        dataSet = ausLib.process_radar(ds)
         # test data is 1 day. So expect to have only one field in the output.
         self.assertEqual(dataSet.time.size,1)
         # expect max >= mean.
@@ -20,6 +20,15 @@ class test_ausLib(unittest.TestCase):
         self.assertTrue(np.all((dataSet.max_rain >= dataSet.mean_rain).where(~null,True)))
         # test time_max_rain mask matches null.
         self.assertTrue(np.all(dataSet.time_max_rain.isnull() == null))
+        # test that count_rain_thresh <= count_rain
+        msk = ~dataSet.count_1h_thresh.isnull()
+        nptest.assert_array_equal(~msk,null) # masks should be the same.
+        self.assertTrue(np.all(dataSet.count_1h_thresh.where(msk,0.0) <= dataSet.count_1h))
+        rain_1h = ds.rainrate.resample(time='1h').mean()
+        cnt_1h_thresh = (rain_1h > 1).sum('time',min_count=1).squeeze()
+        nptest.assert_array_equal(cnt_1h_thresh,dataSet.count_1h_thresh.squeeze())
+        # test mean_< mean_thresh
+        nptest.assert_array_less(dataSet.mean_rain,dataSet.mean_rain_thresh+0.1)
 
     def test_read_gdsp_metadata(self):
         # test read_gdsp_metadata

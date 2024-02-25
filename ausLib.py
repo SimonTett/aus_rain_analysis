@@ -233,9 +233,9 @@ def gen_mask(example_data_array: xarray.DataArray,
 def summary_process(ds: xarray.Dataset,
                     mean_resample: str = '1h',
                     time_dim: str = 'time',
-                    rain_threshold: float = 0.1,
+                    rain_threshold: float = 1.,
                     minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
-    """
+    f"""
     Process dataset for max (and mean & time of max).
 
     Args:
@@ -248,11 +248,14 @@ def summary_process(ds: xarray.Dataset,
 
 
     Returns:dataset containing summary values. These are:
-         max_rain, time_max_rain, median_rain, mean_rate. median_rain is only for values > rain_threshold.
+         max_rain, time_max_rain,  mean_rain 
+          median_rain_thresh median for values > rain_threshold.
+          mean_rate_thresh mean for values > rain_thresh
     Also includes some count values.
-                f'count_{mean_resample}': number of mean non-missing values
+            f'count_{mean_resample}': number of mean non-missing values
+            f'count_{mean_resample}_thresh': count of mean values > threshold
             f'samples_{mean_resample}': Total number of values
-            rain_count: Count of rain values above threshold
+            rain_count: Count of all raw rain values above threshold
             rain_samples: Total number of possible samples.
 
     """
@@ -298,8 +301,11 @@ def summary_process(ds: xarray.Dataset,
     if int(count_of_mean) == 0:  # no data..
         my_logger.warning(f"No data for {fraction[time_dim][[0, -1]].values}")
         result = empty_ds(rain.isel({time_dim: 0}, drop=True),
-                          ["max_rain", "mean_rain", "median_rain"],
+                          ["max_rain", "mean_rain",
+                           "median_rain_thresh","mean_rain_thresh"],
                           "time_max_rain")
+        # need a count_rain_thresh which should be 0 (it must be less than count_of_mean
+        count_rain_thresh = count_of_mean
 
     else:
         msk = (ds.isfile == 1)
@@ -312,38 +318,60 @@ def summary_process(ds: xarray.Dataset,
         if bad.all():
             my_logger.error(f"All missing at {bad[time_dim].isel[[0, -1]]}")
         # do the actual computation.
-        msk = rain > rain_threshold  # mask for rain threshold.
-        median_rain = rain.where(msk).median(time_dim, keep_attrs=True, skipna=True).rename('median_rain')
+        m = rain > rain_threshold  # mask for rain threshold.
+        rain_thresh = rain.where(m)
+        count_rain_thresh = m.sum(time_dim)
+        median_rain_thresh = rain_thresh.median(time_dim, keep_attrs=True, skipna=True).\
+            rename('median_rain_thresh')
+        mean_rain_thresh = rain_thresh.mean(time_dim, keep_attrs=True, skipna=True). \
+            rename('mean_rain_thresh')
         max_rain = rain.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
         mean_rain = rain.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
         time_max_rain = rain.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
-        result = xarray.Dataset(dict(median_rain=median_rain, max_rain=max_rain,
-                                     mean_rain=mean_rain, time_max_rain=time_max_rain))
+        result = xarray.Dataset(dict(median_rain_thresh=median_rain_thresh,
+                                     mean_rain_thresh = mean_rain_thresh,
+                                     max_rain=max_rain,
+                                     mean_rain=mean_rain,
+                                     time_max_rain=time_max_rain))
+
     # now have result either from empty case or std one,
-    # now set the meta data.
+    # now set the meta data. Mild pain to do it here but want to be sure it
+    # is the same regardless of how it made.
     base_name = ds.rainrate.attrs['long_name'] + f" mean {mean_resample}"
     variables = [v for v in result.variables if v.endswith("_rain")]
     for k in variables:
         if k.startswith("time_"):
-            comp = "time of " + k.split('_')[1]
+            comp =  k.split('_')[1]
+            result[k].attrs['long_name'] = 'time of '+comp + " " + base_name
+        elif k.endswith("thresh"):
+            comp = k.split('_')[0]
+            result[k].attrs['long_name'] = comp + " " + base_name + \
+                                         f' for rain > {rain_threshold} mm/h'
         else:
             comp = k.split('_')[0]
-        result[k].attrs['long_name'] = comp + " " + base_name
+            result[k].attrs['long_name'] = comp + " " + base_name
+
     # append min for median,
-    result.median_rain.attrs['long_name'] += f' for rain > {rain_threshold} mm/h'
+    count_rain_thresh.attrs['long_name'] = f'Count of rain {mean_resample} > {rain_threshold} mm/h'
     count_of_mean.attrs['long_name'] = f"Count of present {mean_resample} samples " + base_name
     samples_of_mean.attrs['long_name'] = f"{mean_resample} samples " + base_name
     counts_ds = xarray.Dataset(
         {
             f'count_{mean_resample}': count_of_mean,
             f'samples_{mean_resample}': samples_of_mean,
-            "rain_count": rain_count,
-            "rain_samples": rain_samples
+            "count_rain": rain_count,
+            "samples_rain": rain_samples,
+            f"count_{mean_resample}_thresh": count_rain_thresh
         }
     )
     for v in counts_ds.variables:
         counts_ds[v].attrs.pop('units', None)
+        # would like count/sample vars to be be ints but that means no missing data.
+        # danger is loss of precision.
+        if v.startswith('count') or v.startswith('samples'):
+            counts_ds[v] = counts_ds[v].astype('uint64')
     result = result.merge(counts_ds)
+    result.attrs['threshold']=rain_threshold
     result.attrs.update(ds.attrs)  # preserve initial metadata.
     my_logger.info(f"Summaries computed for  {ds[time_dim][[0, -1]].values} {memory_use()}")
     return result
@@ -382,12 +410,15 @@ def process_gsdp_record(gsdp_record: pd.Series,
     return df
 
 
-def process_radar(data_set: xarray.Dataset, mean_resample: str = '1h', min_mean: float = 0.8,
-                  summary_resample: str = 'QS-DEC', time_dim: str = 'time',
+def process_radar(data_set: xarray.Dataset,
+                  mean_resample: str = '1h',
+                  min_mean: float = 0.8,
+                  summary_resample: str = 'QS-DEC',
+                  time_dim: str = 'time',
                   mask: typing.Optional[xarray.DataArray] = None,
                   radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3)) -> xarray.Dataset:
     """
-    Compute max rainfall on mean rainfall from 6 minute radar rainfall data.
+    Compute various summaries of  rainfall on mean rainfall from  radar rainfall data.
 
       :param data_set: dataset to be processed. Must contain rainrate, isfile, latitude and longitude
       :param mean_resample: time period to resample data to compute mean
@@ -449,81 +480,81 @@ def memory_use() -> str:
     return mem
 
 
-def resample_max(data_array: xarray.DataArray,
-                 resample: str = '1h',
-                 time_dim: str = 'time',
-                 fillna: typing.Optional[float] = None) -> xarray.Dataset:
-    """
-
-    :param data_array: data array to be processed.
-    :param resample: resample value 
-    :param time_dim: name of time dimension
-    :param fillna -- if not Null value to fill nan values with.
-    :return: DataSet of processed dataArrays. Computation is resample mean then seasonal max.
-     Variables are:
-         Max_{dataArray.name}  (max value in a season)
-         Max_time_{dataArray.name}  (time of max value in a season)
-    """
-
-    result = dict()
-
-    # Can have a bunch of co-ordinates with co-ord time_dim. 
-    # Want to remove those as they no longer make sense once we compute the 
-    # seasonal max (which reduces the dimension).
-    # If wanted they culd be regenerated but xarray has the dt accessor.
-
-    coords_to_remove = [c for c in data_array.coords if
-                        (time_dim in data_array[c].coords and data_array[c].name != time_dim)]
-    if len(coords_to_remove) > 0:
-        s = " ".join(coords_to_remove)
-        logging.info(f"Dropping following coords as have {time_dim}: {s}")
-
-    # generate the resample mean values
-    rmin = data_array.drop(coords_to_remove)
-    if fillna is not None:  # fill nan
-        rmin = rmin.fillna(fillna)
-    rmin = rmin.resample({time_dim: resample}).mean()
-    # now compute the max value for each season.
-    seas_resamp = rmin.resample({time_dim: 'QS-DEC'})  # resampler
-    # initialise lists.
-    mx_time = []
-    mx_value = []
-    for c, da in seas_resamp:  # loop over resamples/
-        bad = da.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
-        if bad.all():
-            my_logger.warning(f"All missing at {c}")
-            continue  # skip further processing as all missing.
-        # need to load the data as dask does not cope with complex indixing
-        da.load()
-        my_logger.debug(f"Loaded data for coord {c}. {memory_use()}")
-        indx = da.argmax(dim=time_dim, skipna=True, keep_attrs=True)  # index of maxes
-        coord = {time_dim: c}  # coordinate to set data time
-        mtime = da[time_dim].isel({time_dim: indx}).where(~bad).rename('time_max').assign_coords(
-            coord).load()  # max times for this season
-        mvalue = da.isel({time_dim: indx}).where(~bad).assign_coords(coord).load()
-        # max value for this season
-        # then store things.
-        mx_time.append(mtime)
-        mx_value.append(mvalue)
-        my_logger.debug(f"Computed mx value and time of max at time {c}. {memory_use()}")
-    mx_time = xarray.concat(mx_time, dim=time_dim).sortby(time_dim)  # concat everything
-    mx_value = xarray.concat(mx_value, dim=time_dim).sortby(time_dim)
-    my_logger.debug(f"Concatted. {memory_use()}")
-    # set up attributes.
-    mx_value.attrs = data_array.attrs.copy()
-    mx_value.attrs['history'] = mx_value.attrs.get('history', []) + [f"Resampled {resample} + seasonal max"]
-    mx_time.attrs = data_array.attrs.copy()
-    # remove units (as time coord)
-    mx_time.attrs.pop('units', None)
-    mx_time.attrs['history'] = mx_time.attrs.get('history', []) + [f"Resampled {resample} + time of seasonal max"]
-    key = f"Max_{data_array.name}"
-    key_time = f"Max_time_{data_array.name}"
-    result[key] = mx_value
-    result[key_time] = mx_time
-    my_logger.info(f"Stored result size={mx_value.shape} at {key}")
-
-    result = xarray.Dataset(result)  # convert to a dataset.
-    return result  # return it.
+# def resample_max(data_array: xarray.DataArray,
+#                  resample: str = '1h',
+#                  time_dim: str = 'time',
+#                  fillna: typing.Optional[float] = None) -> xarray.Dataset:
+#     """
+#
+#     :param data_array: data array to be processed.
+#     :param resample: resample value
+#     :param time_dim: name of time dimension
+#     :param fillna -- if not Null value to fill nan values with.
+#     :return: DataSet of processed dataArrays. Computation is resample mean then seasonal max.
+#      Variables are:
+#          Max_{dataArray.name}  (max value in a season)
+#          Max_time_{dataArray.name}  (time of max value in a season)
+#     """
+#
+#     result = dict()
+#
+#     # Can have a bunch of co-ordinates with co-ord time_dim.
+#     # Want to remove those as they no longer make sense once we compute the
+#     # seasonal max (which reduces the dimension).
+#     # If wanted they culd be regenerated but xarray has the dt accessor.
+#
+#     coords_to_remove = [c for c in data_array.coords if
+#                         (time_dim in data_array[c].coords and data_array[c].name != time_dim)]
+#     if len(coords_to_remove) > 0:
+#         s = " ".join(coords_to_remove)
+#         logging.info(f"Dropping following coords as have {time_dim}: {s}")
+#
+#     # generate the resample mean values
+#     rmin = data_array.drop(coords_to_remove)
+#     if fillna is not None:  # fill nan
+#         rmin = rmin.fillna(fillna)
+#     rmin = rmin.resample({time_dim: resample}).mean()
+#     # now compute the max value for each season.
+#     seas_resamp = rmin.resample({time_dim: 'QS-DEC'})  # resampler
+#     # initialise lists.
+#     mx_time = []
+#     mx_value = []
+#     for c, da in seas_resamp:  # loop over resamples/
+#         bad = da.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
+#         if bad.all():
+#             my_logger.warning(f"All missing at {c}")
+#             continue  # skip further processing as all missing.
+#         # need to load the data as dask does not cope with complex indixing
+#         da.load()
+#         my_logger.debug(f"Loaded data for coord {c}. {memory_use()}")
+#         indx = da.argmax(dim=time_dim, skipna=True, keep_attrs=True)  # index of maxes
+#         coord = {time_dim: c}  # coordinate to set data time
+#         mtime = da[time_dim].isel({time_dim: indx}).where(~bad).rename('time_max').assign_coords(
+#             coord).load()  # max times for this season
+#         mvalue = da.isel({time_dim: indx}).where(~bad).assign_coords(coord).load()
+#         # max value for this season
+#         # then store things.
+#         mx_time.append(mtime)
+#         mx_value.append(mvalue)
+#         my_logger.debug(f"Computed mx value and time of max at time {c}. {memory_use()}")
+#     mx_time = xarray.concat(mx_time, dim=time_dim).sortby(time_dim)  # concat everything
+#     mx_value = xarray.concat(mx_value, dim=time_dim).sortby(time_dim)
+#     my_logger.debug(f"Concatted. {memory_use()}")
+#     # set up attributes.
+#     mx_value.attrs = data_array.attrs.copy()
+#     mx_value.attrs['history'] = mx_value.attrs.get('history', []) + [f"Resampled {resample} + seasonal max"]
+#     mx_time.attrs = data_array.attrs.copy()
+#     # remove units (as time coord)
+#     mx_time.attrs.pop('units', None)
+#     mx_time.attrs['history'] = mx_time.attrs.get('history', []) + [f"Resampled {resample} + time of seasonal max"]
+#     key = f"Max_{data_array.name}"
+#     key_time = f"Max_time_{data_array.name}"
+#     result[key] = mx_value
+#     result[key_time] = mx_time
+#     my_logger.info(f"Stored result size={mx_value.shape} at {key}")
+#
+#     result = xarray.Dataset(result)  # convert to a dataset.
+#     return result  # return it.
 
 
 def summary_radar(files: typing.Union[typing.List[pathlib.Path], pathlib.Path],
