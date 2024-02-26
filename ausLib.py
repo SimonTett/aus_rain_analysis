@@ -243,7 +243,7 @@ def summary_process(ds: xarray.Dataset,
         mean_resample: the resample period to generate means.
         minf_mean: The minimum fraction data used to compute a time-mean. Data with a fraction below this are ignored when computing summaries.
         time_dim: the name of the time dimension
-        rain_threshold: the threshold above which rain is counted and used in the median.
+        rain_threshold: the threshold above which rain is used in *_thresh dataArrays
 
 
 
@@ -296,7 +296,7 @@ def summary_process(ds: xarray.Dataset,
 
     fraction = ds.isfile.resample({time_dim: mean_resample}).mean(skipna=True)
     ok = fraction >= minf_mean
-    count_of_mean = ok.astype('int').sum(time_dim).load()  # count of mean samples with enough data.
+    count_of_mean = ok.astype('int64').sum(time_dim).load()  # count of mean samples with enough data.
     samples_of_mean = ok.count()  # count of mean samples
     if int(count_of_mean) == 0:  # no data..
         my_logger.warning(f"No data for {fraction[time_dim][[0, -1]].values}")
@@ -310,24 +310,24 @@ def summary_process(ds: xarray.Dataset,
     else:
         msk = (ds.isfile == 1)
         r = rain.fillna(0.0).where(msk)  # replace nans with 0 and apply mask.
-        mean_rain = r.resample({time_dim: mean_resample}).mean(skipna=True)
-        my_logger.debug(f"mean computed using {mean_resample} for {mean_rain[time_dim][[0, -1]].values} {memory_use()}")
-        rain = mean_rain.sel({time_dim: ok}).load()  # select out where data OK and then compute the mean.
+        mean_rain_1h = r.resample({time_dim: mean_resample}).mean(skipna=True)
+        my_logger.debug(f"mean computed using {mean_resample} for {mean_rain_1h[time_dim][[0, -1]].values} {memory_use()}")
+        mean_rain_1h = mean_rain_1h.sel({time_dim: ok}).load()  # select out where data OK
         my_logger.debug(f"rain computed for  {rain[time_dim].values[0]} {memory_use()}")
         bad = rain.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
         if bad.all():
             my_logger.error(f"All missing at {bad[time_dim].isel[[0, -1]]}")
         # do the actual computation.
-        m = rain > rain_threshold  # mask for rain threshold.
-        rain_thresh = rain.where(m)
-        count_rain_thresh = m.sum(time_dim)
+        m = mean_rain_1h > rain_threshold  # mask for rain threshold.
+        rain_thresh = mean_rain_1h.where(m)
+        count_rain_thresh = rain_thresh.count(time_dim)
         median_rain_thresh = rain_thresh.median(time_dim, keep_attrs=True, skipna=True).\
             rename('median_rain_thresh')
         mean_rain_thresh = rain_thresh.mean(time_dim, keep_attrs=True, skipna=True). \
             rename('mean_rain_thresh')
-        max_rain = rain.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
-        mean_rain = rain.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
-        time_max_rain = rain.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
+        max_rain = mean_rain_1h.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
+        mean_rain = mean_rain_1h.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
+        time_max_rain = mean_rain_1h.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
         result = xarray.Dataset(dict(median_rain_thresh=median_rain_thresh,
                                      mean_rain_thresh = mean_rain_thresh,
                                      max_rain=max_rain,
@@ -335,7 +335,7 @@ def summary_process(ds: xarray.Dataset,
                                      time_max_rain=time_max_rain))
 
     # now have result either from empty case or std one,
-    # now set the meta data. Mild pain to do it here but want to be sure it
+    # now set the meta dat and fill in missing data with 0. Mild pain to do it here but want to be sure it
     # is the same regardless of how it made.
     base_name = ds.rainrate.attrs['long_name'] + f" mean {mean_resample}"
     variables = [v for v in result.variables if v.endswith("_rain")]
@@ -347,10 +347,11 @@ def summary_process(ds: xarray.Dataset,
             comp = k.split('_')[0]
             result[k].attrs['long_name'] = comp + " " + base_name + \
                                          f' for rain > {rain_threshold} mm/h'
+            #result[k] = result[k].fillna(0.0) # fill in missing data with 0.0
         else:
             comp = k.split('_')[0]
             result[k].attrs['long_name'] = comp + " " + base_name
-
+            #result[k] = result[k].fillna(0.0)
     # append min for median,
     count_rain_thresh.attrs['long_name'] = f'Count of rain {mean_resample} > {rain_threshold} mm/h'
     count_of_mean.attrs['long_name'] = f"Count of present {mean_resample} samples " + base_name
@@ -366,7 +367,7 @@ def summary_process(ds: xarray.Dataset,
     )
     for v in counts_ds.variables:
         counts_ds[v].attrs.pop('units', None)
-        # would like count/sample vars to be be ints but that means no missing data.
+        # would like count/sample vars to be ints so need to set to unsigned 64bit to have NaN.
         # danger is loss of precision.
         if v.startswith('count') or v.startswith('samples'):
             counts_ds[v] = counts_ds[v].astype('uint64')

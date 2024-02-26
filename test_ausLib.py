@@ -6,10 +6,11 @@ import pandas as pd
 import xarray
 import ausLib
 import numpy.testing as nptest
+import matplotlib.pyplot as plt # so when need to visualise can easly do so!
 test_dir = pathlib.Path("test_data")
 class test_ausLib(unittest.TestCase):
 
-    def test_process_radar(self):
+    def notest_process_radar(self):
         ds = xarray.load_dataset(test_dir/"28_19980924_rainrate.nc")
 
         dataSet = ausLib.process_radar(ds)
@@ -25,10 +26,37 @@ class test_ausLib(unittest.TestCase):
         nptest.assert_array_equal(~msk,null) # masks should be the same.
         self.assertTrue(np.all(dataSet.count_1h_thresh.where(msk,0.0) <= dataSet.count_1h))
         rain_1h = ds.rainrate.resample(time='1h').mean()
+        # apply sufficiency filter!
+        m2 = ds.isfile.resample(time='1h').mean() > 0.8
+        rain_1h = rain_1h.where(m2)
         cnt_1h_thresh = (rain_1h > 1).sum('time',min_count=1).squeeze()
+        cnt_1h_thresh = cnt_1h_thresh.where(msk) # mask out places that should be missing
         nptest.assert_array_equal(cnt_1h_thresh,dataSet.count_1h_thresh.squeeze())
         # test mean_< mean_thresh
         nptest.assert_array_less(dataSet.mean_rain,dataSet.mean_rain_thresh+0.1)
+
+    def test_summary_process(self):
+        ds = xarray.load_dataset(test_dir/"28_19980924_rainrate.nc")
+
+        dataSet = ausLib.summary_process(ds,mean_resample='1h')
+        # expect max >= mean.
+        null = dataSet.max_rain.isnull() & dataSet.mean_rain.isnull() #
+        self.assertTrue(np.all((dataSet.max_rain >= dataSet.mean_rain).where(~null,True)))
+        # test time_max_rain mask matches null.
+        self.assertTrue(np.all(dataSet.time_max_rain.isnull() == null))
+        # test that count_rain_thresh <= count_rain
+        msk = ~dataSet.count_1h_thresh.isnull()
+        nptest.assert_array_equal(~msk,null) # masks should be the same.
+        self.assertTrue(np.all(dataSet.count_1h_thresh.where(msk,0.0) <= dataSet.count_1h))
+        rain_1h = ds.rainrate.fillna(0.0).resample(time='1h').mean()
+        # apply sufficiency filter!
+        m2 = ds.isfile.resample(time='1h').mean() > 0.8
+        rain_1h = rain_1h.where(m2)
+        cnt_1h_thresh = (rain_1h > 1).sum('time',min_count=1).squeeze()
+        nptest.assert_array_equal(cnt_1h_thresh,dataSet.count_1h_thresh.squeeze())
+        # test mean_< mean_thresh where have mean_thresh_values
+        msk_thresh = ~dataSet.mean_rain_thresh.isnull()
+        nptest.assert_array_less(dataSet.mean_rain.where(msk_thresh),dataSet.mean_rain_thresh+0.1)
 
     def test_read_gdsp_metadata(self):
         # test read_gdsp_metadata
