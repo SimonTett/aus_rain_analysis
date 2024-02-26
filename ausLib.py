@@ -233,7 +233,7 @@ def gen_mask(example_data_array: xarray.DataArray,
 def summary_process(ds: xarray.Dataset,
                     mean_resample: str = '1h',
                     time_dim: str = 'time',
-                    rain_threshold: float = 1.,
+                    rain_threshold: float = 0.1, # From Pritchard et al, 2023 -- doi https://doi.org/10.1038/s41597-023-02238-4
                     minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
     f"""
     Process dataset for max (and mean & time of max).

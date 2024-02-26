@@ -52,7 +52,7 @@ class test_ausLib(unittest.TestCase):
         # apply sufficiency filter!
         m2 = ds.isfile.resample(time='1h').mean() > 0.8
         rain_1h = rain_1h.where(m2)
-        cnt_1h_thresh = (rain_1h > 1).sum('time',min_count=1).squeeze()
+        cnt_1h_thresh = (rain_1h > 0.1).sum('time',min_count=1).squeeze()
         nptest.assert_array_equal(cnt_1h_thresh,dataSet.count_1h_thresh.squeeze())
         # test mean_< mean_thresh where have mean_thresh_values
         msk_thresh = ~dataSet.mean_rain_thresh.isnull()
