@@ -1,4 +1,4 @@
-# plot the 2021 fraction of missing/zero data.
+# plot the 2021 fraction of rain samples.
 # for  Sellick (46), Melbourne (id=2), West Takone (id=52), Sydney/Wollongong (id=3),  Brisbane (id=50) Cairns (id=19) ,Mornington Island (36),
 import math
 import pathlib

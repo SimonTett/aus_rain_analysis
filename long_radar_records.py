@@ -69,6 +69,7 @@ for name,row in lr.iterrows():
 
 ax.set_title("Australian radars with > 6500 obs days")
 fig.show()
+fig.savefig('figures/long_radar_aus.png')
 print_df(lr)
 
 
