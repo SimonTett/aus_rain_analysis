@@ -1,3 +1,4 @@
+import datetime
 import pathlib
 import unittest
 
@@ -92,6 +93,23 @@ class test_ausLib(unittest.TestCase):
         process = ausLib.process_gsdp_record(series)
         # test max >= mean
         self.assertTrue((process.max_rain >= process.mean_rain).all())
+
+    def test_standard_tz(self):
+        import pytz
+        # test standard_tz works.
+
+        # case 1 -- canberra -- should give Etc/-10:00
+        # Example usage
+        longitude = 149.1289  # Longitude for Canberra, Australia
+        latitude = -35.282  # Latitude for Canberra, Australia
+        tz= ausLib.standard_tz(lng=longitude,lat=latitude)
+        self.assertEqual(tz,'Etc/GMT-10:00:00')
+        date = datetime.datetime(year=2024,month=1,day=21,hour=0)
+        timezone = pytz.timezone(tz)
+        # check we are 10 hours ahead!
+        d=timezone.localize(date)
+        d_utc = d.astimezone(pytz.utc)
+        self.assertEqual(d_utc,date-datetime.timedelta(hours=10)) # 10 hours ahead.
 
 
 if __name__ == '__main__':

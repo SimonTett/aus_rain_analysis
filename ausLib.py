@@ -17,6 +17,8 @@ my_logger = logging.getLogger(__name__)  # for logging
 
 # stuff for timezones!
 from timezonefinder import TimezoneFinder
+import pytz
+from datetime import datetime, timedelta
 
 timezone_finder = TimezoneFinder()  # instance
 
@@ -40,45 +42,38 @@ def gsdp_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
     df = pd.DataFrame(series)
     return df
 
-# code for chatGPT to do timezone stuff. Sadly quite tricky..
-from timezonefinder import TimezoneFinder
-import pytz
-from datetime import datetime
 
-def get_standard_offset_timezone(longitude, latitude):
-    tf = TimezoneFinder()
-    timezone_str = tf.timezone_at(lng=longitude, lat=latitude)  # Get the timezone string
-    
+def utc_offset(lng: float = 0.0, lat: float = 50.0) -> timedelta:
+    """
+    Work out the standard time offset from UTC for specified lon/lat co-ord.
+    TODO: consider passing in the times so can deal with changing timezones for location.
+    Args:
+        lng: longitude (in decimal degrees) of point
+        lat: latitude (in decimal degrees) of point
+
+    Returns: timedelta from UTC
+    Based on example code from chatGPT3.5
+    """
+    # uses module var timezone_finder.
+    timezone_str = timezone_finder.timezone_at(lng=lng, lat=lat)  # Get the timezone string
+
     if timezone_str is None:
-        return "Timezone not found for the given coordinates."
-    
+        raise ValueError(f"Timezone not found for lng:{lng} lat:{lat}")
+
     timezone = pytz.timezone(timezone_str)
-    
-    # Get offsets at the start and end of the current year to avoid DST if possible
-    start_of_year = timezone.localize(datetime(datetime.now().year, 1, 1))
-    end_of_year = timezone.localize(datetime(datetime.now().year, 12, 31))
-    
-    # Calculate offsets in hours
-    offset_start = start_of_year.utcoffset().total_seconds() / 3600
-    offset_end = end_of_year.utcoffset().total_seconds() / 3600
-    
-    # Determine the standard offset by choosing the smaller magnitude offset (closer to UTC)
-    # This assumes one of the points is likely in standard time
-    standard_offset = min(offset_start, offset_end, key=abs)
-    
-    # Format into the Etc/GMT string, inverting the sign convention
-    if standard_offset > 0:
-        etc_gmt_str = f"Etc/GMT-{int(abs(standard_offset))}"
+
+    # Get offsets from mid-winter of the current year to avoid DST if possible
+    # if lat +ve then 21/12/current-year does not have daylight saving
+    # If lat -ve then 21/6/current-year does not have daylight saving
+    if lat >= 0:
+        no_dst_time = timezone.localize(datetime(datetime.now().year, 12, 21))
     else:
-        etc_gmt_str = f"Etc/GMT+{int(abs(standard_offset))}"
-    
-    return etc_gmt_str
+        no_dst_time = timezone.localize(datetime(datetime.now().year, 6, 21))
 
-# Example usage
-longitude = 149.1289  # Longitude for Canberra, Australia
-latitude = -35.282  # Latitude for Canberra, Australia
-print(get_standard_offset_timezone(longitude, latitude))
+    # Calculate offsets in hours
+    offset = no_dst_time.utcoffset()
 
+    return offset
 
 
 def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
@@ -145,7 +140,7 @@ def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
     for old_name, new_name in rename.items():
         result[new_name] = result.pop(old_name)
     # fix timezone...
-    
+
     if result['original_timezone'].lower() == 'local standard time':
         tz = timezone_finder.timezone_at(lng=result['Longitude'], lat=result['Latitude'])
         my_logger.debug(f"Fixed local std time to {tz} from long/lat coords")
@@ -163,7 +158,7 @@ def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
     end = result.pop('End')
     end = end[0:4] + "-" + end[4:6] + "-" + end[6:8] + "T" + end[8:]
     end = pd.to_datetime(end, yearfirst=True).tz_localize(result['original_timezone']).tz_convert('UTC')
-    start = pd.to_datetime(start, yearfirst=True) .tz_localize(result['original_timezone']).tz_convert('UTC')
+    start = pd.to_datetime(start, yearfirst=True).tz_localize(result['original_timezone']).tz_convert('UTC')
     result['End_time'] = end
     result['Start_time'] = start
 
@@ -274,7 +269,8 @@ def gen_mask(example_data_array: xarray.DataArray,
 def summary_process(ds: xarray.Dataset,
                     mean_resample: str = '1h',
                     time_dim: str = 'time',
-                    rain_threshold: float = 0.1, # From Pritchard et al, 2023 -- doi https://doi.org/10.1038/s41597-023-02238-4
+                    rain_threshold: float = 0.1,
+                    # From Pritchard et al, 2023 -- doi https://doi.org/10.1038/s41597-023-02238-4
                     minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
     f"""
     Process dataset for max (and mean & time of max).
@@ -343,7 +339,7 @@ def summary_process(ds: xarray.Dataset,
         my_logger.warning(f"No data for {fraction[time_dim][[0, -1]].values}")
         result = empty_ds(rain.isel({time_dim: 0}, drop=True),
                           ["max_rain", "mean_rain",
-                           "median_rain_thresh","mean_rain_thresh"],
+                           "median_rain_thresh", "mean_rain_thresh"],
                           "time_max_rain")
         # need a count_rain_thresh which should be 0 (it must be less than count_of_mean
         count_rain_thresh = count_of_mean
@@ -352,7 +348,8 @@ def summary_process(ds: xarray.Dataset,
         msk = (ds.isfile == 1)
         r = rain.fillna(0.0).where(msk)  # replace nans with 0 and apply mask.
         mean_rain_1h = r.resample({time_dim: mean_resample}).mean(skipna=True)
-        my_logger.debug(f"mean computed using {mean_resample} for {mean_rain_1h[time_dim][[0, -1]].values} {memory_use()}")
+        my_logger.debug(
+            f"mean computed using {mean_resample} for {mean_rain_1h[time_dim][[0, -1]].values} {memory_use()}")
         mean_rain_1h = mean_rain_1h.sel({time_dim: ok}).load()  # select out where data OK
         my_logger.debug(f"rain computed for  {rain[time_dim].values[0]} {memory_use()}")
         bad = rain.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
@@ -362,7 +359,7 @@ def summary_process(ds: xarray.Dataset,
         m = mean_rain_1h > rain_threshold  # mask for rain threshold.
         rain_thresh = mean_rain_1h.where(m)
         count_rain_thresh = rain_thresh.count(time_dim)
-        median_rain_thresh = rain_thresh.median(time_dim, keep_attrs=True, skipna=True).\
+        median_rain_thresh = rain_thresh.median(time_dim, keep_attrs=True, skipna=True). \
             rename('median_rain_thresh')
         mean_rain_thresh = rain_thresh.mean(time_dim, keep_attrs=True, skipna=True). \
             rename('mean_rain_thresh')
@@ -370,7 +367,7 @@ def summary_process(ds: xarray.Dataset,
         mean_rain = mean_rain_1h.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
         time_max_rain = mean_rain_1h.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
         result = xarray.Dataset(dict(median_rain_thresh=median_rain_thresh,
-                                     mean_rain_thresh = mean_rain_thresh,
+                                     mean_rain_thresh=mean_rain_thresh,
                                      max_rain=max_rain,
                                      mean_rain=mean_rain,
                                      time_max_rain=time_max_rain))
@@ -382,17 +379,17 @@ def summary_process(ds: xarray.Dataset,
     variables = [v for v in result.variables if v.endswith("_rain")]
     for k in variables:
         if k.startswith("time_"):
-            comp =  k.split('_')[1]
-            result[k].attrs['long_name'] = 'time of '+comp + " " + base_name
+            comp = k.split('_')[1]
+            result[k].attrs['long_name'] = 'time of ' + comp + " " + base_name
         elif k.endswith("thresh"):
             comp = k.split('_')[0]
             result[k].attrs['long_name'] = comp + " " + base_name + \
-                                         f' for rain > {rain_threshold} mm/h'
-            #result[k] = result[k].fillna(0.0) # fill in missing data with 0.0
+                                           f' for rain > {rain_threshold} mm/h'
+            # result[k] = result[k].fillna(0.0) # fill in missing data with 0.0
         else:
             comp = k.split('_')[0]
             result[k].attrs['long_name'] = comp + " " + base_name
-            #result[k] = result[k].fillna(0.0)
+            # result[k] = result[k].fillna(0.0)
     # append min for median,
     count_rain_thresh.attrs['long_name'] = f'Count of rain {mean_resample} > {rain_threshold} mm/h'
     count_of_mean.attrs['long_name'] = f"Count of present {mean_resample} samples " + base_name
@@ -413,7 +410,7 @@ def summary_process(ds: xarray.Dataset,
         if v.startswith('count') or v.startswith('samples'):
             counts_ds[v] = counts_ds[v].astype('uint64')
     result = result.merge(counts_ds)
-    result.attrs['threshold']=rain_threshold
+    result.attrs['threshold'] = rain_threshold
     result.attrs.update(ds.attrs)  # preserve initial metadata.
     my_logger.info(f"Summaries computed for  {ds[time_dim][[0, -1]].values} {memory_use()}")
     return result
