@@ -40,6 +40,46 @@ def gsdp_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
     df = pd.DataFrame(series)
     return df
 
+# code for chatGPT to do timezone stuff. Sadly quite tricky..
+from timezonefinder import TimezoneFinder
+import pytz
+from datetime import datetime
+
+def get_standard_offset_timezone(longitude, latitude):
+    tf = TimezoneFinder()
+    timezone_str = tf.timezone_at(lng=longitude, lat=latitude)  # Get the timezone string
+    
+    if timezone_str is None:
+        return "Timezone not found for the given coordinates."
+    
+    timezone = pytz.timezone(timezone_str)
+    
+    # Get offsets at the start and end of the current year to avoid DST if possible
+    start_of_year = timezone.localize(datetime(datetime.now().year, 1, 1))
+    end_of_year = timezone.localize(datetime(datetime.now().year, 12, 31))
+    
+    # Calculate offsets in hours
+    offset_start = start_of_year.utcoffset().total_seconds() / 3600
+    offset_end = end_of_year.utcoffset().total_seconds() / 3600
+    
+    # Determine the standard offset by choosing the smaller magnitude offset (closer to UTC)
+    # This assumes one of the points is likely in standard time
+    standard_offset = min(offset_start, offset_end, key=abs)
+    
+    # Format into the Etc/GMT string, inverting the sign convention
+    if standard_offset > 0:
+        etc_gmt_str = f"Etc/GMT-{int(abs(standard_offset))}"
+    else:
+        etc_gmt_str = f"Etc/GMT+{int(abs(standard_offset))}"
+    
+    return etc_gmt_str
+
+# Example usage
+longitude = 149.1289  # Longitude for Canberra, Australia
+latitude = -35.282  # Latitude for Canberra, Australia
+print(get_standard_offset_timezone(longitude, latitude))
+
+
 
 def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
     """
@@ -61,7 +101,7 @@ def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
      New Timestep:  1hr, -> Timestep
      Original Units:  mm,
      New Units:  mm, -> units
-     Time Zone:  CET, -> original_timezone
+     Time Zone:  CET, -> timezone
      Daylight Saving info:  NA,
      No data value:  -999
      Resolution:  0.20,
@@ -105,6 +145,7 @@ def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
     for old_name, new_name in rename.items():
         result[new_name] = result.pop(old_name)
     # fix timezone...
+    
     if result['original_timezone'].lower() == 'local standard time':
         tz = timezone_finder.timezone_at(lng=result['Longitude'], lat=result['Latitude'])
         my_logger.debug(f"Fixed local std time to {tz} from long/lat coords")
@@ -121,8 +162,8 @@ def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
     start = start[0:4] + "-" + start[4:6] + "-" + start[6:8] + "T" + start[8:]
     end = result.pop('End')
     end = end[0:4] + "-" + end[4:6] + "-" + end[6:8] + "T" + end[8:]
-    end = pd.to_datetime(end, yearfirst=True, utc=True)  # .tz_localize(result['timezone']).tz_convert('UTC')
-    start = pd.to_datetime(start, yearfirst=True, utc=True)  # .tz_localize(result['timezone']).tz_convert('UTC')
+    end = pd.to_datetime(end, yearfirst=True).tz_localize(result['original_timezone']).tz_convert('UTC')
+    start = pd.to_datetime(start, yearfirst=True) .tz_localize(result['original_timezone']).tz_convert('UTC')
     result['End_time'] = end
     result['Start_time'] = start
 
@@ -479,83 +520,6 @@ def memory_use() -> str:
     except ModuleNotFoundError:
         mem = 'Mem use unknown'
     return mem
-
-
-# def resample_max(data_array: xarray.DataArray,
-#                  resample: str = '1h',
-#                  time_dim: str = 'time',
-#                  fillna: typing.Optional[float] = None) -> xarray.Dataset:
-#     """
-#
-#     :param data_array: data array to be processed.
-#     :param resample: resample value
-#     :param time_dim: name of time dimension
-#     :param fillna -- if not Null value to fill nan values with.
-#     :return: DataSet of processed dataArrays. Computation is resample mean then seasonal max.
-#      Variables are:
-#          Max_{dataArray.name}  (max value in a season)
-#          Max_time_{dataArray.name}  (time of max value in a season)
-#     """
-#
-#     result = dict()
-#
-#     # Can have a bunch of co-ordinates with co-ord time_dim.
-#     # Want to remove those as they no longer make sense once we compute the
-#     # seasonal max (which reduces the dimension).
-#     # If wanted they culd be regenerated but xarray has the dt accessor.
-#
-#     coords_to_remove = [c for c in data_array.coords if
-#                         (time_dim in data_array[c].coords and data_array[c].name != time_dim)]
-#     if len(coords_to_remove) > 0:
-#         s = " ".join(coords_to_remove)
-#         logging.info(f"Dropping following coords as have {time_dim}: {s}")
-#
-#     # generate the resample mean values
-#     rmin = data_array.drop(coords_to_remove)
-#     if fillna is not None:  # fill nan
-#         rmin = rmin.fillna(fillna)
-#     rmin = rmin.resample({time_dim: resample}).mean()
-#     # now compute the max value for each season.
-#     seas_resamp = rmin.resample({time_dim: 'QS-DEC'})  # resampler
-#     # initialise lists.
-#     mx_time = []
-#     mx_value = []
-#     for c, da in seas_resamp:  # loop over resamples/
-#         bad = da.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
-#         if bad.all():
-#             my_logger.warning(f"All missing at {c}")
-#             continue  # skip further processing as all missing.
-#         # need to load the data as dask does not cope with complex indixing
-#         da.load()
-#         my_logger.debug(f"Loaded data for coord {c}. {memory_use()}")
-#         indx = da.argmax(dim=time_dim, skipna=True, keep_attrs=True)  # index of maxes
-#         coord = {time_dim: c}  # coordinate to set data time
-#         mtime = da[time_dim].isel({time_dim: indx}).where(~bad).rename('time_max').assign_coords(
-#             coord).load()  # max times for this season
-#         mvalue = da.isel({time_dim: indx}).where(~bad).assign_coords(coord).load()
-#         # max value for this season
-#         # then store things.
-#         mx_time.append(mtime)
-#         mx_value.append(mvalue)
-#         my_logger.debug(f"Computed mx value and time of max at time {c}. {memory_use()}")
-#     mx_time = xarray.concat(mx_time, dim=time_dim).sortby(time_dim)  # concat everything
-#     mx_value = xarray.concat(mx_value, dim=time_dim).sortby(time_dim)
-#     my_logger.debug(f"Concatted. {memory_use()}")
-#     # set up attributes.
-#     mx_value.attrs = data_array.attrs.copy()
-#     mx_value.attrs['history'] = mx_value.attrs.get('history', []) + [f"Resampled {resample} + seasonal max"]
-#     mx_time.attrs = data_array.attrs.copy()
-#     # remove units (as time coord)
-#     mx_time.attrs.pop('units', None)
-#     mx_time.attrs['history'] = mx_time.attrs.get('history', []) + [f"Resampled {resample} + time of seasonal max"]
-#     key = f"Max_{data_array.name}"
-#     key_time = f"Max_time_{data_array.name}"
-#     result[key] = mx_value
-#     result[key_time] = mx_time
-#     my_logger.info(f"Stored result size={mx_value.shape} at {key}")
-#
-#     result = xarray.Dataset(result)  # convert to a dataset.
-#     return result  # return it.
 
 
 def summary_radar(files: typing.Union[typing.List[pathlib.Path], pathlib.Path],
