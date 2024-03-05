@@ -2,7 +2,10 @@
 import os
 import pathlib
 import sys
-
+# stuff for timezones!
+from timezonefinder import TimezoneFinder
+import pytz
+from datetime import datetime, timedelta
 import numpy as np
 import xarray
 import logging
@@ -15,15 +18,10 @@ my_logger = logging.getLogger(__name__)  # for logging
 # dict to control logging
 
 
-# stuff for timezones!
-from timezonefinder import TimezoneFinder
-import pytz
-from datetime import datetime, timedelta
-
-timezone_finder = TimezoneFinder()  # instance
+timezone_finder = TimezoneFinder()  # instance of timezone_finder -- only want one,
 
 
-def gsdp_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
+def gsdr_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
     """
     Read metadata from multiple files into a DataFame. See read_gdsp_metadata for description of columns.
     Args:
@@ -34,7 +32,7 @@ def gsdp_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
     series = []
     for file in files:
         try:
-            s = read_gsdp_metadata(file)
+            s = read_gsdr_metadata(file)
             series.append(s)
             my_logger.info(f"Read metadata from {file}")
         except ValueError:  # some problem with data.
@@ -53,18 +51,33 @@ def utc_offset(lng: float = 0.0, lat: float = 50.0) -> timedelta:
 
     Returns: timedelta from UTC
     Based on example code from chatGPT3.5
+    Then various exceptions from tz database are used.
     """
     # uses module var timezone_finder.
     timezone_str = timezone_finder.timezone_at(lng=lng, lat=lat)  # Get the timezone string
 
     if timezone_str is None:
         raise ValueError(f"Timezone not found for lng:{lng} lat:{lat}")
+    # exceptions -- Bureau of Met ignores Eucla (West Aus time) and Broken Hill (NSW time) micro timezones.
+    # Also for Giles weather station BoM uses South Aus time
+    if timezone_str == 'Australia/Eucla':
+        timezone_str = 'Australia/West'  # BoM uses Australian Western Time
+        my_logger.info("Setting Eucla tz to Australia/West")
+    elif timezone_str == 'Australia/Broken_Hill':
+        timezone_str = 'Australia/NSW'  # BoM uses Australian NSW time.
+        my_logger.info("Setting Broken Hill tz to Australia/NSW")
+    elif (np.abs(np.array([lng,lat])-np.array([128.3,-25.033]))).sum() <   0.1:  # Giles weather station which uses South Australian time
+        timezone_str = 'Australia/South'  # BoM uses Australian Southern time.
+        my_logger.info("Setting Giles Weather Stn to Australia/South")
+    else:  # no specials
+        pass
 
     timezone = pytz.timezone(timezone_str)
 
-    # Get offsets from mid-winter of the current year to avoid DST if possible
+    # Get offsets from mid-winter of the current year to avoid any DST
     # if lat +ve then 21/12/current-year does not have daylight saving
     # If lat -ve then 21/6/current-year does not have daylight saving
+    # TODO -- have info on date passed through to do this computation...
     if lat >= 0:
         no_dst_time = timezone.localize(datetime(datetime.now().year, 12, 21))
     else:
@@ -76,7 +89,7 @@ def utc_offset(lng: float = 0.0, lat: float = 50.0) -> timedelta:
     return offset
 
 
-def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
+def read_gsdr_metadata(file: pathlib.Path) -> pd.Series:
     """
       read metadata from hourly precip file created for  gsdp (Global sub-daily precip).
       Format of header data is:
@@ -131,12 +144,8 @@ def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
     result['file'] = str(file)
     # Store number of header lines -- makes reading in data easier.
     result['header_lines'] = hdr_count
-    rename = {'New Units': 'units',
-              'Station ID': 'ID',
-              'Start datetime': 'Start',
-              'End datetime': 'End',
-              'Time Zone': 'original_timezone',
-              'New Timestep': 'timestep'}
+    rename = {'New Units': 'units', 'Station ID': 'ID', 'Start datetime': 'Start', 'End datetime': 'End',
+              'Time Zone': 'original_timezone', 'New Timestep': 'timestep'}
     for old_name, new_name in rename.items():
         result[new_name] = result.pop(old_name)
     # fix timezone...
@@ -166,7 +175,7 @@ def read_gsdp_metadata(file: pathlib.Path) -> pd.Series:
     return result
 
 
-def read_gsdp_data(meta_data: pd.Series) -> pd.Series:
+def read_gsdr_data(meta_data: pd.Series) -> pd.Series:
     """
     Read data in given a meta data record
     Args:
@@ -195,18 +204,15 @@ def read_gsdp_data(meta_data: pd.Series) -> pd.Series:
 
 def read_gsdr_csv(file: typing.Union[pathlib.Path, str]) -> pd.DataFrame:
     """
-    Read GSDR metadata saved to .csv file
+    Read GSDR metadata saved to .csv file.
     :param file: file to read.
     :return: dataframe
     """
-    df = pd.read_csv(file,
-                     index_col=0, parse_dates=['End_time', 'Start_time'])
+    df = pd.read_csv(file, index_col=0, parse_dates=['End_time', 'Start_time'])
     return df
 
 
-def max_process(ds: xarray.Dataset,
-                time_dim: str = 'time',
-                minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
+def max_process(ds: xarray.Dataset, time_dim: str = 'time', minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
     """
     Process dataset for max (and mean & time of max).
 
@@ -251,8 +257,8 @@ def max_process(ds: xarray.Dataset,
     return result
 
 
-def gen_mask(example_data_array: xarray.DataArray,
-             radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3)  # values empirically tuned.
+def gen_mask(example_data_array: xarray.DataArray, radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3)
+             # values empirically tuned.
              ) -> xarray.Dataset:
     """
     Compute mask -- True where data should be present, False where not.
@@ -266,10 +272,7 @@ def gen_mask(example_data_array: xarray.DataArray,
     return mask
 
 
-def summary_process(ds: xarray.Dataset,
-                    mean_resample: str = '1h',
-                    time_dim: str = 'time',
-                    rain_threshold: float = 0.1,
+def summary_process(ds: xarray.Dataset, mean_resample: str = '1h', time_dim: str = 'time', rain_threshold: float = 0.1,
                     # From Pritchard et al, 2023 -- doi https://doi.org/10.1038/s41597-023-02238-4
                     minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
     f"""
@@ -297,10 +300,8 @@ def summary_process(ds: xarray.Dataset,
 
     """
 
-    def empty_ds(example_da: xarray.DataArray,
-                 non_time_variables: typing.Union[typing.List[str], str],
-                 vars_time: typing.Union[typing.List[str], str]
-                 ) -> xarray.Dataset:
+    def empty_ds(example_da: xarray.DataArray, non_time_variables: typing.Union[typing.List[str], str],
+                 vars_time: typing.Union[typing.List[str], str]) -> xarray.Dataset:
         """
         Return an empty dataset
         :param example_da:
@@ -338,9 +339,7 @@ def summary_process(ds: xarray.Dataset,
     if int(count_of_mean) == 0:  # no data..
         my_logger.warning(f"No data for {fraction[time_dim][[0, -1]].values}")
         result = empty_ds(rain.isel({time_dim: 0}, drop=True),
-                          ["max_rain", "mean_rain",
-                           "median_rain_thresh", "mean_rain_thresh"],
-                          "time_max_rain")
+                          ["max_rain", "mean_rain", "median_rain_thresh", "mean_rain_thresh"], "time_max_rain")
         # need a count_rain_thresh which should be 0 (it must be less than count_of_mean
         count_rain_thresh = count_of_mean
 
@@ -359,10 +358,8 @@ def summary_process(ds: xarray.Dataset,
         m = mean_rain_1h > rain_threshold  # mask for rain threshold.
         rain_thresh = mean_rain_1h.where(m)
         count_rain_thresh = rain_thresh.count(time_dim)
-        median_rain_thresh = rain_thresh.median(time_dim, keep_attrs=True, skipna=True). \
-            rename('median_rain_thresh')
-        mean_rain_thresh = rain_thresh.mean(time_dim, keep_attrs=True, skipna=True). \
-            rename('mean_rain_thresh')
+        median_rain_thresh = rain_thresh.median(time_dim, keep_attrs=True, skipna=True).rename('median_rain_thresh')
+        mean_rain_thresh = rain_thresh.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain_thresh')
         max_rain = mean_rain_1h.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
         mean_rain = mean_rain_1h.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
         time_max_rain = mean_rain_1h.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
@@ -383,8 +380,7 @@ def summary_process(ds: xarray.Dataset,
             result[k].attrs['long_name'] = 'time of ' + comp + " " + base_name
         elif k.endswith("thresh"):
             comp = k.split('_')[0]
-            result[k].attrs['long_name'] = comp + " " + base_name + \
-                                           f' for rain > {rain_threshold} mm/h'
+            result[k].attrs['long_name'] = comp + " " + base_name + f' for rain > {rain_threshold} mm/h'
             # result[k] = result[k].fillna(0.0) # fill in missing data with 0.0
         else:
             comp = k.split('_')[0]

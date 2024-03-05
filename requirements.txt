@@ -35,3 +35,4 @@ numba
 matplotlib~=3.8.2
 ffmpeg
 numpy~=1.26.2
+pytz~=2024.1

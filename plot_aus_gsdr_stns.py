@@ -14,7 +14,7 @@ current = all_metadata[L]
 # read in the actual values and compute the max_rain (for the entire record)
 mx = dict()
 for stn, record in current.iterrows():
-    data = ausLib.read_gsdp_data(record)
+    data = ausLib.read_gsdr_data(record)
     mx[stn] = data.max()
 mx = pd.Series(mx).rename('max_rain')
 current = pd.concat([current, mx], axis=1)

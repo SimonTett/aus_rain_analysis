@@ -29,7 +29,7 @@ current = current[L] # extract to 150 km radius,
 mx = dict()
 fract=dict()
 for stn, record in current.iterrows():
-    data = ausLib.read_gsdp_data(record).loc['1999-01-01':]
+    data = ausLib.read_gsdr_data(record).loc['1999-01-01':]
     fract[stn]=data.count() / data.size
     mx[stn] = data.max()
 mx = pd.Series(mx).rename('max_rain')

@@ -59,19 +59,19 @@ class test_ausLib(unittest.TestCase):
         msk_thresh = ~dataSet.mean_rain_thresh.isnull()
         nptest.assert_array_less(dataSet.mean_rain.where(msk_thresh),dataSet.mean_rain_thresh+0.1)
 
-    def test_read_gdsp_metadata(self):
-        # test read_gdsp_metadata
-        series = ausLib.read_gsdp_metadata(test_dir/"AU_088162.txt")
+    def test_read_gdsr_metadata(self):
+        # test read_gdsr_metadata
+        series = ausLib.read_gsdr_metadata(test_dir / "AU_088162.txt")
         self.assertIsInstance(series,pd.Series)
         # assert the name is the ID.
         self.assertEqual(series.name,series.ID)
         # assert have 21 lines in the header.
         self.assertEqual(series.header_lines,21)
 
-    def test_read_gsdp_data(self):
+    def test_read_gsdr_data(self):
         # test that read_data works
-        meta_data = ausLib.read_gsdp_metadata(test_dir/"AU_088162.txt")
-        series = ausLib.read_gsdp_data(meta_data)
+        meta_data = ausLib.read_gsdr_metadata(test_dir / "AU_088162.txt")
+        series = ausLib.read_gsdr_data(meta_data)
         # len of series should be as expected from meta-data
         nrec= meta_data.loc['Number of records']
         self.assertEqual(len(series),nrec)
@@ -79,37 +79,41 @@ class test_ausLib(unittest.TestCase):
         percent_missing = float(100*series.isnull().sum())/nrec
         self.assertAlmostEqual(percent_missing,meta_data.loc['Percent missing data'],places=2)
 
-    def test_gsdp_metadata(self):
-        # test gsdp_metadata
+    def test_gsdr_metadata(self):
+        # test gsdr_metadata
         files=test_dir.glob("AU_*.txt")
-        meta_data = ausLib.gsdp_metadata(files)
+        meta_data = ausLib.gsdr_metadata(files)
         self.assertIsInstance(meta_data,pd.DataFrame)
         # can't think of other checks...
 
-    def test_process_gsdp_record(self):
-        # test process_gsdp_record
-        meta_data = ausLib.read_gsdp_metadata(test_dir / "AU_088162.txt")
-        series = ausLib.read_gsdp_data(meta_data)
+    def test_process_gsdr_record(self):
+        # test process_gsdr_record
+        meta_data = ausLib.read_gsdr_metadata(test_dir / "AU_088162.txt")
+        series = ausLib.read_gsdr_data(meta_data)
         process = ausLib.process_gsdp_record(series)
         # test max >= mean
         self.assertTrue((process.max_rain >= process.mean_rain).all())
 
-    def test_standard_tz(self):
+    def test_utc_offset(self):
         import pytz
-        # test standard_tz works.
+        # test utc_offset works.
 
-        # case 1 -- canberra -- should give Etc/-10:00
-        # Example usage
-        longitude = 149.1289  # Longitude for Canberra, Australia
-        latitude = -35.282  # Latitude for Canberra, Australia
-        tz= ausLib.standard_tz(lng=longitude,lat=latitude)
-        self.assertEqual(tz,'Etc/GMT-10:00:00')
-        date = datetime.datetime(year=2024,month=1,day=21,hour=0)
-        timezone = pytz.timezone(tz)
-        # check we are 10 hours ahead!
-        d=timezone.localize(date)
-        d_utc = d.astimezone(pytz.utc)
-        self.assertEqual(d_utc,date-datetime.timedelta(hours=10)) # 10 hours ahead.
+        coords = dict( # each member of dict should be 3 element tuple in order, lng, lat & expected difference in hours
+            Edinburgh = (-3.,56.0,0.0),
+            canberra=(149.1289,-35.282,10.),
+            Sydney=(151.21, -33.87, 10.0),
+            Perth_Oz=(115.86,-31.956,8.0),
+            # Australian exceptions
+            Giles=(128.3, -25.0333,9.5),
+            Broken_Hill = (141.467,-31.95,10.0),
+            Eucla = (128.883,-31.675,8.)
+                      )
+
+        # test all co-ords
+        for name,(lng,lat,delta) in coords.items():
+            offset = ausLib.utc_offset(lng=lng,lat=lat)
+            self.assertEqual(offset.seconds, delta * 3600.,msg=f'UTC offset failed for {name}')
+
 
 
 if __name__ == '__main__':
