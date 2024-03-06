@@ -114,7 +114,12 @@ class test_ausLib(unittest.TestCase):
             offset = ausLib.utc_offset(lng=lng,lat=lat)
             self.assertEqual(offset.seconds, delta * 3600.,msg=f'UTC offset failed for {name}')
 
-
-
+    def test_index_ll_pts(self):
+        # test index_ll works
+        grid_lon,grid_lat = np.meshgrid(np.linspace(0,359,360),
+                                        np.linspace(-90,90,181))
+        pts=np.array([[0],[0]])
+        indices = ausLib.index_ll_pts(grid_lon,grid_lat,pts)
+        nptest.assert_array_equal(indices,np.array([0],[91]))
 if __name__ == '__main__':
     unittest.main()

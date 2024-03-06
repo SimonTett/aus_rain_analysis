@@ -625,3 +625,41 @@ def init_log(log: logging.Logger,
         fh.setFormatter(formatter)
         log.addHandler(fh)
     log.propagate = False
+
+
+typeDef=typing.Union[xarray.Dataset,np.ndarray]
+typeDef=np.ndarray
+def index_ll_pts(longitudes:typeDef,
+                   latitudes:typeDef,
+                   long_lats:typeDef,
+                   tolerance:float = 1e-3)-> np.ndarray:
+    """
+    Extract long lat coords from an array
+    Args:
+        longitudes: numpy like array of longitudes
+        latitudes: numpy like array of latitudes
+        lon_lats: 2xN array of long/lats being searched for
+        tolerance: Tolerance for match.
+    Returns:2xN of row and column indices.
+    """
+    # check long_lats has shape 2,X
+    if (long_lats.ndim != 2)  or (long_lats.shape[0] != 2):
+        raise ValueError("long_lats should be 2xN array")
+    # code from ChatGPT3.5
+    from scipy.spatial import KDTree
+    # Flatten the 2D grid arrays and combine them into a single 2D array of coordinates
+    grid_points = np.column_stack((latitudes.flatten(),
+                                   longitudes.flatten()))
+
+    # Construct a KD-Tree with the grid points
+    tree = KDTree(grid_points)
+    # Find the indices of the closest grid points for each query point
+    distances, indices = tree.query(long_lats.T,workers=-1,eps=tolerance)
+    # check distances are all less than tolerance and raise an error if not.
+    if np.any(distances > tolerance):
+        L=distances > tolerance
+        raise ValueError(f"Some points too far away. {long_lats[:,L]}")
+
+    # convert indices back to 2D indices
+    row_indices, col_indices = np.unravel_index(indices, latitudes.shape)
+    return  np.column_stack((col_indices,row_indices)).T # return as x,y
