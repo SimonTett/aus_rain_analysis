@@ -648,13 +648,14 @@ def index_ll_pts(longitudes:typeDef,
     # code from ChatGPT3.5
     from scipy.spatial import KDTree
     # Flatten the 2D grid arrays and combine them into a single 2D array of coordinates
-    grid_points = np.column_stack((latitudes.flatten(),
-                                   longitudes.flatten()))
+    grid_points = np.column_stack((longitudes.flatten(),
+                                   latitudes.flatten())
+                                   )
 
     # Construct a KD-Tree with the grid points
     tree = KDTree(grid_points)
     # Find the indices of the closest grid points for each query point
-    distances, indices = tree.query(long_lats.T,workers=-1,eps=tolerance)
+    distances, indices = tree.query(long_lats.T,workers=-1,distance_upper_bound=tolerance,p=1)
     # check distances are all less than tolerance and raise an error if not.
     if np.any(distances > tolerance):
         L=distances > tolerance

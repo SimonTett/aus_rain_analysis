@@ -120,6 +120,23 @@ class test_ausLib(unittest.TestCase):
                                         np.linspace(-90,90,181))
         pts=np.array([[0],[0]])
         indices = ausLib.index_ll_pts(grid_lon,grid_lat,pts)
-        nptest.assert_array_equal(indices,np.array([0],[91]))
+        nptest.assert_array_equal(indices,([0],[90]))
+        # try a bunch of pooints.
+        xind = np.array([0,10,30,200])
+        yind = np.array([0,10,40,180])
+        xpts = grid_lon[0,xind]
+        ypts = grid_lat[yind,0]
+        pts = np.row_stack((xpts,ypts))
+        indices = ausLib.index_ll_pts(grid_lon,grid_lat,pts)
+        for indx,pt in zip(indices,[xind,yind]):
+            nptest.assert_array_equal(pt,indx)
+        # now try with tolerance
+        pts[0,:] = pts[0,:]+0.1
+        with self.assertRaises(ValueError):
+            indices = ausLib.index_ll_pts(grid_lon, grid_lat, pts)
+        indices = ausLib.index_ll_pts(grid_lon, grid_lat, pts,tolerance=0.2)
+        for indx,pt in zip(indices,[xind,yind]):
+            nptest.assert_array_equal(pt,indx)
+
 if __name__ == '__main__':
     unittest.main()
