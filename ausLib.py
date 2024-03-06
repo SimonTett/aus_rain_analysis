@@ -127,7 +127,7 @@ def read_gsdr_metadata(file: pathlib.Path) -> pd.Series:
             value = value.strip()
             result[key] = value
             hdr_count += 1
-            if key == 'Other':  # end fo header
+            if key == 'Other':  # end of header
                 break  # all done
 
     # convert same values to loads
@@ -145,29 +145,31 @@ def read_gsdr_metadata(file: pathlib.Path) -> pd.Series:
     # Store number of header lines -- makes reading in data easier.
     result['header_lines'] = hdr_count
     rename = {'New Units': 'units', 'Station ID': 'ID', 'Start datetime': 'Start', 'End datetime': 'End',
-              'Time Zone': 'original_timezone', 'New Timestep': 'timestep'}
+              'Time Zone': 'timezone', 'New Timestep': 'timestep'}
     for old_name, new_name in rename.items():
         result[new_name] = result.pop(old_name)
     # fix timezone...
 
-    if result['original_timezone'].lower() == 'local standard time':
-        tz = timezone_finder.timezone_at(lng=result['Longitude'], lat=result['Latitude'])
-        my_logger.debug(f"Fixed local std time to {tz} from long/lat coords")
-        result["original_timezone"] = tz
+    if result['timezone'].lower() == 'local standard time':
+        delta_utc = utc_offset(lng=result['Longitude'], lat=result['Latitude'])
+        my_logger.debug(f"UTC offset for local std time computed  from long/lat coords and is {delta_utc}")
+        result["utc_offset"] = delta_utc
         result['Other'] = result['Other'] + " Changed LST"
-    if (result['original_timezone'].lower() == 'cet') and (
+    elif (result['timezone'].lower() == 'cet') and (
             result['ID'].startswith("AU_")):  # aus data with timezone CET is probable LST
-        tz = timezone_finder.timezone_at(lng=result['Longitude'], lat=result['Latitude'])
-        my_logger.debug(f"Fixed CET to {tz} from long/lat coords")
-        result["original_timezone"] = tz
+        delta_utc = utc_offset(lng=result['Longitude'], lat=result['Latitude'])
+        my_logger.debug(f"UTC offset for lAustralian CET computed  from long/lat coords and is {delta_utc}")
+        result["utc_offset"] = delta_utc
         result['Other'] = result['Other'] + " Changed CET"
+    else: # raise a not-implemented error
+        raise NotImplementedError(f"Implement UTC offset for general timezones {result['timezone']}")
     # make Start & End datetime
-    start = result.pop('Start')
+    start = result['Start']
     start = start[0:4] + "-" + start[4:6] + "-" + start[6:8] + "T" + start[8:]
-    end = result.pop('End')
+    end = result['End']
     end = end[0:4] + "-" + end[4:6] + "-" + end[6:8] + "T" + end[8:]
-    end = pd.to_datetime(end, yearfirst=True).tz_localize(result['original_timezone']).tz_convert('UTC')
-    start = pd.to_datetime(start, yearfirst=True).tz_localize(result['original_timezone']).tz_convert('UTC')
+    end = pd.to_datetime(end, yearfirst=True).tz_localize('UTC')-delta_utc
+    start = pd.to_datetime(start, yearfirst=True).tz_localize('UTC')-delta_utc
     result['End_time'] = end
     result['Start_time'] = start
 
@@ -412,13 +414,13 @@ def summary_process(ds: xarray.Dataset, mean_resample: str = '1h', time_dim: str
     return result
 
 
-def process_gsdp_record(gsdp_record: pd.Series,
+def process_gsdr_record(gsdr_record: pd.Series,
                         resample_max: str = 'QS-DEC'
                         ) -> pd.DataFrame:
     """
 
     Args:
-        gsdp_record: pandas series containing hourly rainfall
+        gsdr_record: pandas series containing hourly rainfall
         resample_max: time period over which to resample
 
     Returns:Dataframe containing (as columns) indexed by time:
@@ -428,19 +430,25 @@ def process_gsdp_record(gsdp_record: pd.Series,
       time_max -- time max.
 
     """
-    resamp = gsdp_record.resample(resample_max)
-    count_data = gsdp_record.isnull().resample(resample_max).count()
-    fraction = (resamp.count() / count_data).rename('fraction')
+    resamp = gsdr_record.resample(resample_max)
+    count_data = (~gsdr_record.isnull()).resample(resample_max).count()
+    fraction = (count_data/resamp.count()).rename('fraction')
     max_rain = resamp.max().rename("max_rain")
-    time_max = resamp.apply(pd.Series.idxmax).rename("time_max_rain")
+    def max_time_fn(series:pd.Series):
+        if (~series.isnull()).sum() < 1:
+            return np.nan
+        else:
+            return pd.Series.idxmax(series)
+
+    time_max = resamp.apply(max_time_fn).rename("time_max_rain")
     # fix the type for time_max
-    time_max = time_max.astype(gsdp_record.index.dtype)
+    time_max = time_max.astype(gsdr_record.index.dtype)
     mean = resamp.mean().rename("mean_rain")  # need to convert to mm/season?
     total = (mean * count_data).rename('total_rain')
-    df = pd.DataFrame([max_rain, mean, total, fraction, time_max]).T
+    df = pd.DataFrame([max_rain, mean, total, fraction]).T
     for s in ['max_rain', 'mean_rain', 'total_rain', 'fraction']:
         df[s] = df[s].astype('float')
-    df['time_max'] = df['time_max_rain'].astype(gsdp_record.index.dtype)
+    df['time_max_rain'] = max_rain.astype(gsdr_record.index.dtype)
 
     return df
 

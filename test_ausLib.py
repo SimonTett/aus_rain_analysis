@@ -90,7 +90,7 @@ class test_ausLib(unittest.TestCase):
         # test process_gsdr_record
         meta_data = ausLib.read_gsdr_metadata(test_dir / "AU_088162.txt")
         series = ausLib.read_gsdr_data(meta_data)
-        process = ausLib.process_gsdp_record(series)
+        process = ausLib.process_gsdr_record(series)
         # test max >= mean
         self.assertTrue((process.max_rain >= process.mean_rain).all())
 
