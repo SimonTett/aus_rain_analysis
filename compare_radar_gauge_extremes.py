@@ -2,11 +2,11 @@
 import matplotlib.pyplot as plt
 import matplotlib.cm as mcm
 import pandas as pd
+import pytz
 
 import ausLib
 import xarray
 import pathlib
-import cartopy
 import cartopy.crs as ccrs
 import cartopy.geodesic
 import numpy as np
@@ -20,7 +20,7 @@ all_metadata = all_metadata[yr_durn > 10]
 radar_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
 radars = sorted(['cairns', 'gladstone', 'canberra', 'newcastle', 'wtakone', 'sydney',
                  'melbourne', 'adelaide', 'mornington', 'brisbane', 'grafton'])
-#radars = ['adelaide']
+#radars = ['gladstone']
 for radar_name in radars:
     print("Processing ", radar_name)
     pth = radar_dir / radar_name / f"processed_{radar_name}.nc"
@@ -47,29 +47,46 @@ for radar_name in radars:
     gauge = dict()
     radar_match = dict()
     process_gauge = dict()
-    my_logger.info("Extracting guage data")
+    my_logger.info("Extracting gauge data")
+    lon_pts = []
+    lat_pts = []
+    name_pts = []
     for name, series in radar_metadata.iterrows():
         gauge_data = ausLib.read_gsdr_data(series)
         # extract to JJA and from 2001 to 2015
-        delta = np.abs(radar.latitude - series.Latitude) + np.abs(radar.longitude - series.Longitude)
-        indx = {k: int(v) for k, v in delta.argmin(['x', 'y']).items()}
-        if float(delta.isel(**indx)) < 0.02:  # close to a radar point.
-            gauge_data = gauge_data['2000-12-01':'2015-02-28']
-            L = gauge_data.index.month.isin([12, 1, 2])
-            if L.sum() < 10 * 90 * 24:  # at least 10 years of data (10 years * 90 days * 24 hours)
-                continue
-            gauge_data = gauge_data[L]
-            gauge[name] = gauge_data
-            radar_match[name] = radar.isel(**indx).sel(time=slice('2000', None)).to_dataframe()
-            # fix the index
-            radar_match[name].index = radar_match[name].index.tz_localize('UTC')
-            process_gauge[name] = ausLib.process_gsdr_record(gauge_data, 'MS')
-        else:
-            my_logger.warning(f"failed to find co-ords close enough to radar for {name}")
-    print(f"{radar_name} has {len(gauge)} gauges to compare with")
-    if len(gauge) == 0: # no comparision possible
+        gauge_data = gauge_data['2000-12-01':'2015-02-28']
+        L = gauge_data.index.month.isin([12, 1, 2])
+        gauge_data = gauge_data[L]
+        if (
+        ~gauge_data.isnull()).sum() < 5 * 90 * 24:  # at least 5 summers worth of data (5 years * 90 days * 24 hours)
+            continue
+        process_gauge[name] = ausLib.process_gsdr_record(gauge_data, 'MS')
+        gauge[name] = gauge_data
+        lon_pts.append(series.Longitude)
+        lat_pts.append(series.Latitude)
+        name_pts.append(name)
+
+    if len(gauge) == 0:  # no comparison possible
         my_logger.warning(f"No gauges close enough for {radar_name}. Skipping further processing")
         continue
+    # now extract the radar data -- will put this straight into a dataframe
+    my_logger.info("Extracting pts from radar")
+    pts = np.row_stack((lon_pts, lat_pts))
+    xind, yind = ausLib.index_ll_pts(radar.longitude.values, radar.latitude.values, pts,
+                                     tolerance=2e-2)  # want to roughly 1 km.
+    xind = xarray.DataArray(xind, dims='station', coords=dict(station=list(gauge.keys())))
+    yind = xarray.DataArray(yind, dims='station', coords=dict(station=list(gauge.keys())))
+    L = radar.time.dt.season == 'DJF'  # want summer
+    radar_match = radar.max_rain.where(L, drop=True).sel(time=slice('2000-12-01', '2015-02-28')).isel(x=xind,
+                                                                                                      y=yind).to_dataframe()
+    # and then pivot the table to make it easier to deal with. Python multi-indices are hard...
+    #radar_match = pd.pivot_table(radar_match.reset_index(), aggfunc='first', index='time', columns='station',
+    #                             values='max_rain')
+    radar_match = radar_match.unstack('station').loc[:, 'max_rain']
+    # and then make the time UTC.
+    radar_match.index = pd.to_datetime(radar_match.index, utc=True)
+    print(f"{radar_name} has {len(radar_match.columns)} gauges to compare with")
+
     mn_max_radar = radar.max_rain.where(radar.time.dt.season == 'DJF', drop=True).sel(
         time=slice('2000-12-01', '2015-02-28')).mean('time')
     rng = np.sqrt(mn_max_radar.x.astype('float') ** 2 + mn_max_radar.y.astype('float') ** 2) / 1e3
@@ -86,7 +103,7 @@ for radar_name in radars:
 
 
     stn_mn = pd.Series({k: comp_mean_mx(df) for k, df in process_gauge.items()}).rename('mean_mx')
-    radar_mean = pd.Series({k: df.max_rain.mean() for k, df in radar_match.items()}).rename('Radar')
+    radar_mean = radar_match.mean().rename('Radar')
     station_data = pd.concat([stn_mn, lng, latitude], axis=1)
     merge_radar_stn = pd.concat([radar_mean, stn_mn.rename('Gauge')], axis=1)
     ## plot the radar and the location of the gauges. Will do for summer months for 2010-2015
@@ -121,7 +138,7 @@ for radar_name in radars:
                               c=station_data.mean_mx, norm=norm, edgecolor='k',
                               colorbar=False, cmap=cmap,
                               transform=ccrs.PlateCarree())
-    loc_ax.coastlines(color='green',linewidth=2)
+    loc_ax.coastlines(color='green', linewidth=2)
     g = loc_ax.gridlines(draw_labels=True)
     g.top_labels = False
     g.left_labels = False
@@ -141,23 +158,34 @@ for radar_name in radars:
     colorbar = False
     all_df = []
     for key, df in process_gauge.items():
-        merge_df = pd.concat([df.max_rain.rename(f'gauge'), radar_match[key].max_rain.rename('radar')], axis=1)
+        merge_df = pd.concat([df.max_rain.rename(f'gauge'), radar_match.loc[:, key].rename('radar')], axis=1)
         merge_df['mean_mx'] = station_data.mean_mx[key]
         L = merge_df.index.month.isin([12, 1, 2])
         merge_df = merge_df[L].dropna(axis=0)
-        merge_df.plot.scatter(ax=scatter_ax, x='gauge', y='radar', marker='o', s=30,
+        merge_df.plot.scatter(ax=scatter_ax, x='gauge', y='radar', marker='o', s=5,
                               c='mean_mx', norm=norm, edgecolor='k', colorbar=False, cmap=cmap)
 
         merge_df['source'] = key
         merge_df = merge_df.set_index('source', append=True).unstack('source')
-        all_df.append(merge_df)
-    all_df = pd.concat(all_df, axis=1)
+        all_df.append(merge_df.droplevel(level='source', axis=1).reset_index(drop=True))
+    all_df = pd.concat(all_df, axis=0).reset_index(drop=True)
+    # add on regression -- will predict radar from gauge.
+    from statsmodels.api import RLM
+    mx_mx = np.ceil(all_df.max().max() * 1.1)
+    formula = 'np.log(gauge) ~ np.log(radar)'
+    min_fit=1.
+    L = np.all(all_df.loc[:, ['gauge', 'radar']] > min_fit, axis=1)  # at least 1mm/hr max...
+    rfit = RLM.from_formula(formula, data=all_df[L]).fit()
+    radar_predict= pd.Series(np.geomspace(min_fit,mx_mx, 100)).rename('radar')
+    gauge_predict= np.exp(rfit.predict(radar_predict))
+    scatter_ax.plot(gauge_predict,radar_predict,color='k',linewidth=2,linestyle='dashed')
+
     scatter_ax.set_xlabel("Gauge Monthly Rx1h (mm/h)", fontsize='small')
     scatter_ax.set_ylabel("Radar Monthly Rx1h (mm/h)", fontsize='small')
     scatter_ax.set_title("Monthly Rx1h")
     scatter_ax.axline((mn, mn), (mx, mx))  # plot 1:1 line
 
-    mx_mx = np.ceil(all_df.max().max() * 1.1)
+
     scatter_ax.set_xlim(1, mx_mx)
     scatter_ax.set_ylim(1, mx_mx)
     scatter_ax.set_yscale('log')
