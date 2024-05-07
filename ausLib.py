@@ -721,4 +721,5 @@ def read_radar_zipfile(
     for var in singleton_vars: # variables that want to be singleton.
         if var in ds.variables:
             ds[var] = ds[var].isel({concat_dim: 0}).drop_vars(concat_dim)
+    my_logger.debug(f'read in {len(files)} files from {path} {memory_use()}')
     return ds
