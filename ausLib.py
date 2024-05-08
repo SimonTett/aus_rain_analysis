@@ -697,11 +697,11 @@ def index_ll_pts(
     row_indices, col_indices = np.unravel_index(indices, latitudes.shape)
     return np.column_stack((col_indices, row_indices)).T  # return as x,y
 
-
 def read_radar_zipfile(
         path: pathlib.Path,
         concat_dim: str = 'valid_time',
-        singleton_vars: typing.Optional[typing.List[str]] = None
+        singleton_vars: typing.Optional[typing.List[str]] = None,
+        **load_kwargs
         ) -> xarray.Dataset:
     """
     Read netcdf data from a zipfile containing lots of netcdf files
@@ -709,16 +709,25 @@ def read_radar_zipfile(
         singleton_vars: variables to be made singleton.
         path: Path to zipfile
         concat_dim: dimension to concatenate along
+        remaining kw args are passed to load_dataset.
     Returns: xarray dataset
+
+    Various ways of speeding up the code were explored
+      including having an in-memory dataset. No improvement was found.
+      The bottleneck appears to be the loading of the netcdf files.
+      Can speed up (a bit) by dropping variables using drop_variables kw arg.
     """
     if singleton_vars is None:
         singleton_vars = []
     with tempfile.TemporaryDirectory() as tdir:
-        zipfile.ZipFile(path).extractall(tdir)  # extract to temp dir
-        files = list(pathlib.Path(tdir).glob('*.nc'))
-        datasets = [xarray.open_dataset(file) for file in files]
-        ds = xarray.concat(datasets, concat_dim)
+        # times on linux workstation
+        zipfile.ZipFile(path).extractall(tdir)  # extract to temp dir 0.16 seconds
+        files = list(pathlib.Path(tdir).glob('*.nc')) #  0.0 seconds
+        datasets = [xarray.load_dataset(file, **load_kwargs) for file in files] #  1.6 seconds
+        ds = xarray.concat(datasets, concat_dim) #  0.2 seconds
+        # doing open_dataset then concat +.load takes about the same time.
     for var in singleton_vars: # variables that want to be singleton.
         if var in ds.variables:
             ds[var] = ds[var].isel({concat_dim: 0}).drop_vars(concat_dim)
     return ds
+
