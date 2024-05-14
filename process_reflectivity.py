@@ -1,14 +1,13 @@
+#!/usr/bin/env python
 # process reflectivity data
 import pathlib
 import typing
-
+import argparse
 import numpy as np
 import xarray
 
 import ausLib
-
-my_logger = ausLib.my_logger
-memory_use = ausLib.memory_use
+from ausLib import memory_use, my_logger, site_numbers
 
 
 def summary_process(data_array: xarray.DataArray,
@@ -124,11 +123,23 @@ def summary_process(data_array: xarray.DataArray,
 
     my_logger.debug(f"Processing data for {time_str} {memory_use()}")
     # get on with processing data now!
+    data_array_dtype = data_array.dtype
+    max_float = np.finfo(data_array_dtype).max # max value that can be represented as a float.
+    max_log = np.log(max_float) # max value that can be represented as a log.
     if dbz:
-        data_array = np.exp(data_array)
+        # first handle potential overflow from the exponential
+        if data_array.max() > max_log:
+            my_logger.warning('Overflow in reflectivity data for ' +
+                              f'{data_array[time_dim].dt.strftime("%Y-%m").values[0]}. '+
+                              f'Max value is {float(data_array.max().values):5.2f} > {max_log:5.2f}. Converting to float64')
+            data_array = np.exp(data_array.astype('float64'))
+        else:
+            data_array = np.exp(data_array)
         if threshold:
             threshold = np.exp(threshold)  # if in dbz have converted everything to 10** and at end will invert this for all vars
-
+    # check all values are finite.
+    if np.isinf(data_array).any():
+        raise ValueError('Inf values in data_array')
     if threshold:  # compute threshold vars.
         my_logger.debug('Computing threshold raw count')
         var_thresh_count = (data_array > threshold).sum(time_dim, skipna=True, min_count=1, keep_attrs=True)
@@ -148,6 +159,8 @@ def summary_process(data_array: xarray.DataArray,
         ok = (count_resamp == max_samps)
         mean_resamp = mean_resamp.where(ok, drop=True)  # mask where have complete data
         # for max want to have consistent no of values.
+        if np.isinf(mean_resamp).any():
+                raise ValueError(f'Inf in mean_resamp')
         my_logger.debug(
             f"mean and count computed using {mn_resamp} for {time_str} {memory_use()}")
 
@@ -181,6 +194,14 @@ def summary_process(data_array: xarray.DataArray,
             f'count_{base_name}': count_max_samples,
             f'count_max_{base_name}': max_samps
         })
+        # check everything is finite
+        bad_vars = []
+        for key,var in rr.items():
+            if np.isinf(var).any():
+                bad_vars.append(key)
+                my_logger.warning(f'Inf values in {key}')
+        if len(bad_vars) > 0:
+            raise ValueError(f'Inf values in {bad_vars}')
         list_resamp_result.append(rr)
     # end of looping over time resample periods
     rr = xarray.concat(list_resamp_result, dim='resample_prd')
@@ -198,9 +219,19 @@ def summary_process(data_array: xarray.DataArray,
             if want_var:
                 vars_to_log.add(variable)
         # now to take logs
+        vars_back = []
         for variable in vars_to_log:
             my_logger.debug(f'Taking log of {variable}')
-            result[variable] = np.log(result[variable])
+            var= np.log(result[variable]) # take log.
+            if (var.dtype != data_array_dtype) and (var.max() < max_float):
+                var = var.astype(data_array_dtype) # convert back to original dtype
+                vars_back += [variable]
+
+            if np.isinf(var).any():
+                raise ValueError(f'Non-finite values in {variable}')
+            result[variable] = var
+        if len(vars_back):
+            my_logger.warning(f'Converted {" ".join(vars_back)} back to original dtype: {data_array_dtype}')
     # sort out meta-data.
     variables = [v for v in result.variables]
     for k in variables:
@@ -226,48 +257,86 @@ def summary_process(data_array: xarray.DataArray,
     return result
 
 
-# ausLib.dask_client()
-outdir = pathlib.Path('/scratch/wq02/st7295/summary_reflectivity')
+parser = argparse.ArgumentParser(description='Process reflectivity data')
+parser.add_argument('site', help='Radar site to process',
+                    default='Melbourne', choices=site_numbers.keys())
+parser.add_argument('--year', nargs=2, type=int, help='range of years to process', default=[2020, 2023])
+parser.add_argument('-v', '--verbose', action='count', help='Verbose output',default=0)
+parser.add_argument('--outdir', help='output directory',
+                    default='/scratch/wq02/st7295/summary_reflectivity')
+parser.add_argument('--glob',help='Pattern for globbing zip files',
+                    default='[0-9][0-9].gndrefl.zip')
+parser.add_argument('--resample', nargs='+',
+                    help='resample periods for data', default=['30min', '1h', '2h'])
+parser.add_argument('--no_over_write',action='store_true',help='Do not overwrite existing files')
+args = parser.parse_args()
+# deal with verbosity!
+
+if args.verbose > 1:
+    level = 'DEBUG'
+elif args.verbose > 0:
+    level = 'INFO'
+else:
+    level = 'WARNING'
+ausLib.init_log(my_logger, level=level)
+
+my_logger.info(f'Processing reflectivity data for {args.site} for {args.year[0]} to {args.year[1]} {memory_use()}')
+my_logger.info(f'Output dir is {args.outdir}')
+site_number = f'{site_numbers[args.site]:d}'
+indir = pathlib.Path('/g/data/rq0/hist_gndrefl') / site_number
+my_logger.info(f'Input directory is {indir}')
+my_logger.info(f'resample periods are: {args.resample}')
+if not indir.exists():
+    my_logger.warning('Input directory {indir} does not exist')
+    raise FileNotFoundError(f'Input directory {indir} does not exist')
+outdir = pathlib.Path(args.outdir)/args.site
 outdir.mkdir(parents=True, exist_ok=True)
-year = 2010
-ausLib.init_log(my_logger,level='INFO')
-for month in range(1, 13):
-    pattern = f'*{year:04d}{month:02d}[0-9][0-9].gndrefl.zip'
-    zip_files = sorted(pathlib.Path('/g/data/rq0/hist_gndrefl/4/2010').glob(pattern))
-    if len(zip_files) == 0:
-        my_logger.info(f'No files found for  pattern {pattern} {ausLib.memory_use()}')
-        continue
-    my_logger.info(f'Found {len(zip_files)} files for pattern {pattern} {ausLib.memory_use()} ')
-    singleton_vars = ['x_bounds', 'y_bounds', 'proj']
-    datasets = [ausLib.read_radar_zipfile(zip_file, singleton_vars=singleton_vars) for zip_file in zip_files]
-    ds = xarray.concat(datasets, dim='valid_time', data_vars='minimal').rename(valid_time='time')
-    my_logger.info(f'Concatenated data. {ausLib.memory_use()}')  # sadly cases OOM fail.
-    del datasets  # maybe free up a bit of memory
+for year in range(*args.year):
+    my_logger.info(f'Processing year {year}')
+    for month in range(1, 13):
+        pattern = f'{site_number}_{year:04d}{month:02d}'+args.glob
+        data_dir = indir/f'{year:04d}'
+        zip_files = sorted(data_dir.glob(pattern))
+        if len(zip_files) == 0:
+            my_logger.info(f'No files found for  pattern {pattern} in {data_dir} {ausLib.memory_use()}')
+            continue
+        my_logger.info(f'Found {len(zip_files)} files for pattern {pattern} {ausLib.memory_use()} ')
+        file = f'hist_gndrefl_{year:04d}_{month:02d}.nc'
+        outpath = outdir / file
+        if args.no_over_write and outpath.exists():
+            my_logger.warning(f'{outpath} and no_over_write set. Skipping processing') 
+            continue    
+        drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']
+        datasets = [ausLib.read_radar_zipfile(zip_file, drop_variables=drop_vars) for zip_file in zip_files]
+        ds = xarray.concat(datasets, dim='valid_time', data_vars='minimal').rename(valid_time='time')
+        del datasets  # maybe free up a bit of memory
 
-    my_logger.info(f'Loaded data. Now coarsening..{ausLib.memory_use()}')  # sadly cases OOM fail...
-    ref = np.log(np.exp(ds.reflectivity).coarsen(x=4, y=4).mean())  # coarsen data to 2 x 2km
-    ##now to process data
-    my_logger.info(f'Coarsened. Now processing {ausLib.memory_use()}')
-    ref_summ = summary_process(ref, dbz=True, base_name='Reflectivity',
-                               mean_resample=['30min', '1h', '2h'], threshold=15.0)
-    my_logger.info(f"computed month of summary data {memory_use()}")
-    s = ref_summ.time[0].dt.strftime('%Y_%m').values
-    file = f'hist_gndrefl_4_{s}.nc'
-    outpath = outdir / file
-    my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
-    ref_summ.to_netcdf(outpath, unlimited_dims='time')
-    my_logger.info(f'Wrote  summary data to {outpath} {ausLib.memory_use()}')
+        my_logger.info(f'Loaded data. Now coarsening. {ausLib.memory_use()}')  # sadly can  cause OOM fail...
+        # have to deal with potential overflow.
+        max_float = np.finfo(ds.reflectivity.dtype).max
+        max_log = np.log(max_float)
+        if ds.reflectivity.max() > max_log:
+            my_logger.warning(f'Overflow in reflectivity data for coarsening. for {ds.time.dt.strftime("%Y-%m").values[0]} '+
+                              f'Max value is {float(ds.reflectivity.max().values):5.2f} > {max_log:5.2f} Converting to float64')
+            ref = np.exp(ds.reflectivity.astype('float64'))
+        else:
+            ref = np.exp(ds.reflectivity)
+        ref = np.log(ref.coarsen(x=4, y=4).mean())  # coarsen data to 2 x 2km
+
+        # and possibly convert back to original dtype.
+        if (ref.dtype != ds.reflectivity.dtype) and (ref.max() < max_float):
+            ref = ref.astype(ds.reflectivity.dtype)
+            my_logger.warning(f'Converted coarsened back to original dtype: {ds.reflectivity.dtype}')
+        if np.isinf(ref).any():
+            raise ValueError('Inf values in coarsened data')
+
+        #now to process data
+        my_logger.info(f'Coarsened. Now processing {ausLib.memory_use()}')
+        ref_summ = summary_process(ref, dbz=True, base_name='Reflectivity',
+                                   mean_resample=args.resample, threshold=15.0)
+        my_logger.info(f"computed month of summary data {memory_use()}")
+        my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
+        ref_summ.to_netcdf(outpath, unlimited_dims='time')
+        my_logger.info(f'Wrote  summary data to {outpath} {ausLib.memory_use()}')
 
 
-
-
-def process(ref):
-    my_logger.info(f'Processing a month {ref.time.values[0]} {memory_use()}')
-    regrid = np.log10((10 ** ref.astype('float64')).coarsen(x=4, y=4).mean().load())
-    my_logger.info('Coarsened')
-    ref_summ = summary_process(regrid, dbz=True, base_name='Reflectivity', mean_resample=['30min', '1h'],
-                               threshold=15.0)
-    my_logger.info(f"computed month of summary data {memory_use()}")
-    return ref_summ
-
-# summary = ds.reflectivity.resample(time='MS').apply(process)

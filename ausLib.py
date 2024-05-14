@@ -14,7 +14,9 @@ import xarray
 import logging
 import pandas as pd
 import typing
-
+# dict of site names and numbers.
+site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
+                    Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23)
 radar_dir = pathlib.Path("/g/data/rq0/level_2/")
 
 my_logger = logging.getLogger(__name__)  # for logging
