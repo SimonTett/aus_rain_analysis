@@ -13,7 +13,7 @@ gen_script () {
     year=$1 ; shift
     log_dir=$1 ; shift
     end_year=$((year+5))
-    cmd="./process_reflectivity.py $site -v -v --year $year $end_year --resample $resample --no_over_write"
+    cmd="./process_reflectivity.py $site -v -v --year $year $end_year --resample $resample" #--no_over_write"
     log_file="${log_dir}/${name}/processed_${name}.log"
     # print out the PBS commands
     cat <<EOF

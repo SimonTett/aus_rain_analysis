@@ -8,6 +8,8 @@ module load openmpi/4.1.5
 module load hdf5/1.12.2
 module load R/4.3.1
 module load python3-as-python # give me python 3!
+module load gdal # needed for gdal stuff.
+mpdule load nco # for nco
 # and activate the virtual env
 source $AUSRAIN/venv/bin/activate
 # add in dask magic

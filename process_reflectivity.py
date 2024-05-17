@@ -314,13 +314,29 @@ for year in range(*args.year):
             my_logger.warning(f'{outpath} and no_over_write set. Skipping processing') 
             continue    
         drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']
-        drop_vars_first = ['error']
+        drop_vars_first = ['error','reflectivity']
         # read in first file to get helpful co-ord info. The more we read the slower we go.
+        fld_info = ausLib.read_radar_zipfile(zip_files[0], drop_variables=drop_vars_first).isel(valid_time=0)
+        fld_info = fld_info.drop_vars('valid_time')
+        for c in ['x', 'y','x_bounds','y_bounds']: # convert all co-ords to m from km,
+            try:
+                unit = fld_info[c].attrs['units']
+            except KeyError: # no units set
+                unit = 'km'
+                my_logger.debug(f'Set units on  {c} to  km')
+            try:
+                if unit == 'km': # convert to m
+                    with xarray.set_options(keep_attrs=True):
+                        fld_info[c] = fld_info[c] * 1000.0 # convert to meters
+                    fld_info[c].assign_attrs(units='m')
+                    my_logger.debug(f'Converted {c} to meters from km')
+            except KeyError:
+                my_logger.warning(f'No {c} in fld_info')
+                breakpoint()
 
-        datasets = [ausLib.read_radar_zipfile(zip_files[0], drop_variables=drop_vars_first)]
-        datasets += [ausLib.read_radar_zipfile(zip_file, drop_variables=drop_vars) for zip_file in zip_files[1:]]
-        ds = xarray.concat(datasets, dim='valid_time', data_vars='minimal',compat='override').rename(valid_time='time')
-
+        datasets = [ausLib.read_radar_zipfile(zip_file, drop_variables=drop_vars) for zip_file in zip_files]
+        ds = xarray.concat(datasets, dim='valid_time').rename(valid_time='time')
+        ds = ds.merge(fld_info) # assuming meta data is consistent over a month.
 
         del datasets  # maybe free up a bit of memory
 
@@ -347,13 +363,9 @@ for year in range(*args.year):
         my_logger.info(f'Coarsened. Now processing {ausLib.memory_use()}')
         ref_summ = summary_process(ref, dbz=True, base_name='Reflectivity',
                                    mean_resample=args.resample, threshold=15.0)
+        ref_summ = ref_summ.merge(fld_info)
         my_logger.info(f"computed month of summary data {memory_use()}")
-        for c in ['x', 'y','x_bounds','y_bounds']: # convert all co-ords to m from km,
-            try:
-                ref_summ[c] = ref_summ[c] * 1000.0 # convert to meters
-                ref_summ[c].attrs.update(units='m')
-            except KeyError:
-                my_logger.warning(f'No {c} in summary data')
+
 
         my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
         ref_summ.to_netcdf(outpath, unlimited_dims='time')
