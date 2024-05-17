@@ -38,6 +38,7 @@ def summary_process(data_array: xarray.DataArray,
           mean_rate_thresh mean for values > rain_thresh
     Also includes some count values.
             f'count_raw_{base_name}_thresh: number of values above threshold before resampling
+            f'count_raw_{base_name}: number of raw values in time period.
             f'count_{base_name}': count of resampled samples  
             f'count_max_{base_name}': max number of samples in resample. 
 
@@ -97,7 +98,7 @@ def summary_process(data_array: xarray.DataArray,
 
     # set up empty result
     vars_to_gen = [f"max_{base_name}", f"median_{base_name}", f"mean_raw_{base_name}",
-                   f'mean_{base_name}']
+                   f'mean_{base_name}',f'count_raw_{base_name}']
     if threshold is not None:  # add on threshold vars
         vars_to_gen += [f"median_{base_name}_thresh", f"count_raw_{base_name}_thresh",
                         f"mean_{base_name}_thresh", f"count_{base_name}_thresh"]
@@ -115,10 +116,15 @@ def summary_process(data_array: xarray.DataArray,
         result[f'{n}_{base_name}'] = dummy
     # and time_bounds
     result['time_bounds'] = time_bounds
+    count_raw = data_array.time.count()
+    result[f'count_raw_{base_name}'] = count_raw
     # check we have some data and if not exit!
+    if int(count_raw) == 0: # no values
+        my_logger.warning(f"No data for {time_str}")
+        return result
     bad = data_array.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
     if bad.all():
-        my_logger.error(f"All missing at {bad[time_dim].isel[[0, -1]]}")
+        my_logger.error(f"All missing at {time_str}")
         return result
 
     my_logger.debug(f"Processing data for {time_str} {memory_use()}")
@@ -238,6 +244,7 @@ def summary_process(data_array: xarray.DataArray,
         if k.startswith("time_"):
             comp = k.split('_')[1]
             result[k].attrs['long_name'] = 'time of ' + comp + " " + base_name
+            result[k].encoding.update(units='minutes since 1990-01-01T00:00')
         elif k.endswith("thresh"):
             comp = k.split('_')[0]
             result[k].attrs['long_name'] = comp + " " + base_name + f'  > {threshold}'
@@ -307,8 +314,14 @@ for year in range(*args.year):
             my_logger.warning(f'{outpath} and no_over_write set. Skipping processing') 
             continue    
         drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']
-        datasets = [ausLib.read_radar_zipfile(zip_file, drop_variables=drop_vars) for zip_file in zip_files]
-        ds = xarray.concat(datasets, dim='valid_time', data_vars='minimal').rename(valid_time='time')
+        drop_vars_first = ['error']
+        # read in first file to get helpful co-ord info. The more we read the slower we go.
+
+        datasets = [ausLib.read_radar_zipfile(zip_files[0], drop_variables=drop_vars_first)]
+        datasets += [ausLib.read_radar_zipfile(zip_file, drop_variables=drop_vars) for zip_file in zip_files[1:]]
+        ds = xarray.concat(datasets, dim='valid_time', data_vars='minimal',compat='override').rename(valid_time='time')
+
+
         del datasets  # maybe free up a bit of memory
 
         my_logger.info(f'Loaded data. Now coarsening. {ausLib.memory_use()}')  # sadly can  cause OOM fail...
@@ -335,6 +348,13 @@ for year in range(*args.year):
         ref_summ = summary_process(ref, dbz=True, base_name='Reflectivity',
                                    mean_resample=args.resample, threshold=15.0)
         my_logger.info(f"computed month of summary data {memory_use()}")
+        for c in ['x', 'y','x_bounds','y_bounds']: # convert all co-ords to m from km,
+            try:
+                ref_summ[c] = ref_summ[c] * 1000.0 # convert to meters
+                ref_summ[c].attrs.update(units='m')
+            except KeyError:
+                my_logger.warning(f'No {c} in summary data')
+
         my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
         ref_summ.to_netcdf(outpath, unlimited_dims='time')
         my_logger.info(f'Wrote  summary data to {outpath} {ausLib.memory_use()}')

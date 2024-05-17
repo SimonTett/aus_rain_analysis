@@ -37,4 +37,7 @@ ffmpeg
 numpy~=1.26.2
 pytz~=2024.1
 arm_pyart
-xradar
+xradar~=0.5.0
+wradlib~=2.0.3
+gdal
+
