@@ -5,11 +5,49 @@ import typing
 import argparse
 import numpy as np
 import xarray
-
+import multiprocessing
 import ausLib
 from ausLib import memory_use, my_logger, site_numbers
+import dask
 
+def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
+             non_time_variables: typing.Union[typing.List[str], str],
+             vars_time: typing.Union[typing.List[str], str],
+             no_resample_vars: typing.Optional[typing.Union[typing.List[str], str]] = None,
+             ) -> xarray.Dataset:
+    """
+    Return an empty dataset
+    :param resample_prd: list of resample periods
+    :param example_da:
+    :param non_time_variables:
+    :param vars_time:
+    :param no_resample_vars -- list of variables that should not have a dimension resample_prd
+    :return: empty dataset.
+    """
+    # deal with singleton vars
+    if isinstance(non_time_variables, str):
+        non_time_variables = [non_time_variables]
+    if isinstance(vars_time, str):
+        vars_time = [vars_time]
+    if isinstance(no_resample_vars, str):
+        no_resample_vars = [no_resample_vars]
 
+    if no_resample_vars is None:
+        no_resample_vars = []
+
+    # generates vars
+    result = dict()
+    for var in non_time_variables:
+        result[var] = example_da.where(False).rename(var)
+    for var in vars_time:
+        result[var] = example_da.where(False).rename(var).astype('<M8[ns]')
+        result[var].attrs.pop('units', None)  # remove the units here.
+    # add resample_prd as dim on
+    for key in result.keys():
+        if key not in no_resample_vars:
+            result[key] = result[key].expand_dims(resample_prd=resample_prd)
+    result = xarray.Dataset(result)
+    return result
 def summary_process(data_array: xarray.DataArray,
                     mean_resample: typing.Union[typing.List[str], str] = None,
                     time_dim: str = 'time',
@@ -45,46 +83,9 @@ def summary_process(data_array: xarray.DataArray,
 
     """
 
-    def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
-                 non_time_variables: typing.Union[typing.List[str], str],
-                 vars_time: typing.Union[typing.List[str], str],
-                 no_resample_vars: typing.Optional[typing.Union[typing.List[str], str]] = None,
-                 ) -> xarray.Dataset:
-        """
-        Return an empty dataset
-        :param resample_prd: list of resample periods
-        :param example_da:
-        :param non_time_variables:
-        :param vars_time:
-        :param no_resample_vars -- list of variables that should not have a dimension resample_prd
-        :return: empty dataset.
-        """
-        # deal with singleton vars
-        if isinstance(non_time_variables, str):
-            non_time_variables = [non_time_variables]
-        if isinstance(vars_time, str):
-            vars_time = [vars_time]
-        if isinstance(no_resample_vars, str):
-            no_resample_vars = [no_resample_vars]
 
-        if no_resample_vars is None:
-            no_resample_vars = []
 
-        # generates vars
-        result = dict()
-        for var in non_time_variables:
-            result[var] = example_da.where(False).rename(var)
-        for var in vars_time:
-            result[var] = example_da.where(False).rename(var).astype('<M8[ns]')
-            result[var].attrs.pop('units', None)  # remove the units here.
-        # add resample_prd as dim on
-        for key in result.keys():
-            if key not in no_resample_vars:
-                result[key] = result[key].expand_dims(resample_prd=resample_prd)
-        result = xarray.Dataset(result)
-        return result
-
-    time_bounds = [ref.time.min().values, ref.time.max().values]
+    time_bounds = [data_array.time.min().values, data_array.time.max().values]
     time_bounds = xarray.DataArray(time_bounds, dims='bounds').rename('time_bounds')
     time_str = f"{time_bounds.values[0]} - {time_bounds.values[1]}"
     if mean_resample is None:
@@ -104,7 +105,7 @@ def summary_process(data_array: xarray.DataArray,
                         f"mean_{base_name}_thresh", f"count_{base_name}_thresh"]
     # lit of variables that won't have resample_prd included.
     no_resample_vars = [var for var in vars_to_gen if 'raw' in var]
-    no_resample_vars += ['time_bounds']
+    no_resample_vars += ['time_bounds','sample_resolution']
 
     result = empty_ds(data_array.isel({time_dim: 0}, drop=True), mean_resample,
                       vars_to_gen, f"time_max_{base_name}",
@@ -118,6 +119,18 @@ def summary_process(data_array: xarray.DataArray,
     result['time_bounds'] = time_bounds
     count_raw = data_array.time.count()
     result[f'count_raw_{base_name}'] = count_raw
+    # add in time resolution and complain (but continue) if have values diff from median
+    td =  data_array.time.diff(time_dim)
+    time_resoln = td.median().values
+    result['sample_resolution'] = time_resoln
+    L = td != time_resoln
+    if L.any():
+        scale = np.timedelta64(1,'m')
+        bad_td=td.where(L,drop=True)/scale
+        my_logger.warning(f"Time resolution not consistent -- median {time_resoln/scale} mins with {len(bad_td)} bad values {np.unique(bad_td.values)}")
+        for v in bad_td:
+            my_logger.debug(f'{v.values} mins @ {v.time.values}')
+
     # check we have some data and if not exit!
     if int(count_raw) == 0: # no values
         my_logger.warning(f"No data for {time_str}")
@@ -134,13 +147,7 @@ def summary_process(data_array: xarray.DataArray,
     max_log = np.log(max_float) # max value that can be represented as a log.
     if dbz:
         # first handle potential overflow from the exponential
-        if data_array.max() > max_log:
-            my_logger.warning('Overflow in reflectivity data for ' +
-                              f'{data_array[time_dim].dt.strftime("%Y-%m").values[0]}. '+
-                              f'Max value is {float(data_array.max().values):5.2f} > {max_log:5.2f}. Converting to float64')
-            data_array = np.exp(data_array.astype('float64'))
-        else:
-            data_array = np.exp(data_array)
+        data_array = np.exp(data_array.astype('float64'))
         if threshold:
             threshold = np.exp(threshold)  # if in dbz have converted everything to 10** and at end will invert this for all vars
     # check all values are finite.
@@ -225,19 +232,13 @@ def summary_process(data_array: xarray.DataArray,
             if want_var:
                 vars_to_log.add(variable)
         # now to take logs
-        vars_back = []
         for variable in vars_to_log:
             my_logger.debug(f'Taking log of {variable}')
-            var= np.log(result[variable]) # take log.
-            if (var.dtype != data_array_dtype) and (var.max() < max_float):
-                var = var.astype(data_array_dtype) # convert back to original dtype
-                vars_back += [variable]
-
+            var= np.log(result[variable]).astype(data_array_dtype) # take log and convert to original dtype
             if np.isinf(var).any():
                 raise ValueError(f'Non-finite values in {variable}')
             result[variable] = var
-        if len(vars_back):
-            my_logger.warning(f'Converted {" ".join(vars_back)} back to original dtype: {data_array_dtype}')
+
     # sort out meta-data.
     variables = [v for v in result.variables]
     for k in variables:
@@ -263,112 +264,130 @@ def summary_process(data_array: xarray.DataArray,
     my_logger.info(f"Summaries computed for  {time_str} {memory_use()}")
     return result
 
+def fix_spatial_units(ds:xarray.Dataset):
+    """
+    Fix up the spatial units in the dataset
+     (x,y,x_bounds,y_bounds) are converted from km to m.
+    :param ds: dataset for which x etc are to b converted. Replacement done in place.
+    :return: Nada
+    """
+    for c in ['x', 'y', 'x_bounds', 'y_bounds']:  # convert all co-ords to m from km,
+        try:
+            unit = ds[c].attrs['units']
+        except KeyError:  # no units set
+            unit = 'km'
+            my_logger.debug(f'Set units on  {c} to  km')
+        try:
+            if unit == 'km':  # convert to m
+                with xarray.set_options(keep_attrs=True):
+                    ds[c] = ds[c] * 1000.0  # convert to meters
+                ds[c].assign_attrs(units='m')
+                my_logger.debug(f'Converted {c} to meters from km')
+        except KeyError:
+           pass
 
-parser = argparse.ArgumentParser(description='Process reflectivity data')
-parser.add_argument('site', help='Radar site to process',
-                    default='Melbourne', choices=site_numbers.keys())
-parser.add_argument('--year', nargs=2, type=int, help='range of years to process', default=[2020, 2023])
-parser.add_argument('-v', '--verbose', action='count', help='Verbose output',default=0)
-parser.add_argument('--outdir', help='output directory',
-                    default='/scratch/wq02/st7295/summary_reflectivity')
-parser.add_argument('--glob',help='Pattern for globbing zip files',
-                    default='[0-9][0-9].gndrefl.zip')
-parser.add_argument('--resample', nargs='+',
-                    help='resample periods for data', default=['30min', '1h', '2h'])
-parser.add_argument('--no_over_write',action='store_true',help='Do not overwrite existing files')
-args = parser.parse_args()
-# deal with verbosity!
+    return ds
 
-if args.verbose > 1:
-    level = 'DEBUG'
-elif args.verbose > 0:
-    level = 'INFO'
-else:
-    level = 'WARNING'
-ausLib.init_log(my_logger, level=level)
+if __name__ == "__main__":
+    multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
 
-my_logger.info(f'Processing reflectivity data for {args.site} for {args.year[0]} to {args.year[1]} {memory_use()}')
-my_logger.info(f'Output dir is {args.outdir}')
-site_number = f'{site_numbers[args.site]:d}'
-indir = pathlib.Path('/g/data/rq0/hist_gndrefl') / site_number
-my_logger.info(f'Input directory is {indir}')
-my_logger.info(f'resample periods are: {args.resample}')
-if not indir.exists():
-    my_logger.warning('Input directory {indir} does not exist')
-    raise FileNotFoundError(f'Input directory {indir} does not exist')
-outdir = pathlib.Path(args.outdir)/args.site
-outdir.mkdir(parents=True, exist_ok=True)
-for year in range(*args.year):
-    my_logger.info(f'Processing year {year}')
-    for month in range(1, 13):
-        pattern = f'{site_number}_{year:04d}{month:02d}'+args.glob
-        data_dir = indir/f'{year:04d}'
-        zip_files = sorted(data_dir.glob(pattern))
-        if len(zip_files) == 0:
-            my_logger.info(f'No files found for  pattern {pattern} in {data_dir} {ausLib.memory_use()}')
-            continue
-        my_logger.info(f'Found {len(zip_files)} files for pattern {pattern} {ausLib.memory_use()} ')
-        file = f'hist_gndrefl_{year:04d}_{month:02d}.nc'
-        outpath = outdir / file
-        if args.no_over_write and outpath.exists():
-            my_logger.warning(f'{outpath} and no_over_write set. Skipping processing') 
-            continue    
-        drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']
-        drop_vars_first = ['error','reflectivity']
-        # read in first file to get helpful co-ord info. The more we read the slower we go.
-        fld_info = ausLib.read_radar_zipfile(zip_files[0], drop_variables=drop_vars_first).isel(valid_time=0)
-        fld_info = fld_info.drop_vars('valid_time')
-        for c in ['x', 'y','x_bounds','y_bounds']: # convert all co-ords to m from km,
-            try:
-                unit = fld_info[c].attrs['units']
-            except KeyError: # no units set
-                unit = 'km'
-                my_logger.debug(f'Set units on  {c} to  km')
-            try:
-                if unit == 'km': # convert to m
-                    with xarray.set_options(keep_attrs=True):
-                        fld_info[c] = fld_info[c] * 1000.0 # convert to meters
-                    fld_info[c].assign_attrs(units='m')
-                    my_logger.debug(f'Converted {c} to meters from km')
-            except KeyError:
-                my_logger.warning(f'No {c} in fld_info')
-                breakpoint()
+    parser = argparse.ArgumentParser(description='Process reflectivity data')
+    parser.add_argument('site', help='Radar site to process',
+                        default='Melbourne', choices=site_numbers.keys())
+    parser.add_argument('--year', nargs=2, type=int, help='range of years to process', default=[2020, 2023])
+    parser.add_argument('--months', nargs='+', type=int, help='list of months to process', default=range(1, 13))
+    parser.add_argument('-v', '--verbose', action='count', help='Verbose output',default=0)
+    parser.add_argument('outdir', help='output directory. Must be provided')
+    parser.add_argument('--glob',help='Pattern for globbing zip files',
+                        default='[0-9][0-9].gndrefl.zip')
+    parser.add_argument('--resample', nargs='+',
+                        help='resample periods for data', default=['30min', '1h', '2h'])
+    parser.add_argument('--no_over_write',action='store_true',help='Do not overwrite existing files')
+    parser.add_argument('--dask', action='store_true', help='Start dask client')
+    args = parser.parse_args()
+    # deal with verbosity!
+    if args.verbose > 1:
+        level = 'DEBUG'
+    elif args.verbose > 0:
+        level = 'INFO'
+    else:
+        level = 'WARNING'
+    ausLib.init_log(my_logger, level=level)
+    if args.dask:
+        my_logger.info('Starting dask client')
+        client = ausLib.dask_client()
+    else:
+        dask.config.set(scheduler="single-threaded") # make sure dask is single threaded.
+        my_logger.info('Running single threaded')
+    my_logger.info(f'Processing reflectivity data for {args.site} for {args.year[0]} to {args.year[1]} {memory_use()}')
+    my_logger.info(f'Output dir is {args.outdir}')
+    site_number = f'{site_numbers[args.site]:d}'
+    indir = pathlib.Path('/g/data/rq0/hist_gndrefl') / site_number
+    my_logger.info(f'Input directory is {indir}')
+    my_logger.info(f'resample periods are: {args.resample}')
+    if not indir.exists():
+        my_logger.warning('Input directory {indir} does not exist')
+        raise FileNotFoundError(f'Input directory {indir} does not exist')
+    outdir = pathlib.Path(args.outdir)/args.site
+    outdir.mkdir(parents=True, exist_ok=True)
+    for year in range(*args.year):
+        my_logger.info(f'Processing year {year}')
+        for month in args.months:
+            pattern = f'{site_number}_{year:04d}{month:02d}'+args.glob
+            data_dir = indir/f'{year:04d}'
+            zip_files = sorted(data_dir.glob(pattern))
+            if len(zip_files) == 0:
+                my_logger.info(f'No files found for  pattern {pattern} in {data_dir} {ausLib.memory_use()}')
+                continue
+            my_logger.info(f'Found {len(zip_files)} files for pattern {pattern} {ausLib.memory_use()} ')
+            file = f'hist_gndrefl_{year:04d}_{month:02d}.nc'
+            outpath = outdir / file
+            if args.no_over_write and outpath.exists():
+                my_logger.warning(f'{outpath} and no_over_write set. Skipping processing')
+                continue
+            drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']
+            drop_vars_first = ['error','reflectivity']
+            coarsen = dict(x=4,y=4)
+            # read in first file to get helpful co-ord info. The more we read the slower we go.
+            fld_info = ausLib.read_radar_zipfile(zip_files[0], drop_variables=drop_vars_first,coarsen=coarsen,first_file=True)
+            fld_info = fix_spatial_units(fld_info)
+            ds = []
+            for zip_file in zip_files:
+                dd= ausLib.read_radar_zipfile(zip_file, drop_variables=drop_vars,coarsen=coarsen,parallel=True,
+                                              combine='nested', concat_dim='valid_time',
+                                              chunks=dict(valid_time=6),engine='netcdf4'
+                                              )
+                # hdf5 engine is very slow. but netcdf4 needs dask in single thread mode. Sigh!
+                if dd is not None:
+                    ds.append(dd)
+            my_logger.info(f'Read in {len(ds)} files {ausLib.memory_use()}')
+            ds = xarray.concat(ds, dim='valid_time').rename(valid_time='time').sortby('time')
+            ds = fix_spatial_units(ds).compute()
+            my_logger.debug(f'Concatenated data   {ausLib.memory_use()}')
+            # merge seems to generate huge memory foot print so just copy across the data from fld_info
+            for v in fld_info.variables:
+                if v not in ds.variables:
+                    ds[v] = fld_info[v]
+                    my_logger.debug(f'Added variable {v} to ds')
+                else:
+                    my_logger.debug(f'Variable {v} already in ds')
+            my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')  # sadly can  cause OOM fail...
+            #now to process data
 
-        datasets = [ausLib.read_radar_zipfile(zip_file, drop_variables=drop_vars) for zip_file in zip_files]
-        ds = xarray.concat(datasets, dim='valid_time').rename(valid_time='time')
-        ds = ds.merge(fld_info) # assuming meta data is consistent over a month.
+            ref_summ = summary_process(ds.reflectivity, dbz=True, base_name='Reflectivity',
+                                       mean_resample=args.resample, threshold=15.0)
+            ref_summ = ref_summ.merge(fld_info).compute()
+            min_res = ref_summ.sample_resolution/np.timedelta64(1,'m')
+            # check sample resolution is reasonable
+            if min_res < 5:
+               ValueError(f'small sample resolution {min_res} mins')
+            elif min_res > 15:
+               ValueError(f'large sample resolution {min_res} mins')
 
-        del datasets  # maybe free up a bit of memory
+            my_logger.info(f"computed month of summary data {memory_use()}")
+            my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
+            ref_summ.to_netcdf(outpath, unlimited_dims='time')
+            my_logger.info(f'Wrote  summary data to {outpath} {ausLib.memory_use()}')
 
-        my_logger.info(f'Loaded data. Now coarsening. {ausLib.memory_use()}')  # sadly can  cause OOM fail...
-        # have to deal with potential overflow.
-        max_float = np.finfo(ds.reflectivity.dtype).max
-        max_log = np.log(max_float)
-        if ds.reflectivity.max() > max_log:
-            my_logger.warning(f'Overflow in reflectivity data for coarsening. for {ds.time.dt.strftime("%Y-%m").values[0]} '+
-                              f'Max value is {float(ds.reflectivity.max().values):5.2f} > {max_log:5.2f} Converting to float64')
-            ref = np.exp(ds.reflectivity.astype('float64'))
-        else:
-            ref = np.exp(ds.reflectivity)
-        ref = np.log(ref.coarsen(x=4, y=4).mean())  # coarsen data to 2 x 2km
-
-        # and possibly convert back to original dtype.
-        if (ref.dtype != ds.reflectivity.dtype) and (ref.max() < max_float):
-            ref = ref.astype(ds.reflectivity.dtype)
-            my_logger.warning(f'Converted coarsened back to original dtype: {ds.reflectivity.dtype}')
-        if np.isinf(ref).any():
-            raise ValueError('Inf values in coarsened data')
-
-        #now to process data
-        my_logger.info(f'Coarsened. Now processing {ausLib.memory_use()}')
-        ref_summ = summary_process(ref, dbz=True, base_name='Reflectivity',
-                                   mean_resample=args.resample, threshold=15.0)
-        ref_summ = ref_summ.merge(fld_info)
-        my_logger.info(f"computed month of summary data {memory_use()}")
-
-
-        my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
-        ref_summ.to_netcdf(outpath, unlimited_dims='time')
-        my_logger.info(f'Wrote  summary data to {outpath} {ausLib.memory_use()}')
 
 

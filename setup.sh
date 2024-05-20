@@ -1,4 +1,5 @@
 # stuff to setup env
+export HDF5_USE_FILE_LOCKING=FALSE # turn off file locking for HDF5 error. Reduces errors.
 export AUSRAIN=~st7295/aus_rain_analysis
 module load netcdf/4.7.3 # so have ncdump
 module load cdo # cdo!
@@ -9,7 +10,7 @@ module load hdf5/1.12.2
 module load R/4.3.1
 module load python3-as-python # give me python 3!
 module load gdal # needed for gdal stuff.
-mpdule load nco # for nco
+module load nco # for nco
 # and activate the virtual env
 source $AUSRAIN/venv/bin/activate
 # add in dask magic

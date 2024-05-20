@@ -3,6 +3,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 import zipfile
 
 # stuff for timezones!
@@ -14,6 +15,7 @@ import xarray
 import logging
 import pandas as pd
 import typing
+
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23)
@@ -272,7 +274,7 @@ def max_process(ds: xarray.Dataset, time_dim: str = 'time', minf_mean: float = 0
 def gen_mask(
         example_data_array: xarray.DataArray, radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3)
         # values empirically tuned.
-        ) -> xarray.Dataset:
+) -> xarray.Dataset:
     """
     Compute mask -- True where data should be present, False where not.
     :param example_data_array:
@@ -289,7 +291,7 @@ def summary_process(
         ds: xarray.Dataset, mean_resample: str = '1h', time_dim: str = 'time', rain_threshold: float = 0.1,
         # From Pritchard et al, 2023 -- doi https://doi.org/10.1038/s41597-023-02238-4
         minf_mean: float = 0.8
-        ) -> typing.Optional[xarray.Dataset]:
+) -> typing.Optional[xarray.Dataset]:
     f"""
     Process dataset for max (and mean & time of max).
 
@@ -318,7 +320,7 @@ def summary_process(
     def empty_ds(
             example_da: xarray.DataArray, non_time_variables: typing.Union[typing.List[str], str],
             vars_time: typing.Union[typing.List[str], str]
-            ) -> xarray.Dataset:
+    ) -> xarray.Dataset:
         """
         Return an empty dataset
         :param example_da:
@@ -413,11 +415,11 @@ def summary_process(
     samples_of_mean.attrs['long_name'] = f"{mean_resample} samples " + base_name
     counts_ds = xarray.Dataset(
         {
-                f'count_{mean_resample}'       : count_of_mean,
-                f'samples_{mean_resample}'     : samples_of_mean,
-                "count_rain"                   : rain_count,
-                "samples_rain"                 : rain_samples,
-                f"count_{mean_resample}_thresh": count_rain_thresh
+            f'count_{mean_resample}': count_of_mean,
+            f'samples_{mean_resample}': samples_of_mean,
+            "count_rain": rain_count,
+            "samples_rain": rain_samples,
+            f"count_{mean_resample}_thresh": count_rain_thresh
         }
     )
     for v in counts_ds.variables:
@@ -436,7 +438,7 @@ def summary_process(
 def process_gsdr_record(
         gsdr_record: pd.Series,
         resample_max: str = 'QS-DEC'
-        ) -> pd.DataFrame:
+) -> pd.DataFrame:
     """
 
     Args:
@@ -482,7 +484,7 @@ def process_radar(
         time_dim: str = 'time',
         mask: typing.Optional[xarray.DataArray] = None,
         radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3)
-        ) -> xarray.Dataset:
+) -> xarray.Dataset:
     """
     Compute various summaries of  rainfall on mean rainfall from  radar rainfall data.
 
@@ -555,7 +557,7 @@ def summary_radar(
         time_dim: str = 'time',
         chunks: typing.Optional[typing.Dict[str, int]] = None,
         overwrite: bool = False
-        ) -> xarray.Dataset:
+) -> xarray.Dataset:
     """
 
     :param files: List of (or single) pathlib.Path's to be read in and processed
@@ -628,7 +630,7 @@ def init_log(
         level: str,
         log_file: typing.Optional[typing.Union[pathlib.Path, str]] = None,
         mode: str = 'a'
-        ):
+):
     """
     Set up logging on a logger! Will clear any existing logging
     :param log: logger to be changed
@@ -666,7 +668,7 @@ def index_ll_pts(
         latitudes: typeDef,
         long_lats: typeDef,
         tolerance: float = 1e-3
-        ) -> np.ndarray:
+) -> np.ndarray:
     """
     Extract long lat coords from an array
     Args:
@@ -699,18 +701,81 @@ def index_ll_pts(
     row_indices, col_indices = np.unravel_index(indices, latitudes.shape)
     return np.column_stack((col_indices, row_indices)).T  # return as x,y
 
+
+def coarsen_ds(ds: xarray.Dataset, coarsen: typing.Dict[str, int],
+               check_finite:bool = False,
+               #dbz_variables: typing.Tuple[str] = ('reflectivity', 'error'),
+               bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds')) -> xarray.Dataset:
+    """
+    Coarsen a dataset doing specials for dbz variables and bounds
+    :param ds: dataset to be coarsened
+    :param coarsen: dict controlling coarsening
+    :param dbz_variables: Tuple of variable names that in dbz.
+     These will have exp taken and then after  coarsening log taken
+    :param bounds_vars: Tuple of variables that are bounds. They are coarsened by taking the min and max.
+    :return: coarsened dataset.
+    """
+    my_logger.debug('Coarsening data')
+    result = ds.copy()
+    result = result.drop_vars(bounds_vars, errors='ignore') # drop bounds vars as they need special processing,
+    otypes = dict()
+    for var in result.variables:  # dbz vars
+        unit = result[var].attrs.get('units')
+        if (unit is not None) and (unit.lower() == 'dbz'): # dbz
+            otypes[var] = ds[var].dtype
+            v = np.exp(ds[var].astype('float64'))
+            if check_finite:
+                v  = v.compute()
+                if np.isinf(v).any():
+                    raise ValueError(f'Inf values in {var}')
+                if np.isnan(v).any():
+                    raise ValueError(f'Nan values in {var}')
+            result[var] = v
+            my_logger.debug('Computed exp for ' + var)
+
+
+    # handle bounds vars
+    bounds = dict()
+    for var in bounds_vars:
+        if var not in ds.variables:
+            continue
+        dim = var.split('_')[0]
+        var_coarsen = {dim: coarsen[dim]}
+        bounds[var] = xarray.concat(
+            [ds[var].isel(n2=0).coarsen(var_coarsen).min(),
+             ds[var].isel(n2=1).coarsen(var_coarsen).max()], 'bounds').T
+
+    result = result.coarsen(**coarsen).mean()  # coarsen whole dataset
+    result.update(xarray.Dataset(bounds)) # overwrite bounds.
+
+
+    for var,type in otypes.items():  # convert error and reflectivity back to DBZ
+        result[var] = np.log(result[var]).astype(otypes[var])
+        my_logger.debug('Computed log for ' + var)
+    my_logger.debug('Coarsened data')
+    return result
+
+
 def read_radar_zipfile(
         path: pathlib.Path,
         concat_dim: str = 'valid_time',
         singleton_vars: typing.Optional[typing.List[str]] = None,
+        coarsen: typing.Optional[typing.Dict[str, int]] = None,
+        bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds'),
+        first_file: bool = False,
         **load_kwargs
-        ) -> xarray.Dataset:
+) -> xarray.Dataset:
     """
     Read netcdf data from a zipfile containing lots of netcdf files
     Args:
-        singleton_vars: variables to be made singleton.
-        path: Path to zipfile
-        concat_dim: dimension to concatenate along
+        :param singleton_vars: variables to be made singleton.
+        :param path: Path to zipfile
+        :param concat_dim: dimension to concatenate along
+        :param bounds_vars: tuple of variables that are bounds
+      :param dbz_variables: tuple of variables that are dbz. Only relevant if coarsening on
+      :param first_file: If True only read in the first file
+      :param coarsen: Dict to control coarsening. Vars in dbz_variables will be converted from DBZ, by np.exp, before coarsening.
+        then logs taken after coarsening.
         remaining kw args are passed to load_dataset.
     Returns: xarray dataset
 
@@ -718,19 +783,58 @@ def read_radar_zipfile(
       including having an in-memory dataset. No improvement was found.
       The bottleneck appears to be the loading of the netcdf files.
       Can speed up (a bit) by dropping variables using drop_variables kw arg.
+
+
     """
     if singleton_vars is None:
         singleton_vars = []
+        my_logger.debug(f'Unzipping and reading in data {memory_use()}')
     with tempfile.TemporaryDirectory() as tdir:
         # times on linux workstation
         zipfile.ZipFile(path).extractall(tdir)  # extract to temp dir 0.16 seconds
-        files = list(pathlib.Path(tdir).glob('*.nc')) #  0.0 seconds
-        datasets = [xarray.load_dataset(file, **load_kwargs) for file in files] #  1.6 seconds
-        ds = xarray.concat(datasets, concat_dim) #  0.2 seconds
-        # doing open_dataset then concat +.load takes about the same time.
-    for var in singleton_vars: # variables that want to be singleton.
-        if var in ds.variables:
-            ds[var] = ds[var].isel({concat_dim: 0}).drop_vars(concat_dim)
-    my_logger.debug(f'read in {len(files)} files from {path} {memory_use()}')
-    return ds
+        files = list(pathlib.Path(tdir).glob('*.nc'))  #  0.0 seconds
+        if first_file:
+            files = files[0:1]
+        #datasets = [xarray.load_dataset(file, **load_kwargs) for file in files] #  1.6 seconds
+        #ds = xarray.concat(datasets, concat_dim) #  0.2 seconds
+        if load_kwargs.get('combine') == 'nested':
+            load_kwargs.update(concat_dim=concat_dim)
+        try:
+            ds = xarray.open_mfdataset(files, **load_kwargs)
+        except RuntimeError as error:
+            my_logger.warning(f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again")
+            time.sleep(0.1)  # sleep a bit and try again
+            datasets = []
+            load_args = load_kwargs.copy()
+            # drop things that don't work with load!
+            for key in ['combine', 'concat_dim', 'parallel']:
+                if key in load_args:
+                    load_args.pop(key)
+            for file in files:
+                try:
+                    datasets.append(xarray.open_dataset(file, **load_args))
+                except Exception as e:
+                    my_logger.warning(f"Error reading in {file} {e} -- skipping")
+            if len(datasets) == 0:
+                return None
+            ds = xarray.concat(datasets, concat_dim)  #  0.2 seconds
 
+        if first_file:
+            ds = ds.load()
+            #     breakpoint()
+            #ds = ds.isel({concat_dim:0}).drop_vars(concat_dim,errors='ignore') # drop the concat dim
+            ds = ds.drop_vars(concat_dim, errors='ignore')  # drop the concat dim
+        # if chunks is not None:
+        #     ds = ds.chunk(chunks)
+        # doing open_dataset then concat +.load takes about the same time.
+        for var in singleton_vars:  # variables that want to be singleton.
+            if var in ds.variables:
+                ds[var] = ds[var].isel({concat_dim: 0}).drop_vars(concat_dim)
+        if coarsen is not None:  # coarsen the data
+            ds = coarsen_ds(ds, coarsen,  bounds_vars=bounds_vars)
+
+        ds = ds.compute()
+        #ds = ds.load()  # actually load it doing any processed needed. Needs to be within the with tempfile block.
+    if not first_file:
+        my_logger.debug(f'read in {len(ds[concat_dim])} times from {path} {memory_use()}')
+    return ds
