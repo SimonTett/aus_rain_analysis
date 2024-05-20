@@ -23,8 +23,8 @@ gen_script () {
     mkdir -p ${log_dir}
     end_year=$((year+5))
     cmd="./process_reflectivity.py ${site} ${outdir}  -v --year ${year} ${end_year} --dask --no_over_write --resample  ${resample} "
-    log_file="${log_dir}/processed_${time_str}"
-    job_name=${site:0:5}_${year}
+    log_file="${log_dir}/proc_refl_${site}_{$year}_${time_str}"
+    job_name=${site:0:6}_${year}
     # print out the PBS commands
     cat <<EOF
 #PBS -P ${project}
