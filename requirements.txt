@@ -41,4 +41,11 @@ xradar~=0.5.0
 wradlib~=2.0.3
 gdal
 pyarrow
-
+r-base>=4.0.5
+rpy2==3.5.11
+r-extRemes
+r-viridis
+r-fields
+r-raster
+r-codetools
+r-terra=1.7-29 # need to downgrade to work on jasmin

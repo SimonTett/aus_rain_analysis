@@ -1,4 +1,5 @@
 # Library for australian analysis.
+import io
 import os
 import pathlib
 import sys
@@ -6,6 +7,7 @@ import tempfile
 import time
 import zipfile
 
+import requests
 # stuff for timezones!
 from timezonefinder import TimezoneFinder
 import pytz
@@ -18,8 +20,11 @@ import typing
 
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
-                    Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23)
+                    Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
+                    )
 radar_dir = pathlib.Path("/g/data/rq0/level_2/")
+data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis")
+data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
 
 my_logger = logging.getLogger(__name__)  # for logging
 # dict to control logging
@@ -415,11 +420,11 @@ def summary_process(
     samples_of_mean.attrs['long_name'] = f"{mean_resample} samples " + base_name
     counts_ds = xarray.Dataset(
         {
-            f'count_{mean_resample}': count_of_mean,
-            f'samples_{mean_resample}': samples_of_mean,
-            "count_rain": rain_count,
-            "samples_rain": rain_samples,
-            f"count_{mean_resample}_thresh": count_rain_thresh
+                f'count_{mean_resample}'       : count_of_mean,
+                f'samples_{mean_resample}'     : samples_of_mean,
+                "count_rain"                   : rain_count,
+                "samples_rain"                 : rain_samples,
+                f"count_{mean_resample}_thresh": count_rain_thresh
         }
     )
     for v in counts_ds.variables:
@@ -702,10 +707,12 @@ def index_ll_pts(
     return np.column_stack((col_indices, row_indices)).T  # return as x,y
 
 
-def coarsen_ds(ds: xarray.Dataset, coarsen: typing.Dict[str, int],
-               check_finite:bool = False,
-               #dbz_variables: typing.Tuple[str] = ('reflectivity', 'error'),
-               bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds')) -> xarray.Dataset:
+def coarsen_ds(
+        ds: xarray.Dataset, coarsen: typing.Dict[str, int],
+        check_finite: bool = False,
+        #dbz_variables: typing.Tuple[str] = ('reflectivity', 'error'),
+        bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds')
+        ) -> xarray.Dataset:
     """
     Coarsen a dataset doing specials for dbz variables and bounds
     :param ds: dataset to be coarsened
@@ -717,22 +724,21 @@ def coarsen_ds(ds: xarray.Dataset, coarsen: typing.Dict[str, int],
     """
     my_logger.debug('Coarsening data')
     result = ds.copy()
-    result = result.drop_vars(bounds_vars, errors='ignore') # drop bounds vars as they need special processing,
+    result = result.drop_vars(bounds_vars, errors='ignore')  # drop bounds vars as they need special processing,
     otypes = dict()
     for var in result.variables:  # dbz vars
         unit = result[var].attrs.get('units')
-        if (unit is not None) and (unit.lower() == 'dbz'): # dbz
+        if (unit is not None) and (unit.lower() == 'dbz'):  # dbz
             otypes[var] = ds[var].dtype
             v = np.exp(ds[var].astype('float64'))
             if check_finite:
-                v  = v.compute()
+                v = v.compute()
                 if np.isinf(v).any():
                     raise ValueError(f'Inf values in {var}')
                 if np.isnan(v).any():
                     raise ValueError(f'Nan values in {var}')
             result[var] = v
             my_logger.debug('Computed exp for ' + var)
-
 
     # handle bounds vars
     bounds = dict()
@@ -743,13 +749,13 @@ def coarsen_ds(ds: xarray.Dataset, coarsen: typing.Dict[str, int],
         var_coarsen = {dim: coarsen[dim]}
         bounds[var] = xarray.concat(
             [ds[var].isel(n2=0).coarsen(var_coarsen).min(),
-             ds[var].isel(n2=1).coarsen(var_coarsen).max()], 'bounds').T
+             ds[var].isel(n2=1).coarsen(var_coarsen).max()], 'bounds'
+        ).T
 
     result = result.coarsen(**coarsen).mean()  # coarsen whole dataset
-    result.update(xarray.Dataset(bounds)) # overwrite bounds.
+    result.update(xarray.Dataset(bounds))  # overwrite bounds.
 
-
-    for var,type in otypes.items():  # convert error and reflectivity back to DBZ
+    for var, type in otypes.items():  # convert error and reflectivity back to DBZ
         result[var] = np.log(result[var]).astype(otypes[var])
         my_logger.debug('Computed log for ' + var)
     my_logger.debug('Coarsened data')
@@ -831,10 +837,80 @@ def read_radar_zipfile(
             if var in ds.variables:
                 ds[var] = ds[var].isel({concat_dim: 0}).drop_vars(concat_dim)
         if coarsen is not None:  # coarsen the data
-            ds = coarsen_ds(ds, coarsen,  bounds_vars=bounds_vars)
+            ds = coarsen_ds(ds, coarsen, bounds_vars=bounds_vars)
 
         ds = ds.compute()
         #ds = ds.load()  # actually load it doing any processed needed. Needs to be within the with tempfile block.
     if not first_file:
         my_logger.debug(f'read in {len(ds[concat_dim])} times from {path} {memory_use()}')
     return ds
+
+
+def site_info(site: str) -> pd.DataFrame:
+    """
+    Get information on a site.
+    Args:
+        site: site to get info on
+    Returns: pandas series with information on site.
+    """
+    from importlib.resources import files
+    file = files('meta_data') / 'long_radar_stns.csv'
+    df = pd.read_csv(file, index_col='id_long').drop(columns='Unnamed: 0')
+    L = df.short_name == site
+    meta = df[L]
+    return meta
+
+
+def read_acorn(
+        site: int,
+        retrieve: bool = False,
+        what: typing.Literal['max', 'min','mean'] = 'mean'
+        ) -> pd.Series:
+    """
+    Read in ACORN temperature data for a site.
+    Args:
+
+        site: site to read in
+        what: What to retrieve (max, min or mean). If mean max and min will be retrieved and averaged
+        retrieve: If True ignore local cache.
+
+
+    Returns: pandas series
+    """
+
+    if what == 'mean':
+        my_logger.debug('Computing mean from avg of max and min')
+        minT = read_acorn(site, retrieve=retrieve,  what='min')
+        maxT = read_acorn(site, retrieve=retrieve,  what='max')
+        mean = ((minT+maxT)/2.0).rename('mean')
+        mean.attrs.update(var='mean temperature (degC)')
+        return mean
+    cache_dir = data_dir / 'acorn_data'
+    cache_dir.mkdir(exist_ok=True, parents=True)
+    filename = cache_dir / f'{site:06d}_{what}.csv'
+
+
+    #  retrieve the data if needed
+    if retrieve or (not filename.exists()):
+        url = f'http://www.bom.gov.au/climate/change/hqsites/data/temp/t{what}.{site:06d}.daily.csv'
+        my_logger.info(f"Retrieving data from {url}")
+        headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
+        # fake we are interactive...
+        # retrieve data writing it to local cache.
+        with requests.get(url, headers=headers, stream=True) as r:
+            r.raise_for_status()
+            with open(filename, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+    df = pd.read_csv(filename, index_col='date', parse_dates=True)
+    # extract the site number and name from the dataframe
+    site_number = df.iloc[0,1]
+    site_name = df.iloc[0,2]
+    df = df.drop(index='NaT').iloc[:,0]
+    df.attrs.update(site_number=site_number,site_name=site_name,var=df.name)
+    df = df.rename(what)
+    return df
+
+

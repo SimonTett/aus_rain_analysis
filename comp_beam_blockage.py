@@ -13,10 +13,15 @@ import numpy as np
 import pathlib
 import rioxarray
 import cartopy.crs as ccrs
-
-STRM_dir = pathlib.Path('/home/z3542688/data/aus_rain_analysis/SRTM_Data/')
-
+import ausLib
+# for sites apart from Mebourne there are (small) changes in ht/location and beamwidth. Will need to deal with that.
+# fortunately forme Melbourne is "easy"
+STRM_dir = ausLib.data_dir/'SRTM_Data'
 sitecoords: tuple[float, float, float] = (144.7555, -37.8553, 45.)  # from stn metadata file.
+site = 'Melbourne'
+outfile = ausLib.data_dir/f'ancil/{site}_cbb_dem.nc'
+
+outfile.parent.mkdir(exist_ok=True, parents=True)
 nrays = 360  # number of rays
 nbins = 400  # number of range bins
 el = 0.5  # vertical antenna pointing angle (deg)
@@ -39,14 +44,14 @@ print(
     % (lat.max(), lon.min(), lon.max(), lat.min())
 )
 
-rasterfile = STRM_dir / "srtm_australia_90m.tif"
+rasterfile = STRM_dir / "srtm_melbourne_approx_90m.tif"
 
 ds = rioxarray.open_rasterio(rasterfile).sel(x=slice(rlimits[0], rlimits[2]), y=slice(rlimits[3], rlimits[1]))
 rastervalues = ds.values.squeeze()
 rastercoords = np.stack(np.meshgrid(ds.x, ds.y), axis=-1)
 crs = ds.rio.crs
 
-# Map rastervalues to polar grid points
+# Map rastervalues to polar grid points. Q ? Where does the cord ref system come in?
 polarvalues = wrl.ipol.cart_to_irregular_spline(
     rastercoords, rastervalues, polcoords, order=3, prefilter=False
 )
@@ -70,10 +75,13 @@ cart = xarray.Dataset(coords={"x": (["x"], np.arange(-127.75e3, 127.5e3, 500)),
 src = np.stack([CBB.x.values.flatten(), CBB.y.values.flatten()], axis=-1)
 trg = np.meshgrid(cart.x.values, cart.y.values)
 trg = np.vstack((trg[0].ravel(), trg[1].ravel())).T
-#interp = wrl.ipol.OrdinaryKriging(src,trg,cov='1.0 exp(25e3)')
+interpol = wrl.ipol.OrdinaryKriging # default krieging.
+#interpol = wrl.ipol.OrdinaryKriging(src,trg)
 
-CBB_grid = CBB.wrl.comp.togrid(cart, radius=200e3, center=(0, 0), interpol=wrl.ipol.Nearest)
-CBB_grid.to_netcdf(STRM_dir / 'cbb_melbourne_grid.nc') # and save it
+CBB_grid = CBB.wrl.comp.togrid(cart, radius=200e3, center=(0, 0), interpol=interpol)
+DEM_grid = DEM.wrl.comp.togrid(cart, radius=200e3, center=(0, 0), interpol=interpol)
+ds_grid = xarray.Dataset(dict(elevation=DEM_grid,CBB=CBB_grid))
+ds_grid.to_netcdf(outfile) # and save it
 
 ## now to plot things.
 # just a little helper function to style x and y axes of our maps

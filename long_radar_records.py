@@ -25,7 +25,7 @@ file_data = pd.read_csv("file_count.txt",header=None).rename(columns={0:'root_di
 long_dirs = file_data[file_data.file_count > 6500].root_dir
 ids = long_dirs.str.split("/",expand=True).iloc[:,5].astype('int')
 
-radar_stn_data= pd.read_csv("radar_site_list.csv")
+radar_stn_data= pd.read_csv("meta_data/radar_site_list.csv")
 L=radar_stn_data.id.isin(ids)
 max_Time_str = pd.to_datetime(radar_stn_data.prechange_end.str.replace('-','1/1/2000'),dayfirst=True).max().strftime('%d/%m/%Y')
 long_radar_data = radar_stn_data[L]
@@ -43,7 +43,7 @@ old = tmp.groupby('id').postchange_start.min()  < '2005-01-01'
 ids_ok = current.index.where(current & old ).dropna().astype('int')
 long_radar_data = long_radar_data[long_radar_data.id.isin(ids_ok)]#.)
 # save results
-long_radar_data.to_csv("long_radar_stns.csv")
+long_radar_data.to_csv("meta_data/long_radar_stns.csv")
 ## print out result
 print_df(long_radar_data)
 

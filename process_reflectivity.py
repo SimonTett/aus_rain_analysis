@@ -386,6 +386,7 @@ if __name__ == "__main__":
 
             my_logger.info(f"computed month of summary data {memory_use()}")
             my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
+            ref_summ.time.assign_attrs(units='minutes since 1990-01-01T00:00')
             ref_summ.to_netcdf(outpath, unlimited_dims='time')
             my_logger.info(f'Wrote  summary data to {outpath} {ausLib.memory_use()}')
 
