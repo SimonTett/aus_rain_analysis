@@ -2,6 +2,7 @@
 import io
 import os
 import pathlib
+import platform
 import sys
 import tempfile
 import time
@@ -22,8 +23,14 @@ import typing
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
                     )
-radar_dir = pathlib.Path("/g/data/rq0/level_2/")
-data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis")
+hostname = platform.node()
+if hostname.startswith('gadi'):  # aus super-computer
+    radar_dir = pathlib.Path("/g/data/rq0/level_2/")
+    data_dir = pathlib.Path("/scratch/wq02/st7295/aus_rain_analysis")
+elif hostname.startswith('ccrc'):  # CCRC desktop
+    data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis")
+else:
+    raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
 
 my_logger = logging.getLogger(__name__)  # for logging
@@ -420,11 +427,11 @@ def summary_process(
     samples_of_mean.attrs['long_name'] = f"{mean_resample} samples " + base_name
     counts_ds = xarray.Dataset(
         {
-                f'count_{mean_resample}'       : count_of_mean,
-                f'samples_{mean_resample}'     : samples_of_mean,
-                "count_rain"                   : rain_count,
-                "samples_rain"                 : rain_samples,
-                f"count_{mean_resample}_thresh": count_rain_thresh
+            f'count_{mean_resample}': count_of_mean,
+            f'samples_{mean_resample}': samples_of_mean,
+            "count_rain": rain_count,
+            "samples_rain": rain_samples,
+            f"count_{mean_resample}_thresh": count_rain_thresh
         }
     )
     for v in counts_ds.variables:
@@ -708,42 +715,44 @@ def index_ll_pts(
 
 
 def coarsen_ds(
-        ds: xarray.Dataset, coarsen: typing.Dict[str, int],
+        ds: xarray.Dataset,
+        coarsen: typing.Dict[str, int],
         check_finite: bool = False,
-        #dbz_variables: typing.Tuple[str] = ('reflectivity', 'error'),
+        coarsen_method: typing.Literal['mean', 'median'] = 'mean',
         bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds')
-        ) -> xarray.Dataset:
+) -> xarray.Dataset:
     """
     Coarsen a dataset doing specials for dbz variables and bounds
-    :param ds: dataset to be coarsened
+    :param ds: dataset to be coarsened. All variables coarsened will be ordered.
+    :param check_finite -- check all values are finite when taking exp and at end,
     :param coarsen: dict controlling coarsening
-    :param dbz_variables: Tuple of variable names that in dbz.
-     These will have exp taken and then after  coarsening log taken
+    :param coarsen_method -- how to coarsen. Either mean or median. If mean DBZ variables will have exp taken before coarsening and log after.
     :param bounds_vars: Tuple of variables that are bounds. They are coarsened by taking the min and max.
     :return: coarsened dataset.
     """
+    if coarsen_method not in ['mean', 'median']:
+        raise ValueError(f"Unknown coarsen method {coarsen_method}")
     my_logger.debug('Coarsening data')
     result = ds.copy()
+
     result = result.drop_vars(bounds_vars, errors='ignore')  # drop bounds vars as they need special processing,
     otypes = dict()
-    for var in result.variables:  # dbz vars
+
+    for var in result.data_vars:  # take exp of DBZ vars.
         unit = result[var].attrs.get('units')
-        if (unit is not None) and (unit.lower() == 'dbz'):  # dbz
+        if (coarsen_method == 'mean') and (unit is not None) and (unit.lower() == 'dbz'):  # dbz and taking the mean,
             otypes[var] = ds[var].dtype
             v = np.exp(ds[var].astype('float64'))
             if check_finite:
                 v = v.compute()
                 if np.isinf(v).any():
                     raise ValueError(f'Inf values in {var}')
-                if np.isnan(v).any():
-                    raise ValueError(f'Nan values in {var}')
             result[var] = v
             my_logger.debug('Computed exp for ' + var)
-
     # handle bounds vars
     bounds = dict()
     for var in bounds_vars:
-        if var not in ds.variables:
+        if var not in ds.data_vars:
             continue
         dim = var.split('_')[0]
         var_coarsen = {dim: coarsen[dim]}
@@ -751,13 +760,28 @@ def coarsen_ds(
             [ds[var].isel(n2=0).coarsen(var_coarsen).min(),
              ds[var].isel(n2=1).coarsen(var_coarsen).max()], 'bounds'
         ).T
-
-    result = result.coarsen(**coarsen).mean()  # coarsen whole dataset
+        my_logger.info('Coarsened bounds for ' + var)
+    coarse = result.coarsen(**coarsen)
+    if coarsen_method == 'mean':
+        result = coarse.mean()  # coarsen whole dataset
+    elif coarsen_method == 'median':
+        result = coarse.median()
+    else:
+        raise ValueError(f"Unknown coarsen method {coarsen_method}")
     result.update(xarray.Dataset(bounds))  # overwrite bounds.
 
     for var, type in otypes.items():  # convert error and reflectivity back to DBZ
         result[var] = np.log(result[var]).astype(otypes[var])
         my_logger.debug('Computed log for ' + var)
+    if check_finite:
+        fail = False
+        for var in result.variables:
+            if np.isinf(result[var].values).any():
+                my_logger.warning(f'Inf values in {var}')
+                fail = True
+
+        if fail:
+            raise ValueError('Non-finite values in coarsened data')
     my_logger.debug('Coarsened data')
     return result
 
@@ -766,30 +790,23 @@ def read_radar_zipfile(
         path: pathlib.Path,
         concat_dim: str = 'valid_time',
         singleton_vars: typing.Optional[typing.List[str]] = None,
-        coarsen: typing.Optional[typing.Dict[str, int]] = None,
-        bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds'),
         first_file: bool = False,
         **load_kwargs
-) -> xarray.Dataset:
+) -> typing.Optional[xarray.Dataset]:
     """
     Read netcdf data from a zipfile containing lots of netcdf files
     Args:
+
         :param singleton_vars: variables to be made singleton.
         :param path: Path to zipfile
         :param concat_dim: dimension to concatenate along
         :param bounds_vars: tuple of variables that are bounds
-      :param dbz_variables: tuple of variables that are dbz. Only relevant if coarsening on
       :param first_file: If True only read in the first file
-      :param coarsen: Dict to control coarsening. Vars in dbz_variables will be converted from DBZ, by np.exp, before coarsening.
-        then logs taken after coarsening.
-        remaining kw args are passed to load_dataset.
-    Returns: xarray dataset
-
-    Various ways of speeding up the code were explored
-      including having an in-memory dataset. No improvement was found.
-      The bottleneck appears to be the loading of the netcdf files.
-      Can speed up (a bit) by dropping variables using drop_variables kw arg.
-
+      :param coarsen: Dict to control coarsening.
+      :param coarsen_method: Method to use for coarsening. Either 'mean' or 'median'
+      See coarsen_ds for details.
+    :param **load_kwargs: kwargs to be passed to xarray.open_mfdataset
+    Returns: xarray dataset or None if nothing sucesfully read.
 
     """
     if singleton_vars is None:
@@ -801,46 +818,43 @@ def read_radar_zipfile(
         files = list(pathlib.Path(tdir).glob('*.nc'))  #  0.0 seconds
         if first_file:
             files = files[0:1]
-        #datasets = [xarray.load_dataset(file, **load_kwargs) for file in files] #  1.6 seconds
-        #ds = xarray.concat(datasets, concat_dim) #  0.2 seconds
         if load_kwargs.get('combine') == 'nested':
             load_kwargs.update(concat_dim=concat_dim)
         try:
             ds = xarray.open_mfdataset(files, **load_kwargs)
         except RuntimeError as error:
-            my_logger.warning(f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again")
-            time.sleep(0.1)  # sleep a bit and try again
+            my_logger.warning(
+                f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files")
+            time.sleep(0.1)  # sleep a bit and try again with loading
             datasets = []
             load_args = load_kwargs.copy()
             # drop things that don't work with load!
             for key in ['combine', 'concat_dim', 'parallel']:
                 if key in load_args:
                     load_args.pop(key)
-            for file in files:
+            for file in files:  # loop over files loading each one. If get a failure complain and skip.
                 try:
                     datasets.append(xarray.open_dataset(file, **load_args))
                 except Exception as e:
                     my_logger.warning(f"Error reading in {file} {e} -- skipping")
             if len(datasets) == 0:
                 return None
-            ds = xarray.concat(datasets, concat_dim)  #  0.2 seconds
+            ds = xarray.concat(datasets, concat_dim)  #
 
         if first_file:
             ds = ds.load()
-            #     breakpoint()
-            #ds = ds.isel({concat_dim:0}).drop_vars(concat_dim,errors='ignore') # drop the concat dim
             ds = ds.drop_vars(concat_dim, errors='ignore')  # drop the concat dim
-        # if chunks is not None:
-        #     ds = ds.chunk(chunks)
-        # doing open_dataset then concat +.load takes about the same time.
         for var in singleton_vars:  # variables that want to be singleton.
-            if var in ds.variables:
+            if var in ds.data_vars:
                 ds[var] = ds[var].isel({concat_dim: 0}).drop_vars(concat_dim)
-        if coarsen is not None:  # coarsen the data
-            ds = coarsen_ds(ds, coarsen, bounds_vars=bounds_vars)
 
-        ds = ds.compute()
-        #ds = ds.load()  # actually load it doing any processed needed. Needs to be within the with tempfile block.
+        ds = ds.compute()  # compute/load before closing the files.
+        # fix y_bounds which is in reverse order from x_bounds.
+        var = 'y_bounds'
+        if var in ds.data_vars:
+            v = ds[var]
+            ds[var]=xarray.concat([v.isel(n2=1).assign_coords(n2=0), v.isel(n2=0).assign_coords(n2=1)], dim='n2')
+
     if not first_file:
         my_logger.debug(f'read in {len(ds[concat_dim])} times from {path} {memory_use()}')
     return ds
@@ -864,8 +878,8 @@ def site_info(site: str) -> pd.DataFrame:
 def read_acorn(
         site: int,
         retrieve: bool = False,
-        what: typing.Literal['max', 'min','mean'] = 'mean'
-        ) -> pd.Series:
+        what: typing.Literal['max', 'min', 'mean'] = 'mean'
+) -> pd.Series:
     """
     Read in ACORN temperature data for a site.
     Args:
@@ -880,22 +894,21 @@ def read_acorn(
 
     if what == 'mean':
         my_logger.debug('Computing mean from avg of max and min')
-        minT = read_acorn(site, retrieve=retrieve,  what='min')
-        maxT = read_acorn(site, retrieve=retrieve,  what='max')
-        mean = ((minT+maxT)/2.0).rename('mean')
+        minT = read_acorn(site, retrieve=retrieve, what='min')
+        maxT = read_acorn(site, retrieve=retrieve, what='max')
+        mean = ((minT + maxT) / 2.0).rename('mean')
         mean.attrs.update(var='mean temperature (degC)')
         return mean
     cache_dir = data_dir / 'acorn_data'
     cache_dir.mkdir(exist_ok=True, parents=True)
     filename = cache_dir / f'{site:06d}_{what}.csv'
 
-
     #  retrieve the data if needed
     if retrieve or (not filename.exists()):
         url = f'http://www.bom.gov.au/climate/change/hqsites/data/temp/t{what}.{site:06d}.daily.csv'
         my_logger.info(f"Retrieving data from {url}")
         headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
+            'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
         # fake we are interactive...
         # retrieve data writing it to local cache.
         with requests.get(url, headers=headers, stream=True) as r:
@@ -906,11 +919,9 @@ def read_acorn(
 
     df = pd.read_csv(filename, index_col='date', parse_dates=True)
     # extract the site number and name from the dataframe
-    site_number = df.iloc[0,1]
-    site_name = df.iloc[0,2]
-    df = df.drop(index='NaT').iloc[:,0]
-    df.attrs.update(site_number=site_number,site_name=site_name,var=df.name)
+    site_number = df.iloc[0, 1]
+    site_name = df.iloc[0, 2]
+    df = df.drop(index='NaT').iloc[:, 0]
+    df.attrs.update(site_number=site_number, site_name=site_name, var=df.name)
     df = df.rename(what)
     return df
-
-
