@@ -10,10 +10,11 @@ if __name__ == "__main__":
     my_logger = ausLib.my_logger
     ausLib.init_log(my_logger, 'DEBUG')
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
-    client = ausLib.dask_client()
+    #client = ausLib.dask_client()
     #dask.config.set(scheduler="single-threaded")  # make sure dask is single threaded.
-    coarsen = dict(x=4, y=4)
-    coarsen_method: typing.Literal['mean', 'median'] = 'median'
+    files =list((ausLib.data_dir/'test_data').glob('2_202011*.zip'))
+    ds = read_multi_zip_files(files)#, coarsen=dict(x=4, y=4), coarsen_method= 'median')
+    ds_max = summary_process(ds.reflectivity, mean_resample='1h', max_resample='MS',threshold=15)
     # read in info
     zip_file = pathlib.Path('/g/data/rq0/hist_gndrefl/2/2020/2_20201125.gndrefl.zip')
     drop_vars_first = ['error', 'reflectivity']

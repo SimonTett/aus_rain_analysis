@@ -22,7 +22,7 @@ def print_df(df):
 pd.options.mode.copy_on_write = True
 
 file_data = pd.read_csv("file_count.txt",header=None).rename(columns={0:'root_dir',1:'file_count'})
-long_dirs = file_data[file_data.file_count > 6500].root_dir
+long_dirs = file_data[file_data.file_count > 6500].root_dir # remove this
 ids = long_dirs.str.split("/",expand=True).iloc[:,5].astype('int')
 
 radar_stn_data= pd.read_csv("meta_data/radar_site_list.csv")

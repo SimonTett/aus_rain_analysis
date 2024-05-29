@@ -48,4 +48,4 @@ r-viridis
 r-fields
 r-raster
 r-codetools
-r-terra=1.7-29 # need to downgrade to work on jasmin
+r-terra==1.7-29 # need to downgrade to work on jasmin

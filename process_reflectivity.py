@@ -289,7 +289,7 @@ def fix_spatial_units(ds: xarray.Dataset):
             if unit == 'km':  # convert to m
                 with xarray.set_options(keep_attrs=True):
                     ds[c] = ds[c] * 1000.0  # convert to meters
-                ds[c].assign_attrs(units='m')
+                ds[c] = ds[c].assign_attrs(units='m')
                 my_logger.debug(f'Converted {c} to meters from km')
         except KeyError:
             pass
@@ -298,11 +298,12 @@ def fix_spatial_units(ds: xarray.Dataset):
 
 
 ##
+type_cm = typing.Optional[typing.Literal['mean', 'median']]
 def read_zip(path: pathlib.Path,
              concat_dim: str = 'valid_time',
              singleton_vars: typing.Optional[typing.List[str]] = None,
              coarsen: typing.Optional[typing.Dict[str, int]] = None,
-             coarsen_method: typing.Literal['mean', 'median'] = 'mean',
+             coarsen_method:type_cm  = 'mean',
              bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds'),
              max_value: typing.Optional[float] = None,
              check_finite: bool = True,
@@ -344,8 +345,6 @@ def read_zip(path: pathlib.Path,
     if len(radar_dataset) == 0:
         my_logger.warning(f'No data for {path}')
         return None
-    # fix spatial co-ords
-    radar_dataset = fix_spatial_units(radar_dataset)
     # sort variables so all dimensions are monotonically increasing.
     result=dict()
     for var in radar_dataset.data_vars:
@@ -368,6 +367,39 @@ def read_zip(path: pathlib.Path,
 
     radar_dataset = radar_dataset.compute()
     return radar_dataset
+
+def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
+                         coarsen:typing.Optional[typing.Dict[str,int]] = None,
+                         coarsen_method:type_cm=None) -> xarray.Dataset:
+    # read in first file to get helpful co-ord info. The more we read the slower we go.
+    drop_vars_first = ['error', 'reflectivity']  # variables not to read for meta info
+    drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']  # variables not to read for data
+    fld_info = read_zip(zip_files[0], drop_variables=drop_vars_first, coarsen=coarsen,
+                        first_file=True, parallel=True)
+
+    ds = []
+    for zip_file in zip_files:
+        dd = read_zip(zip_file, coarsen=coarsen, coarsen_method=coarsen_method,
+                      drop_variables=drop_vars, concat_dim='valid_time', parallel=True,
+                      combine='nested',
+                      chunks=dict(valid_time=6), engine='netcdf4')
+        ds.append(dd)
+    my_logger.info(f'Read in {len(ds)} files {ausLib.memory_use()}')
+    ds = xarray.concat(ds, dim='valid_time').rename(valid_time='time').sortby('time')
+
+
+    my_logger.debug(f'Concatenated data   {ausLib.memory_use()}')
+    # merge seems to generate huge memory footprint so just copy across the data from fld_info
+    ds = ds.drop_vars('n2', errors='ignore')
+    fld_info = fld_info.drop_vars('n2', errors='ignore')
+    for v in fld_info.data_vars:
+        if v not in ds.data_vars:
+            ds[v] = fld_info[v]
+            my_logger.debug(f'Added variable {v} to ds')
+        else:
+            my_logger.debug(f'Variable {v} already in ds')
+    ds = fix_spatial_units(ds).compute()
+    return ds
 
 
 ##
@@ -444,39 +476,14 @@ if __name__ == "__main__":
             if args.no_over_write and outpath.exists():
                 my_logger.warning(f'{outpath} and no_over_write set. Skipping processing')
                 continue
-
-
-            # read in first file to get helpful co-ord info. The more we read the slower we go.
-            fld_info = read_zip(zip_files[0], drop_variables=drop_vars_first, coarsen=coarsen,
-                                first_file=True, parallel=True)
-
-            ds = []
-            for zip_file in zip_files:
-                dd = read_zip(zip_file, coarsen=coarsen, coarsen_method=args.coarsen_method,
-                              drop_variables=drop_vars, concat_dim='valid_time', parallel=True,
-                              combine='nested',
-                              chunks=dict(valid_time=6), engine='netcdf4')
-                ds.append(dd)
-            my_logger.info(f'Read in {len(ds)} files {ausLib.memory_use()}')
-            ds = xarray.concat(ds, dim='valid_time').rename(valid_time='time').sortby('time')
-            ds = fix_spatial_units(ds).compute()
-
-            my_logger.debug(f'Concatenated data   {ausLib.memory_use()}')
-            # merge seems to generate huge memory foot print so just copy across the data from fld_info
-            ds = ds.drop_vars('n2',errors='ignore')
-            fld_info = fld_info.drop_vars('n2',errors='ignore')
-            for v in fld_info.variables:
-                if v not in ds.variables:
-                    ds[v] = fld_info[v]
-                    my_logger.debug(f'Added variable {v} to ds')
-                else:
-                    my_logger.debug(f'Variable {v} already in ds')
+            ds = read_multi_zip_files(zip_files)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')  # sadly can  cause OOM fail...
+
             #now to process data
 
             ref_summ = summary_process(ds.reflectivity, dbz=True, base_name='Reflectivity',
                                        mean_resample=args.resample, threshold=15.0)
-            ref_summ = ref_summ.merge(fld_info).compute()
+            #ref_summ = ref_summ.merge(fld_info).compute()
             min_res = ref_summ.sample_resolution / np.timedelta64(1, 'm')
             # check sample resolution is reasonable
             if min_res < 5:

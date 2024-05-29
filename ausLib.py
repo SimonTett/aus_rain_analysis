@@ -29,6 +29,8 @@ if hostname.startswith('gadi'):  # aus super-computer
     data_dir = pathlib.Path("/scratch/wq02/st7295/aus_rain_analysis")
 elif hostname.startswith('ccrc'):  # CCRC desktop
     data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis")
+elif hostname == 'geos-w-048': # my laptop
+    data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis")
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
@@ -760,7 +762,8 @@ def coarsen_ds(
             [ds[var].isel(n2=0).coarsen(var_coarsen).min(),
              ds[var].isel(n2=1).coarsen(var_coarsen).max()], 'bounds'
         ).T
-        my_logger.info('Coarsened bounds for ' + var)
+        my_logger.debug('Coarsened bounds for ' + var)
+
     coarse = result.coarsen(**coarsen)
     if coarsen_method == 'mean':
         result = coarse.mean()  # coarsen whole dataset
@@ -811,7 +814,7 @@ def read_radar_zipfile(
     """
     if singleton_vars is None:
         singleton_vars = []
-        my_logger.debug(f'Unzipping and reading in data {memory_use()}')
+    my_logger.debug(f'Unzipping and reading in data {memory_use()} for {path}')
     with tempfile.TemporaryDirectory() as tdir:
         # times on linux workstation
         zipfile.ZipFile(path).extractall(tdir)  # extract to temp dir 0.16 seconds
@@ -822,6 +825,7 @@ def read_radar_zipfile(
             load_kwargs.update(concat_dim=concat_dim)
         try:
             ds = xarray.open_mfdataset(files, **load_kwargs)
+            ds.close()
         except RuntimeError as error:
             my_logger.warning(
                 f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files")
@@ -834,7 +838,9 @@ def read_radar_zipfile(
                     load_args.pop(key)
             for file in files:  # loop over files loading each one. If get a failure complain and skip.
                 try:
-                    datasets.append(xarray.open_dataset(file, **load_args))
+                    ds = xarray.open_dataset(file, **load_args)
+                    datasets.append(ds)
+                    ds.close()
                 except Exception as e:
                     my_logger.warning(f"Error reading in {file} {e} -- skipping")
             if len(datasets) == 0:
@@ -849,11 +855,13 @@ def read_radar_zipfile(
                 ds[var] = ds[var].isel({concat_dim: 0}).drop_vars(concat_dim)
 
         ds = ds.compute()  # compute/load before closing the files.
-        # fix y_bounds which is in reverse order from x_bounds.
-        var = 'y_bounds'
-        if var in ds.data_vars:
-            v = ds[var]
-            ds[var]=xarray.concat([v.isel(n2=1).assign_coords(n2=0), v.isel(n2=0).assign_coords(n2=1)], dim='n2')
+        ds.close() # close the files
+        my_logger.debug('Read in data. Cleaning tempdir')
+    # fix y_bounds which is in reverse order from x_bounds.
+    var = 'y_bounds'
+    if var in ds.data_vars:
+        v = ds[var]
+        ds[var]=xarray.concat([v.isel(n2=1).assign_coords(n2=0), v.isel(n2=0).assign_coords(n2=1)], dim='n2')
 
     if not first_file:
         my_logger.debug(f'read in {len(ds[concat_dim])} times from {path} {memory_use()}')
