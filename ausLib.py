@@ -27,9 +27,10 @@ hostname = platform.node()
 if hostname.startswith('gadi'):  # aus super-computer
     radar_dir = pathlib.Path("/g/data/rq0/level_2/")
     data_dir = pathlib.Path("/scratch/wq02/st7295/aus_rain_analysis")
+    hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/")
 elif hostname.startswith('ccrc'):  # CCRC desktop
     data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis")
-elif hostname == 'geos-w-048': # my laptop
+elif hostname == 'geos-w-048':  # my laptop
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis")
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
@@ -716,41 +717,54 @@ def index_ll_pts(
     return np.column_stack((col_indices, row_indices)).T  # return as x,y
 
 
+def lc_none(attrs: typing.Dict[str, str],
+            key: str,
+            default: typing.Optional[str] = None) -> typing.Optional[str]:
+    """
+    Handy function to retrieve value from attributes and lowercase it or return None if not present.
+    :param attrs: Attributes dict
+    :param key:kay
+    :param default: default value to return if key not present.
+    :return: value (or default if not found) lowercased
+    """
+    val = attrs.get(key, default)
+    if val is None:  # not present
+        return val
+    return val.lower()  # lower case it.
+
+
 def coarsen_ds(
         ds: xarray.Dataset,
         coarsen: typing.Dict[str, int],
         check_finite: bool = False,
         coarsen_method: typing.Literal['mean', 'median'] = 'mean',
-        bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds')
+        bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds'),
+        speckle: bool = False,
 ) -> xarray.Dataset:
     """
     Coarsen a dataset doing specials for dbz variables and bounds
     :param ds: dataset to be coarsened. All variables coarsened will be ordered.
     :param check_finite -- check all values are finite when taking exp and at end,
     :param coarsen: dict controlling coarsening
-    :param coarsen_method -- how to coarsen. Either mean or median. If mean DBZ variables will have exp taken before coarsening and log after.
+    :param coarsen_method -- how to coarsen. Either mean or median.
     :param bounds_vars: Tuple of variables that are bounds. They are coarsened by taking the min and max.
-    :return: coarsened dataset.
+    :param speckle: If True return speckle (coarsened std_dev) as well as coarsened data.
+    :return: coarsened dataset If speckle set will include variables with _speckle appended to the name.
     """
     if coarsen_method not in ['mean', 'median']:
         raise ValueError(f"Unknown coarsen method {coarsen_method}")
     my_logger.debug('Coarsening data')
-    result = ds.copy()
+    result = ds.copy().drop_vars(bounds_vars, errors='ignore')  # drop bounds vars as they need special processing,
+    fail_vars = []
+    vars_to_leave = [v for v in result.data_vars if v.endswith('_fract_high')]
+    result = result.drop_vars(vars_to_leave, errors='ignore')  # drop fraction high vars
+    for var in result.data_vars:
+        unit = lc_none(result[var].attrs, 'units')
+        if (unit is not None) and (unit == 'dbz'):
+            fail_vars += [var]
+    if len(fail_vars) > 0:
+        raise ValueError(f'Vars {fail_vars} are still in dBZ. Converted to linear units before coarsening')
 
-    result = result.drop_vars(bounds_vars, errors='ignore')  # drop bounds vars as they need special processing,
-    otypes = dict()
-
-    for var in result.data_vars:  # take exp of DBZ vars.
-        unit = result[var].attrs.get('units')
-        if (coarsen_method == 'mean') and (unit is not None) and (unit.lower() == 'dbz'):  # dbz and taking the mean,
-            otypes[var] = ds[var].dtype
-            v = np.exp(ds[var].astype('float64'))
-            if check_finite:
-                v = v.compute()
-                if np.isinf(v).any():
-                    raise ValueError(f'Inf values in {var}')
-            result[var] = v
-            my_logger.debug('Computed exp for ' + var)
     # handle bounds vars
     bounds = dict()
     for var in bounds_vars:
@@ -771,14 +785,16 @@ def coarsen_ds(
         result = coarse.median()
     else:
         raise ValueError(f"Unknown coarsen method {coarsen_method}")
-    result.update(xarray.Dataset(bounds))  # overwrite bounds.
-
-    for var, type in otypes.items():  # convert error and reflectivity back to DBZ
-        result[var] = np.log(result[var]).astype(otypes[var])
-        my_logger.debug('Computed log for ' + var)
+    if speckle:
+        speckle = coarse.std()
+        speckle = speckle.rename({v: v + '_speckle' for v in speckle.data_vars})
+        result = result.merge(speckle)
+    result = result.merge(xarray.Dataset(bounds))  # overwrite bounds.
+    for v in vars_to_leave:
+        result[v] = ds[v]
     if check_finite:
         fail = False
-        for var in result.variables:
+        for var in result.data_vars:
             if np.isinf(result[var].values).any():
                 my_logger.warning(f'Inf values in {var}')
                 fail = True
@@ -792,28 +808,21 @@ def coarsen_ds(
 def read_radar_zipfile(
         path: pathlib.Path,
         concat_dim: str = 'valid_time',
-        singleton_vars: typing.Optional[typing.List[str]] = None,
         first_file: bool = False,
         **load_kwargs
 ) -> typing.Optional[xarray.Dataset]:
     """
     Read netcdf data from a zipfile containing lots of netcdf files
     Args:
-
-        :param singleton_vars: variables to be made singleton.
         :param path: Path to zipfile
         :param concat_dim: dimension to concatenate along
         :param bounds_vars: tuple of variables that are bounds
       :param first_file: If True only read in the first file
-      :param coarsen: Dict to control coarsening.
-      :param coarsen_method: Method to use for coarsening. Either 'mean' or 'median'
-      See coarsen_ds for details.
     :param **load_kwargs: kwargs to be passed to xarray.open_mfdataset
-    Returns: xarray dataset or None if nothing sucesfully read.
+    Returns: xarray dataset or None if nothing successfully read.
 
     """
-    if singleton_vars is None:
-        singleton_vars = []
+
     my_logger.debug(f'Unzipping and reading in data {memory_use()} for {path}')
     with tempfile.TemporaryDirectory() as tdir:
         # times on linux workstation
@@ -848,20 +857,16 @@ def read_radar_zipfile(
             ds = xarray.concat(datasets, concat_dim)  #
 
         if first_file:
-            ds = ds.load()
-            ds = ds.drop_vars(concat_dim, errors='ignore')  # drop the concat dim
-        for var in singleton_vars:  # variables that want to be singleton.
-            if var in ds.data_vars:
-                ds[var] = ds[var].isel({concat_dim: 0}).drop_vars(concat_dim)
+            ds = ds.drop_vars(concat_dim, errors='ignore')  # drop the concat dim as only want the first value
 
         ds = ds.compute()  # compute/load before closing the files.
-        ds.close() # close the files
+        ds.close()  # close the files
         my_logger.debug('Read in data. Cleaning tempdir')
     # fix y_bounds which is in reverse order from x_bounds.
     var = 'y_bounds'
     if var in ds.data_vars:
         v = ds[var]
-        ds[var]=xarray.concat([v.isel(n2=1).assign_coords(n2=0), v.isel(n2=0).assign_coords(n2=1)], dim='n2')
+        ds[var] = xarray.concat([v.isel(n2=1).assign_coords(n2=0), v.isel(n2=0).assign_coords(n2=1)], dim='n2')
 
     if not first_file:
         my_logger.debug(f'read in {len(ds[concat_dim])} times from {path} {memory_use()}')

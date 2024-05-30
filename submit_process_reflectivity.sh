@@ -3,7 +3,7 @@
 site=$1 ; shift # get site name
 if [[ $# -eq 0 ]]
 then
-    outdir="/scratch/wq02/st7295/summary_reflectivity_med"
+    outdir="/scratch/wq02/st7295/summary_reflectivity"
 else
     outdir=$1 ; shift # get output directory
 fi
@@ -11,7 +11,7 @@ fi
 years="1995 2000 2005 2010 2015 2020" # want those years.
 walltime='12:00:00'
 project=wq02
-memory=15GB
+memory=25GB
 ncpus=4 # WIll have a few CPs coz of memory and so will use then
 time_str=$(date +"%Y%m%d_%H%M%S")
 gen_script () {
@@ -22,9 +22,9 @@ gen_script () {
     log_dir=$1 ; shift
     mkdir -p ${log_dir}
     end_year=$((year+5))
-    cmd_log_file="${outdir}/log/${site}_{$year}_${time_str}"
-    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --year ${year} ${end_year} --dask --no_over_write --resample  ${resample} -coarsen 4 4 --coarsen_method median --log_file ${cmd_log_file} --max_value 85.0"
-    log_file="${log_dir}/proc_refl_${site}_{$year}_${time_str}"
+    cmd_log_file="${outdir}/log/${site}_${year}_${time_str}"
+    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --year ${year} ${end_year} --dask --no_over_write --resample  ${resample} --coarsen 4 4  --log_file ${cmd_log_file} "
+    log_file="${log_dir}/proc_refl_${site}_${year}_${time_str}"
     job_name=${site:0:6}_${year}
     # print out the PBS commands
     cat <<EOF
