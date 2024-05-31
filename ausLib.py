@@ -787,7 +787,7 @@ def coarsen_ds(
         raise ValueError(f"Unknown coarsen method {coarsen_method}")
     for var in  speckle_vars:
         speckle= ds[var].coarsen(**coarsen).std()
-        speckle = speckle.name(var+'_speckle')
+        speckle = speckle.rename(var+'_speckle')
         result = result.merge(speckle)
     result = result.merge(xarray.Dataset(bounds))  # overwrite bounds.
     for v in vars_to_leave:
@@ -809,6 +809,7 @@ def read_radar_zipfile(
         path: pathlib.Path,
         concat_dim: str = 'valid_time',
         first_file: bool = False,
+        region:typing.Optional[typing.Dict[str,slice]] = None,
         **load_kwargs
 ) -> typing.Optional[xarray.Dataset]:
     """
@@ -818,6 +819,7 @@ def read_radar_zipfile(
         :param concat_dim: dimension to concatenate along
         :param bounds_vars: tuple of variables that are bounds
       :param first_file: If True only read in the first file
+      :param region -- region to extract data from
     :param **load_kwargs: kwargs to be passed to xarray.open_mfdataset
     Returns: xarray dataset or None if nothing successfully read.
 
@@ -834,7 +836,7 @@ def read_radar_zipfile(
             load_kwargs.update(concat_dim=concat_dim)
         try:
             ds = xarray.open_mfdataset(files, **load_kwargs)
-            ds.close()
+
         except RuntimeError as error:
             my_logger.warning(
                 f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files")
@@ -849,15 +851,22 @@ def read_radar_zipfile(
                 try:
                     ds = xarray.open_dataset(file, **load_args)
                     datasets.append(ds)
-                    ds.close()
                 except Exception as e:
                     my_logger.warning(f"Error reading in {file} {e} -- skipping")
             if len(datasets) == 0:
                 return None
             ds = xarray.concat(datasets, concat_dim)  #
+        # check have not got zero len dims on region.
+        if region is not None:
+            ds = ds.sel(**region)
+            bad_dims = [rname for rname in region.keys() if ds.sizes[rname] == 0]
+            if len(bad_dims) > 0:
+                raise ValueError('Following dimensions have zero length: ' + ','.join(bad_dims))
 
         if first_file:
             ds = ds.drop_vars(concat_dim, errors='ignore')  # drop the concat dim as only want the first value
+        # check dimension sizes are OK
+
 
         ds = ds.compute()  # compute/load before closing the files.
         ds.close()  # close the files
@@ -941,7 +950,8 @@ def read_acorn(
 
 def list_vars(data_set:xarray.Dataset,prefix:str,
               show_dims:bool = False,
-              show_attrs:bool = False) -> typing.List[str]:
+              show_attrs:bool = False,
+              fract_nan:bool = False) -> typing.List[str]:
     """
     List variables in a dataset with a given prefix
     Args:
@@ -949,7 +959,8 @@ def list_vars(data_set:xarray.Dataset,prefix:str,
         prefix: prefix to search for
         show_dims: If True print out dimensions
         show_attrs: If True print out attributes
-    Returns: list of variables with prefix
+        fract_nan: If True show fraction of nan values
+        Returns: list of variables with prefix
     """
     vars = [str(v) for v in data_set.data_vars if prefix in str(v)]
     for v in vars:
@@ -958,6 +969,8 @@ def list_vars(data_set:xarray.Dataset,prefix:str,
             sprint_str += f'{data_set[v].dims}'
         if show_attrs:
             sprint_str += f'{data_set[v].attrs}'
+        if fract_nan:
+            sprint_str += f'Fraction of NaNs {data_set[v].isnull().mean().values:.4f}'
         if len(sprint_str) > 0:
             print(f'{v} {sprint_str}')
     return vars

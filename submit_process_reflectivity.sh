@@ -14,8 +14,11 @@ project=wq02
 memory=25GB
 ncpus=4 # WIll have a few CPs coz of memory and so will use then
 time_str=$(date +"%Y%m%d_%H%M%S")
+resample='30min 1h 2h 4h 8h'
+region="-75 75 75 -75" # region to extract
 gen_script () {
     # function to generate PBS script
+
     site=$1; shift
     year=$1 ; shift
     outdir=$1 ; shift
@@ -23,7 +26,15 @@ gen_script () {
     mkdir -p ${log_dir}
     end_year=$((year+5))
     cmd_log_file="${outdir}/log/${site}_${year}_${time_str}"
-    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --year ${year} ${end_year} --dask --no_over_write --resample  ${resample} --coarsen 4 4  --log_file ${cmd_log_file} "
+    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --year ${year} ${end_year} --dask --no_over_write  --coarsen 4 4  --log_file ${cmd_log_file} "
+    if [[ -n "$resample" ]]
+    then
+        cmd="${cmd} --resample ${resample}"
+    fi
+    if [[ -n "$region" ]]
+    then
+        cmd="${cmd} --region ${region}"
+    fi
     log_file="${log_dir}/proc_refl_${site}_${year}_${time_str}"
     job_name=${site:0:6}_${year}
     # print out the PBS commands
@@ -50,7 +61,7 @@ echo \$result
 EOF
     return 0
     }
-resample='30min 1h 2h 4h 8h'
+
 for year in ${years}
   do
   log_dir="/scratch/${project}/st7295/radar_log/${site}"
