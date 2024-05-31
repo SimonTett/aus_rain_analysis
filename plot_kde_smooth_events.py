@@ -30,7 +30,7 @@ fig.get_layout_engine().set(rect=[0.05,0.0,0.95,1.0])#.execute(fig)
 labels = commonLib.plotLabel()
 plot_col_titles=True
 for q,axis in zip([0.1,0.5,0.9],axs):
-    sel = dict(quantv=q,method='nearest') # waht we want!
+    sel = dict(quantv=q,method='nearest') # what we want!
     radar_quant = radar_dataset.sel(**sel)
     radar_quant['Area'] = radar_quant.count_cells*16.0
     radar_quant['Solar Hour'] = ((radar_quant.t.dt.hour-10)+48)%24 # convert to solar hour.
@@ -42,11 +42,11 @@ for q,axis in zip([0.1,0.5,0.9],axs):
     colors=['brown','firebrick','red','darkorange','orange']
     for ax,var,xlabel,kdeplot_args in zip(axis.flatten(),
                         ['Solar Hour','Area','height','max_value'],
-                        ['Solar Hour','Area (km$^2$)','Height (m)','Mx Ref (DBZ)'],
+                        ['Solar Hour','Area (km$^2$)','Height (m)','Mx Ref (mm^6/m^3)'],
                         [ dict(gridsize=24,clip=(0,24)), # hours
                           dict(gridsize=50,log_scale=(10,None)), # area
                           dict(gridsize=50,clip=(0,1000),log_scale=(10,None)), # ht
-                          dict(gridsize=50,clip=(20,None)) # refl
+                          dict(gridsize=50,clip=(20,None),log_scale=(10,10)) # refl
                           ]):
 
         for prd,color in zip(radar_quant.resample_prd.values[0:-1],colors): # don;t want the last resample prd.

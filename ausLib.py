@@ -736,10 +736,10 @@ def lc_none(attrs: typing.Dict[str, str],
 def coarsen_ds(
         ds: xarray.Dataset,
         coarsen: typing.Dict[str, int],
+        speckle_vars: typing.Tuple[str] = (),
         check_finite: bool = False,
         coarsen_method: typing.Literal['mean', 'median'] = 'mean',
         bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds'),
-        speckle: bool = False,
 ) -> xarray.Dataset:
     """
     Coarsen a dataset doing specials for dbz variables and bounds
@@ -748,7 +748,7 @@ def coarsen_ds(
     :param coarsen: dict controlling coarsening
     :param coarsen_method -- how to coarsen. Either mean or median.
     :param bounds_vars: Tuple of variables that are bounds. They are coarsened by taking the min and max.
-    :param speckle: If True return speckle (coarsened std_dev) as well as coarsened data.
+    :param speckle_vars: Tuple of variables that will have speckle computations done on them and included in the result.
     :return: coarsened dataset If speckle set will include variables with _speckle appended to the name.
     """
     if coarsen_method not in ['mean', 'median']:
@@ -785,9 +785,9 @@ def coarsen_ds(
         result = coarse.median()
     else:
         raise ValueError(f"Unknown coarsen method {coarsen_method}")
-    if speckle:
-        speckle = coarse.std()
-        speckle = speckle.rename({v: v + '_speckle' for v in speckle.data_vars})
+    for var in  speckle_vars:
+        speckle= ds[var].coarsen(**coarsen).std()
+        speckle = speckle.name(var+'_speckle')
         result = result.merge(speckle)
     result = result.merge(xarray.Dataset(bounds))  # overwrite bounds.
     for v in vars_to_leave:
@@ -938,3 +938,26 @@ def read_acorn(
     df.attrs.update(site_number=site_number, site_name=site_name, var=df.name)
     df = df.rename(what)
     return df
+
+def list_vars(data_set:xarray.Dataset,prefix:str,
+              show_dims:bool = False,
+              show_attrs:bool = False) -> typing.List[str]:
+    """
+    List variables in a dataset with a given prefix
+    Args:
+        data_set: dataset
+        prefix: prefix to search for
+        show_dims: If True print out dimensions
+        show_attrs: If True print out attributes
+    Returns: list of variables with prefix
+    """
+    vars = [str(v) for v in data_set.data_vars if prefix in str(v)]
+    for v in vars:
+        sprint_str= ''
+        if show_dims:
+            sprint_str += f'{data_set[v].dims}'
+        if show_attrs:
+            sprint_str += f'{data_set[v].attrs}'
+        if len(sprint_str) > 0:
+            print(f'{v} {sprint_str}')
+    return vars

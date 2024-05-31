@@ -374,23 +374,26 @@ def read_zip(path: pathlib.Path,
                 radar_dataset[v].attrs['units'] = 'mm**6/m**3'
 
     if coarsen is not None:  # coarsen the data
+        if coarsen_cv_max is not None:
+            speckle_vars=tuple('reflectivity')
+        else:
+            speckle_vars=()
         radar_dataset = ausLib.coarsen_ds(radar_dataset, coarsen, bounds_vars=bounds_vars,
                                           coarsen_method=coarsen_method, check_finite=check_finite,
-                                          speckle=(coarsen_cv_max is not None))
-        if coarsen_cv_max is not None: # speckle removal.
-            for vname in radar_dataset.data_vars:
-                if not vname.endswith('_speckle'):
-                    continue
-                bname = "_".join(vname.split('_')[0:-1])
-                cv = radar_dataset[vname] / radar_dataset[bname]
-                msk = cv > coarsen_cv_max
-                if msk.sum() > 0:
-                    radar_dataset[bname] = radar_dataset[bname].where(~msk, other=np.nan)
-                    my_logger.warning(f'Set CV {msk.values.sum():,} values above {coarsen_cv_max} to missing for {bname}')
-                vars_non_time = set(list(msk.dims)) - {concat_dim}
-                miss_var = f'{vname}_fract'
-                v = msk.sum(vars_non_time) / msk.count(vars_non_time)  # fraction of values above threshold
-                radar_dataset[miss_var] = v.assign_attrs(units='fraction',extra=f'fraction coarsened CV > {coarsen_cv_max}')
+                                          speckle_vars=speckle_vars)
+
+        for bname in speckle_vars: # loop over speckle vars -- vars we generated speckle for.
+            vname = 'reflectivity_speckle'
+            miss_var = f'fract_{vname}'
+            cv = radar_dataset[vname] / radar_dataset[bname]
+            msk = cv > coarsen_cv_max
+            if msk.sum() > 0:
+                radar_dataset[bname] = radar_dataset[bname].where(~msk, other=np.nan)
+                my_logger.warning(f'Set CV {msk.values.sum():,} values above {coarsen_cv_max} to missing for {bname}')
+            vars_non_time = set(list(msk.dims)) - {concat_dim}
+
+            v = msk.sum(vars_non_time) / msk.count(vars_non_time)  # fraction of values above threshold
+            radar_dataset[miss_var] = v.assign_attrs(units='fraction',extra=f'fraction coarsened CV > {coarsen_cv_max}')
 
     radar_dataset = radar_dataset.compute()
     return radar_dataset
@@ -515,15 +518,16 @@ if __name__ == "__main__":
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')  # sadly can  cause OOM fail...
             attr_var = ds.drop_vars(['reflectivity', 'reflectivity_speckle', 'error'], errors='ignore').\
                 mean('time', keep_attrs=True)
-            ref_summ = summary_process(ds.reflectivity, mean_resample='1h', threshold=0.5, base_name='reflectivity')
+            ref_summ = summary_process(ds.reflectivity, mean_resample=args.resample, threshold=0.5, base_name='reflectivity')
+            attr_var = attr_var.expand_dims(time=ref_summ.time)
+            ref_summ = ref_summ.merge(attr_var) # merge in attributes data.
             min_res = ref_summ.sample_resolution / np.timedelta64(1, 'm')
             # check sample resolution is reasonable
             if min_res < 5:
                 ValueError(f'small sample resolution {min_res} mins')
             elif min_res > 15:
                 ValueError(f'large sample resolution {min_res} mins')
-            attr_var = attr_var.expand_dims(time=ref_summ.time)
-            ref_summ = ref_summ.merge(attr_var)
+
             ref_summ.encoding.update(zlib=True, complevel=4)
             ref_summ.time.assign_attrs(units='minutes since 1990-01-01T00:00')
             my_logger.info(f"computed month of summary data {memory_use()}")

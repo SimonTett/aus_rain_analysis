@@ -83,9 +83,9 @@ def comp_events(
         expected_event_count = mx.notnull().sum().astype('int64')
         dd = event_stats(mx,
                          max_times.sel(resample_prd=roll),
-                         grp.sel(resample_prd=roll), source=source
+                         grp.sel(resample_prd=roll).fillna(0.0), source=source
                          ).sel(EventTime=slice(1, None))
-        # at this point we have the events. Check that the total cell_count is as expectected
+        # at this point we have the events. Check that the total cell_count is as expected
         assert (int(dd.count_cells.sum('EventTime').values) == expected_event_count)
         event_time_values = np.arange(0, len(dd.EventTime))
         dd = dd.assign_coords(resample_prd=roll, EventTime=event_time_values)
@@ -93,7 +93,7 @@ def comp_events(
         # For temperatures time to be the same as the extreme times.
         if temp is not None:
             temp_extreme_times = temp.sel(time=dd.t,method='nearest')#.rename(dict(time='EventTime'))
-            dd['temp'] = temp_extreme_times  # add in the CET data.
+            dd['temp'] = temp_extreme_times.drop_vars('time')  # add in the temperature data.
             logger.debug('Added temp in')
         # add in hts
         if topog is not None:
@@ -107,13 +107,14 @@ def comp_events(
             dd['height'] = ht
         dd_lst.append(dd)
         logger.info(f"Processed resample_prd: {roll}")
+
     event_ds = xarray.concat(dd_lst, dim='resample_prd')
     return event_ds
 
 site = 'Melbourne'
-site_no = 86338
+site_no = 86338 # station number
 sitecoords: tuple[float, float, float] = (144.7555, -37.8553, 45.)  # from stn metadata file.
-regn = dict(x=slice(-50e3,50e3),y=slice(-50e3,50e3)) # within 50 km of radar site
+regn = dict(x=slice(-75e3,75e3),y=slice(-75e3,75e3)) # within 75 km of radar site
 in_file= ausLib.data_dir/f"summary_reflectivity/processed/{site}_hist_gndrefl_DJF.nc"
 out_file = ausLib.data_dir/f"events/{site}_hist_gndrefl_DJF.nc"
 out_file.parent.mkdir(exist_ok=True,parents=True)
@@ -124,10 +125,11 @@ obs_temperature = ausLib.read_acorn(site_no,what='mean').resample('QS-DEC').mean
 obs_temperature=obs_temperature.where(obs_temperature.time.dt.season=='DJF',drop=True)
 # and get the radar data
 radar = xarray.open_dataset(in_file).load()
-mx = radar.max_Reflectivity.sel(**regn)
-mxTime = radar.time_max_Reflectivity.sel(**regn)
+mx = radar.max_reflectivity.sel(**regn)
+mxTime = radar.time_max_reflectivity.sel(**regn)
 # utc hour of 14:00 corresponds to 00 in Australia.
-grp = np.floor(((mxTime - np.datetime64('1970-01-01T14:00')) / np.timedelta64(1, 'D'))).rename('EventTime').compute()
+ref_time = '1970-01-01T14:00'
+grp = np.floor(((mxTime - np.datetime64(ref_time)) / np.timedelta64(1, 'D'))).rename('EventTime').compute()
 radar_events = comp_events(mx, mxTime, grp, source='RADAR',topog=topog,temp=obs_temperature)
 # finally we can save the events
 radar_events.to_netcdf(out_file)

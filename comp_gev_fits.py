@@ -22,11 +22,11 @@ def comp_radar_fit(dataset:xarray.Dataset,
 
 site='Melbourne'
 radar_dataset = xarray.load_dataset(ausLib.data_dir/f"events/{site}_hist_gndrefl_DJF.nc") # load the processed radar
-# some of the max are actually no rain. So need to get rid of those.
-threshold = 15. # min radar for actual rain. I guess in some seasons some locations have no rain!
-msk = (radar_dataset.max_value > threshold ) & (radar_dataset.t.dt.year >= 2000) & (radar_dataset.max_value < 75)
+threshold =0.5 # some max are zero -- presumably no rain then.
+msk = (radar_dataset.max_value > threshold ) & (radar_dataset.t.dt.year >= 2000)
 radar_dataset = radar_dataset.where(msk)
-rain = (10**(radar_dataset.max_value.astype('float64')/10.)/200.)**(5./8.)
-#fit = gev_r.xarray_gev(radar_dataset.max_value,dim='EventTime')
+rain = (radar_dataset.max_value/200.)**(5./8.)
+fit_q = gev_r.xarray_gev(radar_dataset.max_value,dim='EventTime')
+fit_q_r = gev_r.xarray_gev(rain,dim='EventTime')
 fit = comp_radar_fit(radar_dataset)
 
