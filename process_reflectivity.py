@@ -53,12 +53,14 @@ def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
     result = xarray.Dataset(result)
     return result
 
+
 ## summary_process def
 def summary_process(data_array: xarray.DataArray,
                     mean_resample: typing.Union[typing.List[str], str] = None,
                     time_dim: str = 'time',
                     threshold: typing.Optional[float] = None,
-                    base_name: typing.Optional[str] = None) -> typing.Optional[xarray.Dataset]:
+                    base_name: typing.Optional[str] = None,
+                    min_fract_avg: float = 1.0) -> typing.Optional[xarray.Dataset]:
     f"""
     Process data_array for max (and mean & time of max).
 
@@ -68,6 +70,7 @@ def summary_process(data_array: xarray.DataArray,
         base_name: basename to be used. If not provided then long_name in attrs of data_array will be used. 
         time_dim: the name of the time dimension
         threshold: the threshold above which var is used in *_thresh dataArrays. 
+        min_fract_avg: minimum fraction of data that must be available for a time period. If less than this then the time period is dropped.
         If not provided All _thresh vars will be empty
 
 
@@ -99,7 +102,7 @@ def summary_process(data_array: xarray.DataArray,
 
     # set up empty result
     vars_to_gen = [f"max_{base_name}", f"median_{base_name}", f"mean_raw_{base_name}",
-                   f'mean_{base_name}', f'count_raw_{base_name}',f'count_raw_miss_{base_name}'
+                   f'mean_{base_name}', f'count_raw_{base_name}', f'count_raw_miss_{base_name}'
                    ]
     if threshold is not None:  # add on threshold vars
         vars_to_gen += [f"median_{base_name}_thresh", f"count_raw_{base_name}_thresh",
@@ -114,7 +117,7 @@ def summary_process(data_array: xarray.DataArray,
     # add in counts of samples
     dummy = xarray.DataArray(data=np.repeat(np.nan, len(mean_resample)),
                              coords=dict(resample_prd=mean_resample))
-    for n in ['count','expected_samples']: # any other vars that are time only for resample prds.
+    for n in ['count', 'expected_samples']:  # any other vars that are time only for resample prds.
         result[f'{n}_{base_name}'] = dummy
     # and time_bounds
     result['time_bounds'] = time_bounds
@@ -166,10 +169,16 @@ def summary_process(data_array: xarray.DataArray,
                         expand_dims(resample_prd=[mn_resamp]))
         # work out the expected number of samples. If have less than this then mask the data.
         # Can have more as sample_resolution is the median estimator of the diff.
-        expected_samps = pd.to_timedelta(mn_resamp).total_seconds()/result['sample_resolution'].dt.seconds
+        expected_samps = np.floor(pd.to_timedelta(mn_resamp).total_seconds() / result['sample_resolution'].dt.seconds)
         expected_samps = expected_samps.assign_attrs(extra='Expected number of samples')
-        ok = (count_resamp >= expected_samps.values)
-
+        ok = (count_resamp >= min_fract_avg * expected_samps.values)
+        count_enough_samples = ok.sum(time_dim, keep_attrs=True). \
+            assign_attrs(long_name='Count_samples',
+                         extra='Number of samples with sufficient data')
+        if count_enough_samples < 1:  # not enough data to compute a single time mean
+            my_logger.warning(f'Not enough data to compute any time means for '
+                              f'resample {mn_resamp} and times {time_str}')
+            continue  # will get default values for this case.
         mean_resamp = mean_resamp.where(ok, drop=True)  # mask where have complete data
         # for max want to have consistent no of values.
         if np.isinf(mean_resamp).any():
@@ -197,8 +206,6 @@ def summary_process(data_array: xarray.DataArray,
         time_max_resamp = mean_resamp.idxmax(time_dim, keep_attrs=False, skipna=True)
         median_mean_resamp = mean_resamp.median(time_dim, keep_attrs=False, skipna=True)
         mean_mean_resamp = mean_resamp.mean(time_dim, keep_attrs=False, skipna=True)
-        count_enough_samples = ok.sum(time_dim, keep_attrs=True).\
-            assign_attrs(long_name='Count_samples',extra='Number of samples with sufficient data')
 
         rr.update({
             f"max_{base_name}": max_mean_resamp,
@@ -218,9 +225,9 @@ def summary_process(data_array: xarray.DataArray,
             raise ValueError(f'Inf values in {bad_vars}')
         list_resamp_result.append(rr)
     # end of looping over time resample periods
-    rr = xarray.concat(list_resamp_result, dim='resample_prd')
-    result.update(rr)
-
+    if len(list_resamp_result) > 0:  # some  data to process
+        rr = xarray.concat(list_resamp_result, dim='resample_prd')
+        result.update(rr)
 
     # sort out meta-data.
     variables = [v for v in result.variables]
@@ -232,13 +239,14 @@ def summary_process(data_array: xarray.DataArray,
         elif k.endswith("thresh"):
             comp = k.split('_')[0]
             result[k].attrs['long_name'] = comp + " " + base_name + f'  > {threshold}'
-        elif ('sample' in k ) or (k in ['time_bounds']): # vars to leave alone!
+        elif ('sample' in k) or (k in ['time_bounds']):  # vars to leave alone!
             pass
         else:
             comp = k.split('_')[0]
             result[k].attrs['long_name'] = comp + " " + base_name
 
     result['threshold'] = threshold
+    result['max_fraction'] = min_fract_avg
     # add on time.
     time = data_array[time_dim].mean()  # mean time
     time.attrs.update(data_array[time_dim].attrs)
@@ -247,6 +255,7 @@ def summary_process(data_array: xarray.DataArray,
     result.attrs.update(data_array.attrs)  # preserve initial metadata.
     my_logger.info(f"Summaries computed for  {time_str} {memory_use()}")
     return result
+
 
 ##
 def fix_spatial_units(ds: xarray.Dataset):
@@ -289,7 +298,7 @@ def read_zip(path: pathlib.Path,
              coarsen_cv_max: typing.Optional[float] = None,
              check_finite: bool = True,
              first_file: bool = False,
-             region:typing.Optional[typing.Dict[str,slice]]=None,
+             region: typing.Optional[typing.Dict[str, slice]] = None,
              **load_kwargs
              ) -> typing.Optional[xarray.Dataset]:
     """
@@ -316,7 +325,7 @@ def read_zip(path: pathlib.Path,
     if not path.exists():
         raise ValueError(f"{path} does nto exist")
     radar_dataset = ausLib.read_radar_zipfile(path, first_file=first_file,
-                                              concat_dim=concat_dim,region=region,
+                                              concat_dim=concat_dim, region=region,
                                               **load_kwargs)
     # hdf5 engine is very slow. but netcdf4 needs dask in single thread mode. Sigh!
     # drop cases where entire field is missing
@@ -328,7 +337,7 @@ def read_zip(path: pathlib.Path,
         L = radar_dataset.reflectivity.isnull().all(['x', 'y'])
         if L.sum() > 0:
             bad_times = L[concat_dim][L]
-            my_logger.warning(f'All data missing for times: {bad_times.values[[0,-1]]}')
+            my_logger.warning(f'All data missing for times: {bad_times.values[[0, -1]]}')
             for time in bad_times:
                 my_logger.debug(f'All data missing for time {time}')
             radar_dataset = radar_dataset.where(~L, drop=True)
@@ -346,7 +355,7 @@ def read_zip(path: pathlib.Path,
     radar_dataset = xarray.Dataset(result)
 
     # do some specials for reflectivity
-    v='reflectivity'
+    v = 'reflectivity'
     if got_ref:
         with xarray.set_options(keep_attrs=True):
             units = ausLib.lc_none(radar_dataset[v].attrs, 'units')
@@ -354,12 +363,10 @@ def read_zip(path: pathlib.Path,
             if std_name != 'equivalent_reflectivity_factor':
                 ValueError(f'Std name for reflectivity is {std_name} not equivalent_reflectivity_factor')
             # count number of missing values but only for reflectivity data
-            miss_var = 'fract_missing_'+str(v)
+            miss_var = 'fract_missing_' + str(v)
             vars_non_time = set(list(radar_dataset[v].dims)) - {concat_dim}
             mv = radar_dataset[v].isnull()
             mv = mv.sum(vars_non_time) / mv.count(vars_non_time)
-            if (mv >1).any():
-                breakpoint()
             mv = mv.assign_attrs(units='fraction', extra='fraction of missing values')
             radar_dataset[miss_var] = mv
 
@@ -374,26 +381,27 @@ def read_zip(path: pathlib.Path,
                     vars_non_time). \
                     assign_attrs(units='fraction', threshold_dbz=dbz_ref_limits[1])  # fraction of values > thresh
 
-                if L1.sum() > 0: # got some values above the max thresh
+                if L1.sum() > 0:  # got some values above the max thresh
                     radar_dataset[v] = radar_dataset[v].where(~L1, other=np.nan)  # above threshold nan
                     my_logger.debug(f'Set {L1.values.sum():,} values above {dbz_ref_limits[1]} to missing for {v}')
             if units == 'dbz':
-                radar_dataset[v] = 10 ** (radar_dataset[v] / 10.) # convert from DBZ to Z
+                radar_dataset[v] = 10 ** (radar_dataset[v] / 10.)  # convert from DBZ to Z
                 if L0 is not None:  # have a mask for 0
-                    radar_dataset[v] = radar_dataset[v].where(~L0, other=0.0).assign_attrs(zero_dbz=dbz_ref_limits[0])  # below threshold 0
+                    radar_dataset[v] = radar_dataset[v].where(~L0, other=0.0).assign_attrs(
+                        zero_dbz=dbz_ref_limits[0])  # below threshold 0
                     my_logger.debug(f'Set {L0.values.sum():,} values below  {dbz_ref_limits[0]} to 0 ')
                 radar_dataset[v].attrs['units'] = 'mm**6/m**3'
 
     if coarsen is not None:  # coarsen the data
         if coarsen_cv_max is not None:
-            speckle_vars=('reflectivity',) # extra , as this is a 1 element tuple
+            speckle_vars = ('reflectivity',)  # extra , as this is a 1 element tuple
         else:
-            speckle_vars=()
+            speckle_vars = ()
         radar_dataset = ausLib.coarsen_ds(radar_dataset, coarsen, bounds_vars=bounds_vars,
                                           coarsen_method=coarsen_method, check_finite=check_finite,
                                           speckle_vars=speckle_vars)
 
-        for bname in speckle_vars: # loop over speckle vars -- vars we generated speckle for.
+        for bname in speckle_vars:  # loop over speckle vars -- vars we generated speckle for.
             vname = 'reflectivity_speckle'
             miss_var = f'fract_{vname}'
             cv = radar_dataset[vname] / radar_dataset[bname]
@@ -404,7 +412,8 @@ def read_zip(path: pathlib.Path,
             vars_non_time = set(list(msk.dims)) - {concat_dim}
 
             v = msk.sum(vars_non_time) / msk.count(vars_non_time)  # fraction of values above threshold
-            radar_dataset[miss_var] = v.assign_attrs(units='fraction',extra=f'fraction coarsened CV > {coarsen_cv_max}')
+            radar_dataset[miss_var] = v.assign_attrs(units='fraction',
+                                                     extra=f'fraction coarsened CV > {coarsen_cv_max}')
 
     radar_dataset = radar_dataset.compute()
     return radar_dataset
@@ -415,12 +424,13 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                          coarsen_method: type_cm = 'mean',
                          dbz_ref_limits: typing.Optional[typing.Tuple[float, float]] = None,
                          coarsen_cv_max: typing.Optional[float] = None,
-                         region:typing.Optional[typing.Dict[str,slice]]=None) -> xarray.Dataset:
+                         region: typing.Optional[typing.Dict[str, slice]] = None
+                         ) -> xarray.Dataset:
     # read in first file to get helpful co-ord info. The more we read the slower we go.
     drop_vars_first = ['error', 'reflectivity']  # variables not to read for meta info
     drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']  # variables not to read for data
     fld_info = read_zip(zip_files[0], drop_variables=drop_vars_first, coarsen=coarsen,
-                        first_file=True, parallel=True,region=region)
+                        first_file=True, parallel=True, region=region)
 
     ds = []
     for zip_file in zip_files:
@@ -456,7 +466,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process reflectivity data')
     parser.add_argument('site', help='Radar site to process',
                         default='Melbourne', choices=site_numbers.keys())
-    parser.add_argument('--year', nargs=2, type=int, help='range of years to process', default=[2020, 2023])
+    parser.add_argument('--years', nargs='+', type=int, help='List of years to process',
+                        default=range(2020, 2023))
     parser.add_argument('--months', nargs='+', type=int, help='list of months to process', default=range(1, 13))
     parser.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
     parser.add_argument('outdir', help='output directory. Must be provided')
@@ -473,12 +484,18 @@ if __name__ == "__main__":
                         choices=['mean', 'median'])
     parser.add_argument('--dbz_range', nargs=2, type=float, default=[15., 55.],
                         help='range for dbz ref. Values below are set to 0 when converting to ref; above to missing')
-    parser.add_argument('--cv_max', type=float, help='Maximum coefficient of variability for coarsened data',default=10.)
+    parser.add_argument('--cv_max', type=float, help='Maximum coefficient of variability for coarsened data',
+                        default=None)
     parser.add_argument('--write_full', action='store_true', help='Write out full datasets after coarsening')
-    parser.add_argument('--region', nargs=4,type=float,help='Region to extract data for x0 x1 y0 y1')
+    parser.add_argument('--region', nargs=4, type=float, help='Region to extract data for as x0 x1 y0 y1')
+    parser.add_argument('--min_fract_avg', type=float,
+                        help='Minimum fraction of data present when generating averages',
+                        default=1.0)
+    parser.add_argument('--threshold', type=float,
+                        help='Threshold for reflectivity. Used in threshold vars', default=0.5)
     args = parser.parse_args()
 
-    time_unit = 'minutes since 1970-01-01'
+    time_unit = 'minutes since 1970-01-01'  # units for time in output files
     # deal with verbosity!
     if args.verbose > 1:
         level = 'DEBUG'
@@ -487,7 +504,12 @@ if __name__ == "__main__":
     else:
         level = 'WARNING'
     ausLib.init_log(my_logger, level=level, log_file=args.log_file, mode='w')
-    # print out all the arguments
+    # print out all the arguments and add them to attributes of the final dataset.
+
+    extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
+                       utc_time=pd.Timestamp.utcnow().isoformat(),
+                       program_args=[f'{k}: {v}' for k, v in vars(args).items()])
+
     for name, value in vars(args).items():
         my_logger.info(f"Arg:{name} =  {value}")
     if args.dask:
@@ -507,11 +529,13 @@ if __name__ == "__main__":
     outdir = pathlib.Path(args.outdir) / args.site
     outdir.mkdir(parents=True, exist_ok=True)
     my_logger.info(f'Output directory is {outdir}')
+
     outdir_full = None
     if args.write_full:
-        outdir_full = pathlib.Path(args.outdir) / (args.site+'_full')
+        outdir_full = pathlib.Path(args.outdir) / (args.site + '_full')
         outdir_full.mkdir(parents=True, exist_ok=True)
         my_logger.info(f'Full data will be written to {outdir_full}')
+    extra_attrs.update(outdir=str(outdir), outdir_full=str(outdir_full))
     drop_vars_first = ['error', 'reflectivity']  # variables not to read for meta info
     drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']  # variables not to read for data
     if args.coarsen:
@@ -519,11 +543,11 @@ if __name__ == "__main__":
     else:
         coarsen = None
     if args.region:
-        region = dict(x=slice(*args.region[0:2]), y = slice(*args.region[2:]))
+        region = dict(x=slice(*args.region[0:2]), y=slice(*args.region[2:]))
         my_logger.info(f'Region is {region}')
     else:
         region = None
-    for year in range(*args.year):
+    for year in args.years:
         my_logger.info(f'Processing year {year}')
         for month in args.months:
             pattern = f'{site_number}_{year:04d}{month:02d}' + args.glob
@@ -539,25 +563,29 @@ if __name__ == "__main__":
                 my_logger.warning(f'{outpath} and no_over_write set. Skipping processing')
                 continue
 
-            ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0],args.dbz_range[1]),
+            ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
                                       coarsen=dict(x=4, y=4), region=region,
-                                      coarsen_method='mean', coarsen_cv_max=args.cv_max)
+                                      coarsen_method='mean',
+                                      coarsen_cv_max=args.cv_max)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
-            if args.write_full: # write out the full file.
+            if args.write_full:  # write out the full file.
                 full_file = outdir_full / file
-                ds.time.attrs.pop("units",None)
+                ds.time.attrs.pop("units", None)
                 ds.time.encoding.update(units=time_unit)
-                ds.encoding.update(zlib=True, complevel=4) # compress data. Lots of zeros.
+                ds.encoding.update(zlib=True, complevel=4)  # compress data. Lots of zeros.
+                ds.attrs.update(extra_attrs)
                 ds.to_netcdf(full_file, unlimited_dims='time')
                 my_logger.info(f'wrote full data to {full_file} {ausLib.memory_use()}')
 
-
-            attr_var = ds.drop_vars(['reflectivity', 'reflectivity_speckle', 'error'], errors='ignore').\
-                mean('time', keep_attrs=True)
-            ref_summ = summary_process(ds.reflectivity, mean_resample=args.resample, threshold=0.5, base_name='reflectivity')
+            attr_var = ds.drop_vars(['reflectivity', 'reflectivity_speckle', 'error'],
+                                    errors='ignore').mean('time', keep_attrs=True)
+            ref_summ = summary_process(ds.reflectivity, mean_resample=args.resample,
+                                       threshold=args.threshold,
+                                       base_name='reflectivity',
+                                       min_fract_avg=args.min_fract_avg)
             attr_var = attr_var.expand_dims(time=ref_summ.time)
-            ref_summ = ref_summ.merge(attr_var) # merge in attributes data.
-            min_res = ref_summ.sample_resolution.dt.seconds/60.
+            ref_summ = ref_summ.merge(attr_var)  # merge in attributes data.
+            min_res = ref_summ.sample_resolution.dt.seconds / 60.
             # check sample resolution is reasonable
             if min_res < 4:
                 ValueError(f'small sample resolution {min_res} mins')
@@ -566,7 +594,8 @@ if __name__ == "__main__":
 
             ref_summ.encoding.update(zlib=True, complevel=4)
             ref_summ.time.attrs.pop('units', None)
-            ref_summ.time.encoding.update(units='minutes since 1990-01-01T00:00',dtype='float64')
+            ref_summ.time.encoding.update(units='minutes since 1990-01-01T00:00', dtype='float64')
+            ref_summ.attrs.update(extra_attrs)
             my_logger.info(f"computed month of summary data {memory_use()}")
             my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
             ref_summ.to_netcdf(outpath, unlimited_dims='time')

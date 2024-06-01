@@ -8,7 +8,7 @@ else
     outdir=$1 ; shift # get output directory
 fi
 
-years="1995 2000 2005 2010 2015 2020" # want those years.
+years_to_gen="1995 2000 2005 2010 2015 2020" # want those years.
 walltime='12:00:00'
 project=wq02
 memory=25GB
@@ -24,9 +24,9 @@ gen_script () {
     outdir=$1 ; shift
     log_dir=$1 ; shift
     mkdir -p ${log_dir}
-    end_year=$((year+5))
+    years=$(seq -s ' ' ${year} $((year+4))) # five years at a time
     cmd_log_file="${outdir}/log/${site}_${year}_${time_str}"
-    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --year ${year} ${end_year} --dask --no_over_write  --coarsen 4 4  --log_file ${cmd_log_file} "
+    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --years ${years} --dask --no_over_write  --coarsen 4 4  --log_file ${cmd_log_file} --min_fract_avg 0.75"
     if [[ -n "$resample" ]]
     then
         cmd="${cmd} --resample ${resample}"
@@ -62,7 +62,7 @@ EOF
     return 0
     }
 
-for year in ${years}
+for year in ${years_to_gen}
   do
   log_dir="/scratch/${project}/st7295/radar_log/${site}"
   gen_script "${site}" "${year}" "${outdir}" "${log_dir}" | qsub - # generate and submit script
