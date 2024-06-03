@@ -74,9 +74,11 @@ def comp_events(
         max_times: xarray.DataArray,
         grp: xarray.DataArray,
         topog: typing.Optional[xarray.DataArray] = None,
-        temp: typing.Optional[xarray.DataArray] = None,
+        extras:typing.Optional[typing.List[xarray.DataArray]]=None,
         source: str = 'CPM'
 ):
+    if extras is None:
+        extras = []
     dd_lst = []
     for roll in max_values['resample_prd'].values:
         mx = max_values.sel(resample_prd=roll)
@@ -90,11 +92,14 @@ def comp_events(
         event_time_values = np.arange(0, len(dd.EventTime))
         dd = dd.assign_coords(resample_prd=roll, EventTime=event_time_values)
         logger.debug('Computed event stats')
-        # For temperatures time to be the same as the extreme times.
-        if temp is not None:
-            temp_extreme_times = temp.sel(time=dd.t,method='nearest')#.rename(dict(time='EventTime'))
-            dd['temp'] = temp_extreme_times.drop_vars('time')  # add in the temperature data.
-            logger.debug('Added temp in')
+        # deal with the extras!
+        for da in extras:
+            try:
+                da_extreme_times  = da.sel(resample_prd=roll).squeeze(drop=True).sel(time=dd.t,method='nearest')
+            except KeyError:
+                da_extreme_times = da.sel(time=dd.t,method='nearest')#.rename(dict(time='EventTime'))
+            dd = dd.merge(da_extreme_times.drop_vars('time'))
+            logger.debug(f'Added {da_extreme_times.name} in')
         # add in hts
         if topog is not None:
             coords = source_coords(source)
@@ -114,22 +119,28 @@ def comp_events(
 site = 'Melbourne'
 site_no = 86338 # station number
 sitecoords: tuple[float, float, float] = (144.7555, -37.8553, 45.)  # from stn metadata file.
-regn = dict(x=slice(-75e3,75e3),y=slice(-75e3,75e3)) # within 75 km of radar site
+
+
 in_file= ausLib.data_dir/f"summary_reflectivity/processed/{site}_hist_gndrefl_DJF.nc"
+
 out_file = ausLib.data_dir/f"events/{site}_hist_gndrefl_DJF.nc"
-out_file.parent.mkdir(exist_ok=True,parents=True)
-cbb_dem = xarray.load_dataset(ausLib.data_dir/f'ancil/{site}_cbb_dem.nc')
-topog = cbb_dem.elevation.coarsen(x=4, y=4, boundary='trim').mean().sel(**regn)
+
 # get the temperature data for the site.
-obs_temperature = ausLib.read_acorn(site_no,what='mean').resample('QS-DEC').mean().to_xarray().rename(dict(date='time'))
+obs_temperature = ausLib.read_acorn(site_no,what='mean').resample('QS-DEC').mean().to_xarray().rename('ObsT').rename(dict(date='time'))
 obs_temperature=obs_temperature.where(obs_temperature.time.dt.season=='DJF',drop=True)
 # and get the radar data
 radar = xarray.open_dataset(in_file).load()
-mx = radar.max_reflectivity.sel(**regn)
-mxTime = radar.time_max_reflectivity.sel(**regn)
+regn = ausLib.extract_rgn(radar)
+out_file.parent.mkdir(exist_ok=True,parents=True)
+cbb_dem = xarray.load_dataset(ausLib.data_dir/f'ancil/{site}_cbb_dem.nc').sel(**regn)
+# important to select to region before coarsening for consistency with radar data processing.
+topog = cbb_dem.elevation.coarsen(x=4, y=4, boundary='trim').mean()
+mx = radar.max_reflectivity
+mxTime = radar.time_max_reflectivity
 # utc hour of 14:00 corresponds to 00 in Australia.
 ref_time = '1970-01-01T14:00'
 grp = np.floor(((mxTime - np.datetime64(ref_time)) / np.timedelta64(1, 'D'))).rename('EventTime').compute()
-radar_events = comp_events(mx, mxTime, grp, source='RADAR',topog=topog,temp=obs_temperature)
+radar_events = comp_events(mx, mxTime, grp, source='RADAR',topog=topog,
+                           extras=[obs_temperature,radar.fraction_resample,(radar.sample_resolution.dt.seconds/60.).rename('sample_resolution')])
 # finally we can save the events
 radar_events.to_netcdf(out_file)

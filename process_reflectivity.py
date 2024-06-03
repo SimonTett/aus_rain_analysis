@@ -247,6 +247,7 @@ def summary_process(data_array: xarray.DataArray,
 
     result['threshold'] = threshold
     result['max_fraction'] = min_fract_avg
+    result['max_fraction'].attrs.update(long_name='Minimum fraction of samples for mean')
     # add on time.
     time = data_array[time_dim].mean()  # mean time
     time.attrs.update(data_array[time_dim].attrs)
@@ -376,7 +377,7 @@ def read_zip(path: pathlib.Path,
                 L0 = radar_dataset[v] < dbz_ref_limits[0]
                 L1 = radar_dataset[v] > dbz_ref_limits[1]
                 vars_non_time = set(list(L1.dims)) - {concat_dim}
-                miss_var = str(v) + '_fract_high'
+                miss_var = 'fract_high_'+str(v)
                 radar_dataset[miss_var] = L1.sum(vars_non_time) / L1.count(
                     vars_non_time). \
                     assign_attrs(units='fraction', threshold_dbz=dbz_ref_limits[1])  # fraction of values > thresh
