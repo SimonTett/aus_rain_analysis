@@ -475,6 +475,8 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
         else:
             my_logger.debug(f'Variable {v} already in ds')
     ds = fix_spatial_units(ds).compute()
+    # add in the long/lat coords
+    ds = ausLib.add_long_lat_coords(ds)
     return ds
 
 
@@ -583,13 +585,13 @@ if __name__ == "__main__":
     outdir_full = None
     out_coord_dir = None
     if args.write_full:
-        outdir_full = pathlib.Path(args.outdir) / (args.site + '_full')
+        outdir_full = outdir.parent/(outdir.name+'_full')
         outdir_full.mkdir(parents=True, exist_ok=True)
         my_logger.info(f'Full data will be written to {outdir_full}')
     coord_df = None
     if args.extract_coords_csv: # data going out
         coord_df = ausLib.read_gsdr_csv(args.extract_coords_csv)
-        out_coord_dir = pathlib.Path(args.outdir) / (args.site+'_coord')
+        out_coord_dir = outdir.parent/(outdir.name+'_coord')
         out_coord_dir.mkdir(parents=True, exist_ok=True)
         my_logger.info(f'Extracted coord data will be written to {out_coord_dir}')
     extra_attrs.update(outdir=str(outdir), outdir_full=str(outdir_full),out_coord_dir=str(out_coord_dir))
@@ -625,8 +627,8 @@ if __name__ == "__main__":
             if args.to_rain is not None:
                 to_rain= tuple(args.to_rain) # type checker moaning here.
             ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
-                                      coarsen=dict(x=4, y=4), region=region,
-                                      coarsen_method='mean',
+                                      coarsen=coarsen, region=region,
+                                      coarsen_method=args.coarsen_method,
                                       coarsen_cv_max=args.cv_max,to_rain=to_rain)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
             basename='reflectivity'
@@ -648,25 +650,23 @@ if __name__ == "__main__":
                 ValueError(f'small sample resolution {min_res} mins')
             elif min_res > 15:
                 ValueError(f'large sample resolution {min_res} mins')
+            write_out(summary_data, time_unit, outpath, extra_attrs)
+            my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
+            summary_data.to_netcdf(outpath, unlimited_dims='time')
 
             if args.write_full:  # write out the full file.
                 full_file = outdir_full / file
                 write_out(ds,time_unit,full_file,extra_attrs)
                 my_logger.info(f'wrote full data to {full_file} {ausLib.memory_use()}')
-            if args.extract_coords_csv:
+
+            if args.extract_coords_csv: # write out co-ords
                 coord_file = out_coord_dir / file
                 radar_proj = ausLib.radar_projection(ds.proj.attrs)
                 coord_da = ausLib.data_array_station_match(ds[basename],radar_proj, coord_df)
-                masked_ds = attr_var.drop_dims('time').merge(coord_da) # drop the time dimension and merge in the coord
+                att = attr_var.drop_vars(['longitude','latitude','y_bounds','x_bounds']).squeeze('time',drop=True)
+                masked_ds = att.merge(coord_da).drop_dims(['x','y']) # drop the time dimension and merge in the coord
                 write_out(masked_ds,time_unit,coord_file,extra_attrs)
                 my_logger.info(f'wrote coord data to {coord_file} {ausLib.memory_use()}')
 
 
 
-
-
-
-
-            write_out(summary_data, time_unit, outpath, extra_attrs)
-            my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
-            summary_data.to_netcdf(outpath, unlimited_dims='time')

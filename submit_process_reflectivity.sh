@@ -14,8 +14,18 @@ project=wq02
 memory=25GB
 ncpus=4 # WIll have a few CPs coz of memory and so will use then
 time_str=$(date +"%Y%m%d_%H%M%S")
+extra_args="--to_rain 0.02567 0.6875 --extract_coords_csv meta_data/${site}_close.csv"
 resample='30min 1h 2h 4h 8h'
-region="-75 75 75 -75" # region to extract
+region="-100 100 100 -100" # region to extract
+if [[ -n "$resample" ]]
+then
+    extra_args="${extra_args} --resample ${resample}"
+fi
+if [[ -n "$region" ]]
+then
+    extra_args="${extra_args} --region ${region}"
+fi
+extra_args="${extra_args} --min_fract_avg 0.75 --threshold 10."
 gen_script () {
     # function to generate PBS script
 
@@ -27,13 +37,9 @@ gen_script () {
     years=$(seq -s ' ' ${year} $((year+4))) # five years at a time
     cmd_log_file="${outdir}/log/${site}_${year}_${time_str}"
     cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --years ${years} --dask --no_over_write  --coarsen 4 4  --log_file ${cmd_log_file} --min_fract_avg 0.75 --dbz_range 15 75"
-    if [[ -n "$resample" ]]
+    if [[ -n "$extra_args" ]]
     then
-        cmd="${cmd} --resample ${resample}"
-    fi
-    if [[ -n "$region" ]]
-    then
-        cmd="${cmd} --region ${region}"
+        cmd="${cmd} ${extra_args}"
     fi
     log_file="${log_dir}/proc_refl_${site}_${year}_${time_str}"
     job_name=${site:0:6}_${year}
@@ -64,6 +70,6 @@ EOF
 
 for year in ${years_to_gen}
   do
-  log_dir="/scratch/${project}/st7295/radar_log/${site}_75max"
+  log_dir="${outdir}/${site}_pbs_log"
   gen_script "${site}" "${year}" "${outdir}" "${log_dir}" | qsub - # generate and submit script
 done

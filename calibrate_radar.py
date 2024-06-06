@@ -1,8 +1,9 @@
 # calibrate radar data. Code needs cleaning up.
+##
 import pathlib
 import typing
 
-import ausLib
+
 import xarray
 import pathlib
 import numpy as np
@@ -10,13 +11,36 @@ import cartopy.crs as ccrs
 import cartopy.geodesic
 import pandas as pd
 import matplotlib.pyplot as plt
+import ausLib
 
-
-files = list(pathlib.Path('/scratch/wq02/st7295/test/Melbourne_coord').glob("hist_gndrefl*rain.nc"))
-radar = xarray.open_mfdataset(files)
-
-breakpoint()
+def read_gauge_data(gauge_metadata: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for name, series in gauge_metadata.iterrows():
+        records.append(ausLib.read_gsdr_data(series))
+    result = pd.concat(records, axis=1).sort_index()
+    return result
 ##
+site='Melbourne'
+files = list(pathlib.Path(f'/scratch/wq02/st7295/test/{site}_coord').glob("hist_gndrefl*rain.nc"))
+files = '/scratch/wq02/st7295/summary_reflectivity_75max/Melbourne_rain_coord/hist_gndrefl_1997_*rain.nc'
+radar = xarray.open_mfdataset(files) # rainfall for stations close to radar
+# and convert to a dataframe
+radar_resamp=radar.rain_rate.resample(time='1h',closed='right',label='right').mean().compute()
+radar_df = radar_resamp.to_dataframe().unstack('station').loc[:, radar.rain_rate.name]
+radar_df.index = pd.to_datetime(radar_df.index,utc=True)
+meta_data = ausLib.read_gsdr_csv(pathlib.Path(f'meta_data/{site}_close.csv'))
+gauge_data = read_gauge_data(meta_data).loc['1997-01-01':'1998-12-31']
+
+all_df = pd.concat([radar_df[None:gauge_data.index.max()].stack().rename('radar_rain'),
+                    gauge_data.stack().rename('gauge')], axis=1)
+L = all_df.notna().all(axis=1)  # all points OK
+all_df = all_df[L]
+# mask out anything where both are small (< 0.1)
+L = (all_df > 0.5).all(axis=1)
+all_df[L].plot.scatter(x='radar_rain',y='gauge',s=4)
+plt.show()
+breakpoint()
+## old code from here. May be useful so not deleting...
 type_time_range = typing.Tuple[typing.Optional[str], typing.Optional[str]]
 
 
@@ -74,12 +98,7 @@ def gauge_max(gauge_metadata: pd.DataFrame,
     return process_gauge
 
 
-def gauge_data(gauge_metadata: pd.DataFrame) -> pd.DataFrame:
-    records = []
-    for name, series in gauge_metadata.iterrows():
-        records.append(ausLib.read_gsdr_data(series))
-    result = pd.concat(records, axis=1)
-    return result
+
 
 
 def gauge_colocate_time(gauge_metadata: pd.DataFrame, times: pd.DataFrame) -> pd.DataFrame:
