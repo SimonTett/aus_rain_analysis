@@ -20,6 +20,7 @@ import xarray
 import logging
 import pandas as pd
 import typing
+import ast # thanks chaptGPT co-pilot
 
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
@@ -37,12 +38,31 @@ elif hostname == 'geos-w-048':  # my laptop
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
+module_path = pathlib.Path(__file__).parent # path to this module
 
 my_logger = logging.getLogger(__name__)  # for logging
 # dict to control logging
 
 
 timezone_finder = TimezoneFinder()  # instance of timezone_finder -- only want one,
+
+def extract_rgn(radar_ds:xarray.Dataset) -> typing.Dict[str, float]:
+    """
+    Extract region from radar dataset attributes.
+    Args:
+        radar_ds: radar dataset
+
+    Returns: dictionary with region.
+    """
+    # extract the region used from the meta-data though need to reverse  y
+    rgn = [v for v in radar_ds.attrs['program_args'] if v.startswith('region:')][0]
+    rgn = np.array(ast.literal_eval(rgn.split(':')[1]))  # thanks chatgpt fot this
+    # convert to m from km
+    rgn *= 1000.
+    rgn = dict(x=slice(*rgn[0:2]), y=slice(*rgn[-1:-3:-1]))
+
+    return rgn
+
 
 
 def gsdr_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
