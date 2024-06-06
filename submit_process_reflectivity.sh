@@ -26,7 +26,7 @@ gen_script () {
     mkdir -p ${log_dir}
     years=$(seq -s ' ' ${year} $((year+4))) # five years at a time
     cmd_log_file="${outdir}/log/${site}_${year}_${time_str}"
-    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --years ${years} --dask --no_over_write  --coarsen 4 4  --log_file ${cmd_log_file} --min_fract_avg 0.75"
+    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --years ${years} --dask --no_over_write  --coarsen 4 4  --log_file ${cmd_log_file} --min_fract_avg 0.75 --dbz_range 15 75"
     if [[ -n "$resample" ]]
     then
         cmd="${cmd} --resample ${resample}"
@@ -64,6 +64,6 @@ EOF
 
 for year in ${years_to_gen}
   do
-  log_dir="/scratch/${project}/st7295/radar_log/${site}"
+  log_dir="/scratch/${project}/st7295/radar_log/${site}_75max"
   gen_script "${site}" "${year}" "${outdir}" "${log_dir}" | qsub - # generate and submit script
 done
