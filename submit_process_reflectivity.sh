@@ -14,9 +14,9 @@ project=wq02
 memory=25GB
 ncpus=4 # WIll have a few CPs coz of memory and so will use then
 time_str=$(date +"%Y%m%d_%H%M%S")
-extra_args="--to_rain 0.02567 0.6875 --extract_coords_csv meta_data/${site}_close.csv"
+extra_args="--to_rain 0.0271 0.65 --extract_coords_csv meta_data/${site}_close.csv"
 resample='30min 1h 2h 4h 8h'
-region="-100 100 100 -100" # region to extract
+region="-125 125 125 -125" # region to extract
 if [[ -n "$resample" ]]
 then
     extra_args="${extra_args} --resample ${resample}"
