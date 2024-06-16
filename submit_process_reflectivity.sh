@@ -36,7 +36,7 @@ gen_script () {
     mkdir -p ${log_dir}
     years=$(seq -s ' ' ${year} $((year+4))) # five years at a time
     cmd_log_file="${outdir}/log/${site}_${year}_${time_str}"
-    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --years ${years} --dask --no_over_write  --coarsen 4 4  --log_file ${cmd_log_file} --min_fract_avg 0.75 --dbz_range 15 75"
+    cmd="./process_reflectivity.py ${site} ${outdir}  -v -v --years ${years} --dask --no_over_write  --coarsen 4 4  --log_file ${cmd_log_file} --min_fract_avg 0.75 --dbz_range 15 55"
     if [[ -n "$extra_args" ]]
     then
         cmd="${cmd} ${extra_args}"
