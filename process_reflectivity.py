@@ -510,7 +510,7 @@ if __name__ == "__main__":
     parser.add_argument('--years', nargs='+', type=int, help='List of years to process',
                         default=range(2020, 2023))
     parser.add_argument('--months', nargs='+', type=int, help='list of months to process', default=range(1, 13))
-    parser.add_argument('outdir', help='output directory. Must be provided')
+    parser.add_argument('outdir', type=pathlib.Path,help='output directory. Must be provided')
     parser.add_argument('--glob', help='Pattern for globbing zip files',
                         default='[0-9][0-9].gndrefl.zip')
     parser.add_argument('--resample', nargs='+',
@@ -572,9 +572,7 @@ if __name__ == "__main__":
     if not indir.exists():
         my_logger.warning('Input directory {indir} does not exist')
         raise FileNotFoundError(f'Input directory {indir} does not exist')
-    outdir = pathlib.Path(args.outdir) / args.site
-    if args.to_rain:
-        outdir=pathlib.Path(args.outdir) / (args.site+'_rain')
+    outdir = pathlib.Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     my_logger.info(f'Output directory is {outdir}')
 

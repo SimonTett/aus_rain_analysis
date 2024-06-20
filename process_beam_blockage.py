@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # Compute beam blockage factor. Based off https://docs.wradlib.org/en/stable/notebooks/beamblockage/beamblockage.html
 # see https://hess.copernicus.org/articles/17/863/2013/hess-17-863-2013.pdf (and cite it!)
-# code is not working at the moment. Caching... 
+# Note that code uses a lot of memory... Will generate regional DEM files and then CBB_DEM for each sub-site
 import argparse
 import multiprocessing
 import sys
@@ -23,8 +23,6 @@ import rioxarray.merge
 import cartopy.crs as ccrs
 import ausLib
 
-# for sites apart from Melbourne there are (small) changes in ht/location and beamwidth. Will need to deal with that.
-# fortunately for me Melbourne is "easy"
 STRM_dir = ausLib.data_dir / 'SRTM_Data'
 
 
@@ -49,6 +47,7 @@ def comp_strm(
         my_logger.info(f"DEM files {' '.join([str(f) for f in files_to_make.values()])} already exist\n Skipping further processing")
         return result
     files = list(STRM_dir.glob('*.hgt'))
+    my_logger.debug('Openning up STRM data')
     ds_raw = rioxarray.merge.merge_arrays([rioxarray.open_rasterio(f, parallel=True) for f in files])
     # and select within +/- 2 degrees of coords (roughly +/- 150 km) so we don't run out of memory.
     location = dict(x=coords[0], y=coords[1])
@@ -69,7 +68,7 @@ def comp_strm(
             my_logger.debug(f'{filename}, {coarse}, {ausLib.memory_use()}')
             result[f'{res}m'] = ds.squeeze().drop_vars('band')
             my_logger.debug(f'Created ds for {res}')
-
+    return result
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
@@ -77,7 +76,7 @@ if __name__ == '__main__':
     parser.add_argument('site', type=str, help='site name for radar data')
     parser.add_argument('--output_dir', type=str, help='Base filename -- id_long_cbb_dem.nc will be added to this',
                         default=str(STRM_dir/'radar_strm'))
-    parser.add_argument('--make_strm', action='store_true', help='Make STRM data if set. Note STRM data used')
+    parser.add_argument('--make_strm', action='store_true', help='Remake STRM data if set otherwise cache data. Note STRM data used')
 
     ausLib.add_std_arguments(parser)  # add on the std args
     args = parser.parse_args()
@@ -165,7 +164,7 @@ if __name__ == '__main__':
         CBB_grid = CBB.wrl.comp.togrid(cart, radius=200e3, center=(0, 0), interpol=interpol)
         DEM_grid = DEM.wrl.comp.togrid(cart, radius=200e3, center=(0, 0), interpol=interpol)
         ds_grid = xarray.Dataset(dict(elevation=DEM_grid, CBB=CBB_grid))
-        # add in the proj info. A different name for eacj one.
+        # add in the proj info. A different name for each one.
         proj = xarray.DataArray(1).assign_attrs(proj_info)
         ds_grid[f'proj_{name}']=proj
         # add in the postchange_start as time.
