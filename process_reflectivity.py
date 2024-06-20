@@ -510,16 +510,11 @@ if __name__ == "__main__":
     parser.add_argument('--years', nargs='+', type=int, help='List of years to process',
                         default=range(2020, 2023))
     parser.add_argument('--months', nargs='+', type=int, help='list of months to process', default=range(1, 13))
-    parser.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
     parser.add_argument('outdir', help='output directory. Must be provided')
     parser.add_argument('--glob', help='Pattern for globbing zip files',
                         default='[0-9][0-9].gndrefl.zip')
     parser.add_argument('--resample', nargs='+',
                         help='resample periods for data', default=['30min', '1h', '2h'])
-    parser.add_argument('--no_over_write', action='store_true', help='Do not overwrite existing files')
-    parser.add_argument('--dask', action='store_true', help='Start dask client')
-    parser.add_argument('--log_file',
-                        help='Name of log file -- if provided. log info goes there as well as std out/err')
     parser.add_argument('--coarsen', nargs=2, type=int, help='coarsen values for x and y in that order')
     parser.add_argument('--coarsen_method', help='method to use for coarsening', default='mean',
                         choices=['mean', 'median'])
@@ -540,7 +535,7 @@ if __name__ == "__main__":
                         CSV file should be readable with usLib.read_gsdr_csv.
                         Data will be put in outdir/site_coord/filename""")
     parser.add_argument('--to_rain',type=float, nargs=2, help='Convert Reflectivity to rain using R=c[0]Z^c[1]')
-
+    ausLib.add_std_arguments(parser)
     args = parser.parse_args()
 
     time_unit = 'minutes since 1970-01-01'  # units for time in output files
@@ -556,7 +551,8 @@ if __name__ == "__main__":
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
-                       program_args=[f'{k}: {v}' for k, v in vars(args).items()])
+                       program_args=[f'{k}: {v}' for k, v in vars(args).items()],
+                       site=args.site)
     if args.to_rain is not None:
         extra_attrs.update(to_rain=args.to_rain)
 
@@ -594,7 +590,7 @@ if __name__ == "__main__":
         out_coord_dir = outdir.parent/(outdir.name+'_coord')
         out_coord_dir.mkdir(parents=True, exist_ok=True)
         my_logger.info(f'Extracted coord data will be written to {out_coord_dir}')
-    extra_attrs.update(outdir=str(outdir), outdir_full=str(outdir_full),out_coord_dir=str(out_coord_dir))
+    extra_attrs.update(outdir=str(outdir), outdir_full=str(outdir_full),out_coord_dir=str(out_coord_dir),site=args.site)
     drop_vars_first = ['error', 'reflectivity']  # variables not to read for meta info
     drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']  # variables not to read for data
     if args.coarsen:
@@ -620,7 +616,7 @@ if __name__ == "__main__":
             if args.to_rain:
                 file = f'hist_gndrefl_{year:04d}_{month:02d}_rain.nc'
             outpath = outdir / file
-            if args.no_over_write and outpath.exists():
+            if (not args.overwrite) and outpath.exists():
                 my_logger.warning(f'{outpath} and no_over_write set. Skipping processing')
                 continue
             to_rain:type_rain_conv = None

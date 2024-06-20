@@ -1,4 +1,5 @@
 # Library for australian analysis.
+import argparse
 import io
 import os
 import pathlib
@@ -7,6 +8,8 @@ import sys
 import tempfile
 import time
 import zipfile
+import cartopy.crs as ccrs
+import cartopy.geodesic
 
 import requests
 # stuff for timezones!
@@ -18,7 +21,7 @@ import xarray
 import logging
 import pandas as pd
 import typing
-import ast # thanks chaptGPT co-pilot
+import ast  # thanks chaptGPT co-pilot
 
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
@@ -36,7 +39,7 @@ elif hostname == 'geos-w-048':  # my laptop
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
-module_path = pathlib.Path(__file__).parent # path to this module
+module_path = pathlib.Path(__file__).parent  # path to this module
 
 my_logger = logging.getLogger(__name__)  # for logging
 # dict to control logging
@@ -44,7 +47,8 @@ my_logger = logging.getLogger(__name__)  # for logging
 
 timezone_finder = TimezoneFinder()  # instance of timezone_finder -- only want one,
 
-def extract_rgn(radar_ds:xarray.Dataset) -> typing.Dict[str, float]:
+
+def extract_rgn(radar_ds: xarray.Dataset) -> typing.Dict[str, float]:
     """
     Extract region from radar dataset attributes.
     Args:
@@ -57,10 +61,9 @@ def extract_rgn(radar_ds:xarray.Dataset) -> typing.Dict[str, float]:
     rgn = np.array(ast.literal_eval(rgn.split(':')[1]))  # thanks chatgpt fot this
     # convert to m from km
     rgn *= 1000.
-    rgn = dict(x=slice(*rgn[0:2]), y=slice(*rgn[-1:-3:-1]))
+    rgn = dict(x=slice(*rgn[0:2]), y=slice(*rgn[-1:-3:-1]))  # need to reverse the y index.
 
     return rgn
-
 
 
 def gsdr_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
@@ -83,7 +86,7 @@ def gsdr_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
     return df
 
 
-def utc_offset(lng: float = 0.0, lat: float = 50.0) -> timedelta:
+def utc_offset(lng: float = 0.0, lat: float = 50.0) -> (timedelta, str):
     """
     Work out the standard time offset from UTC for specified lon/lat co-ord.
     TODO: consider passing in the times so can deal with changing timezones for location.
@@ -91,7 +94,7 @@ def utc_offset(lng: float = 0.0, lat: float = 50.0) -> timedelta:
         lng: longitude (in decimal degrees) of point
         lat: latitude (in decimal degrees) of point
 
-    Returns: timedelta from UTC
+    Returns: timedelta from UTC and timezone string
     Based on example code from chatGPT3.5
     Then various exceptions from tz database are used.
     """
@@ -130,7 +133,7 @@ def utc_offset(lng: float = 0.0, lat: float = 50.0) -> timedelta:
     # Calculate offsets in hours
     offset = no_dst_time.utcoffset()
 
-    return offset
+    return offset, timezone_str
 
 
 def read_gsdr_metadata(file: pathlib.Path) -> pd.Series:
@@ -195,15 +198,17 @@ def read_gsdr_metadata(file: pathlib.Path) -> pd.Series:
     # fix timezone...
 
     if result['timezone'].lower() == 'local standard time':
-        delta_utc = utc_offset(lng=result['Longitude'], lat=result['Latitude'])
+        delta_utc, tz = utc_offset(lng=result['Longitude'], lat=result['Latitude'])
         my_logger.debug(f"UTC offset for local std time computed  from long/lat coords and is {delta_utc}")
         result["utc_offset"] = delta_utc
         result['Other'] = result['Other'] + " Changed LST"
+        result['Inferred_timezone'] = tz
     elif (result['timezone'].lower() == 'cet') and (
             result['ID'].startswith("AU_")):  # aus data with timezone CET is probable LST
-        delta_utc = utc_offset(lng=result['Longitude'], lat=result['Latitude'])
-        my_logger.debug(f"UTC offset for lAustralian CET computed  from long/lat coords and is {delta_utc}")
+        delta_utc, tz = utc_offset(lng=result['Longitude'], lat=result['Latitude'])
+        my_logger.debug(f"UTC offset for Australian CET computed  from long/lat coords and is {delta_utc}")
         result["utc_offset"] = delta_utc
+        result['Inferred_timezone'] = tz
         result['Other'] = result['Other'] + " Changed CET"
     else:  # raise a not-implemented error
         raise NotImplementedError(f"Implement UTC offset for general timezones {result['timezone']}")
@@ -259,53 +264,6 @@ def read_gsdr_csv(file: typing.Union[pathlib.Path, str]) -> pd.DataFrame:
     return df
 
 
-def max_process(ds: xarray.Dataset, time_dim: str = 'time', minf_mean: float = 0.8) -> typing.Optional[xarray.Dataset]:
-    """
-    Process dataset for max (and mean & time of max).
-
-    Args:
-        minf_mean: The minimum fraction data used to compute a time-mean. Data with a fraction below this are ignored.
-        time_dim: the name of the time dimension
-        ds: dataset to be processed. Should contain the variables:
-            rain -- mean rain
-            fraction -- fraction of data present in the mean computation.
-            longitude & latitude - longitude and latitude co-ords.
-        Note this dataset will be loaded.
-
-    Returns:dataset containing maximum values, time of max values and mean values.
-    (or None if no non-missing data).
-
-    """
-
-    ok = ds.fraction >= minf_mean
-    max_fraction = ok.mean(time_dim)  # fraction of OK hours.
-    rain = ds.rain.sel({time_dim: ok})
-    bad = rain.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
-    if bad.all():
-        my_logger.warning(f"All missing at {bad[time_dim].isel[[0, -1]]}")
-        return None
-
-    max_rain = rain.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
-    mean_rain = rain.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
-    indx = xarray.where(bad, 0.0, rain).argmax(dim=time_dim, keep_attrs=True).compute()
-    max_time = rain[time_dim].compute().isel({time_dim: indx}).where(~bad).rename(
-        'time_max_rain'
-    )  # max times for this season
-
-    base_name = max_rain.attrs['long_name']
-
-    max_fraction.attrs['long_name'] = "Fraction present " + base_name
-    max_fraction.attrs['units'] = '1'
-
-    result = xarray.Dataset(
-        dict(max_rain=max_rain, time_max_rain=max_time, mean_rain=mean_rain, max_fraction=max_fraction)
-    )
-
-    result.attrs.update(ds.attrs)
-    my_logger.info(f"max computed for  {ds[time_dim][0].values} {memory_use()}")
-    return result
-
-
 def gen_mask(
         example_data_array: xarray.DataArray, radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3)
         # values empirically tuned.
@@ -320,154 +278,6 @@ def gen_mask(
     rng = np.sqrt(example_data_array.x.astype('float') ** 2 + example_data_array.y.astype('float') ** 2)
     mask = (rng < radar_range[1]) & (rng > radar_range[0])  # cells close to radar are missing as are those far away
     return mask
-
-
-def summary_process(
-        ds: xarray.Dataset, mean_resample: str = '1h', time_dim: str = 'time', rain_threshold: float = 0.1,
-        # From Pritchard et al, 2023 -- doi https://doi.org/10.1038/s41597-023-02238-4
-        minf_mean: float = 0.8
-) -> typing.Optional[xarray.Dataset]:
-    f"""
-    Process dataset for max (and mean & time of max).
-
-    Args:
-        ds: dataset to be processed. Must contain rainrate and isfile.
-        mean_resample: the resample period to generate means.
-        minf_mean: The minimum fraction data used to compute a time-mean. Data with a fraction below this are ignored when computing summaries.
-        time_dim: the name of the time dimension
-        rain_threshold: the threshold above which rain is used in *_thresh dataArrays
-
-
-
-    Returns:dataset containing summary values. These are:
-         max_rain, time_max_rain,  mean_rain 
-          median_rain_thresh median for values > rain_threshold.
-          mean_rate_thresh mean for values > rain_thresh
-    Also includes some count values.
-            f'count_{mean_resample}': number of mean non-missing values
-            f'count_{mean_resample}_thresh': count of mean values > threshold
-            f'samples_{mean_resample}': Total number of values
-            rain_count: Count of all raw rain values above threshold
-            rain_samples: Total number of possible samples.
-
-    """
-
-    def empty_ds(
-            example_da: xarray.DataArray, non_time_variables: typing.Union[typing.List[str], str],
-            vars_time: typing.Union[typing.List[str], str]
-    ) -> xarray.Dataset:
-        """
-        Return an empty dataset
-        :param example_da:
-        :param non_time_variables:
-        :param vars_time:
-        :return: empty dataset.
-        """
-        # deal with singleton vars
-        if isinstance(non_time_variables, str):
-            non_time_variables = [non_time_variables]
-        if isinstance(vars_time, str):
-            vars_time = [vars_time]
-
-        # generates vars
-        result = dict()
-        for var in non_time_variables:
-            result[var] = example_da.where(False).rename(var)
-        for var in vars_time:
-            result[var] = example_da.where(False).rename(var).astype('<M8[ns]')
-            result[var].attrs.pop('units', None)  # remove the units here.
-        result = xarray.Dataset(result)
-        return result
-
-    rain = ds.rainrate
-    # compute # of times with rain. Hopefully, useful to detect radar "clutter".
-    rain_samples = ds.isfile.sum(keep_attrs=True).load()
-    rain_samples.attrs['long_name'] = 'Total samples'
-    rain_count = (rain > rain_threshold).sum(time_dim, skipna=True, min_count=1, keep_attrs=True)
-    rain_count.attrs.update(long_name=f'# times with rain >{rain_threshold}')
-
-    fraction = ds.isfile.resample({time_dim: mean_resample}).mean(skipna=True)
-    ok = fraction >= minf_mean
-    count_of_mean = ok.astype('int64').sum(time_dim).load()  # count of mean samples with enough data.
-    samples_of_mean = ok.count()  # count of mean samples
-    if int(count_of_mean) == 0:  # no data..
-        my_logger.warning(f"No data for {fraction[time_dim][[0, -1]].values}")
-        result = empty_ds(rain.isel({time_dim: 0}, drop=True),
-                          ["max_rain", "mean_rain", "median_rain_thresh", "mean_rain_thresh"], "time_max_rain"
-                          )
-        # need a count_rain_thresh which should be 0 (it must be less than count_of_mean
-        count_rain_thresh = count_of_mean
-
-    else:
-        msk = (ds.isfile == 1)
-        r = rain.fillna(0.0).where(msk)  # replace nans with 0 and apply mask.
-        mean_rain_1h = r.resample({time_dim: mean_resample}).mean(skipna=True)
-        my_logger.debug(
-            f"mean computed using {mean_resample} for {mean_rain_1h[time_dim][[0, -1]].values} {memory_use()}"
-        )
-        mean_rain_1h = mean_rain_1h.sel({time_dim: ok}).load()  # select out where data OK
-        my_logger.debug(f"rain computed for  {rain[time_dim].values[0]} {memory_use()}")
-        bad = rain.isnull().all(time_dim, keep_attrs=True)  # find out where *all* data null
-        if bad.all():
-            my_logger.error(f"All missing at {bad[time_dim].isel[[0, -1]]}")
-        # do the actual computation.
-        m = mean_rain_1h > rain_threshold  # mask for rain threshold.
-        rain_thresh = mean_rain_1h.where(m)
-        count_rain_thresh = rain_thresh.count(time_dim)
-        median_rain_thresh = rain_thresh.median(time_dim, keep_attrs=True, skipna=True).rename('median_rain_thresh')
-        mean_rain_thresh = rain_thresh.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain_thresh')
-        max_rain = mean_rain_1h.max(time_dim, keep_attrs=True, skipna=True).rename('max_rain')
-        mean_rain = mean_rain_1h.mean(time_dim, keep_attrs=True, skipna=True).rename('mean_rain')
-        time_max_rain = mean_rain_1h.idxmax(time_dim, keep_attrs=False, skipna=True).rename('time_max_rain')
-        result = xarray.Dataset(dict(median_rain_thresh=median_rain_thresh,
-                                     mean_rain_thresh=mean_rain_thresh,
-                                     max_rain=max_rain,
-                                     mean_rain=mean_rain,
-                                     time_max_rain=time_max_rain
-                                     )
-                                )
-
-    # now have result either from empty case or std one,
-    # now set the meta dat and fill in missing data with 0. Mild pain to do it here but want to be sure it
-    # is the same regardless of how it made.
-    base_name = ds.rainrate.attrs['long_name'] + f" mean {mean_resample}"
-    variables = [v for v in result.variables if v.endswith("_rain")]
-    for k in variables:
-        if k.startswith("time_"):
-            comp = k.split('_')[1]
-            result[k].attrs['long_name'] = 'time of ' + comp + " " + base_name
-        elif k.endswith("thresh"):
-            comp = k.split('_')[0]
-            result[k].attrs['long_name'] = comp + " " + base_name + f' for rain > {rain_threshold} mm/h'
-            # result[k] = result[k].fillna(0.0) # fill in missing data with 0.0
-        else:
-            comp = k.split('_')[0]
-            result[k].attrs['long_name'] = comp + " " + base_name
-            # result[k] = result[k].fillna(0.0)
-    # append min for median,
-    count_rain_thresh.attrs['long_name'] = f'Count of rain {mean_resample} > {rain_threshold} mm/h'
-    count_of_mean.attrs['long_name'] = f"Count of present {mean_resample} samples " + base_name
-    samples_of_mean.attrs['long_name'] = f"{mean_resample} samples " + base_name
-    counts_ds = xarray.Dataset(
-        {
-            f'count_{mean_resample}': count_of_mean,
-            f'samples_{mean_resample}': samples_of_mean,
-            "count_rain": rain_count,
-            "samples_rain": rain_samples,
-            f"count_{mean_resample}_thresh": count_rain_thresh
-        }
-    )
-    for v in counts_ds.variables:
-        counts_ds[v].attrs.pop('units', None)
-        # would like count/sample vars to be ints so need to set to unsigned 64bit to have NaN.
-        # danger is loss of precision.
-        if v.startswith('count') or v.startswith('samples'):
-            counts_ds[v] = counts_ds[v].astype('uint64')
-    result = result.merge(counts_ds)
-    result.attrs['threshold'] = rain_threshold
-    result.attrs.update(ds.attrs)  # preserve initial metadata.
-    my_logger.info(f"Summaries computed for  {ds[time_dim][[0, -1]].values} {memory_use()}")
-    return result
 
 
 def process_gsdr_record(
@@ -499,74 +309,17 @@ def process_gsdr_record(
             return pd.Series.idxmax(series)
 
     time_max = resamp.apply(max_time_fn).rename("time_max_rain")
-    # fix the type for time_max
-    time_max = time_max.astype(gsdr_record.index.dtype)
+
     mean = resamp.mean().rename("mean_rain")  # need to convert to mm/season?
     total = (mean * count_data).rename('total_rain')
     df = pd.DataFrame([max_rain, mean, total, fraction]).T
     for s in ['max_rain', 'mean_rain', 'total_rain', 'fraction']:
         df[s] = df[s].astype('float')
-    df['time_max_rain'] = max_rain.astype(gsdr_record.index.dtype)
+    # fix the type for time_max
+    time_max = time_max.astype(gsdr_record.index.dtype)
+    df['time_max_rain'] = time_max.astype(gsdr_record.index.dtype)
 
     return df
-
-
-def process_radar(
-        data_set: xarray.Dataset,
-        mean_resample: str = '1h',
-        min_mean: float = 0.8,
-        summary_resample: str = 'QS-DEC',
-        time_dim: str = 'time',
-        mask: typing.Optional[xarray.DataArray] = None,
-        radar_range: typing.Tuple[float, float] = (4.2e3, 144.8e3)
-) -> xarray.Dataset:
-    """
-    Compute various summaries of  rainfall on mean rainfall from  radar rainfall data.
-
-      :param data_set: dataset to be processed. Must contain rainrate, isfile, latitude and longitude
-      :param mean_resample: time period to resample data to compute mean
-      :param min_mean: min fraction of samples to compute mean.
-      :param summary_resample : time period to resample meaned data to compute summary data.
-      :param time_dim:dimension that is time
-      :param mask: Bool mask. Where False summary data will be set to missing.
-      :param radar_range: 2 element tuple, element o is distance from centre to be in radar coverage -- element 1 the max radar coverage.
-        missing values inside this range  will be set to zero if isfile is 1 but only if mask not provided.
-      :return: summary data.
-
-
-      """
-    # TODO add in time-bounds and change time co-ord to be the centre of the interval.
-    # Takes about 2 mins to process a year of 1km radar data to monthly data.
-    my_logger.info(f"Starting data processing. {memory_use()}")
-
-    if mask is None:
-        mask = gen_mask(data_set.rainrate, radar_range=radar_range)
-
-    resamp = data_set.drop_vars(['longitude', 'latitude']).resample({time_dim: summary_resample})
-    result = resamp.map(summary_process, shortcut=True, mean_resample=mean_resample, time_dim=time_dim,
-                        minf_mean=min_mean
-                        )
-
-    my_logger.debug(f"Processed data and loading data {memory_use()}")
-    coords = dict()
-    for c in ['latitude', 'longitude']:
-        try:  # potentially generating multiple values so just want first one
-            coords[c] = data_set[c].isel({time_dim: 0}).squeeze(drop=True).drop_vars(time_dim).load()
-        except ValueError:  # no time so jus have the coord
-            coords[c] = data_set[c].load()
-
-    variables = [v for v in result.variables if (v != 'x' and 'x' in result[v].coords)]  # things that are spatial
-    for var in variables:
-        result[var] = result[var].assign_coords(**coords)
-        if mask is not None:
-            result[var] = result[var].where(mask)
-        my_logger.debug(f"added long/lat coords to {var}")
-    my_logger.debug(f"Added co-ordinates {memory_use()}")
-
-    my_logger.debug(f"Set attributes {memory_use()}")
-    result.attrs.update(data_set.attrs)
-    logging.info(f"processed data for {memory_use()}")
-    return result
 
 
 def memory_use() -> str:
@@ -582,62 +335,6 @@ def memory_use() -> str:
     except ModuleNotFoundError:
         mem = 'Mem use unknown'
     return mem
-
-
-def summary_radar(
-        files: typing.Union[typing.List[pathlib.Path], pathlib.Path],
-        outfile: typing.Optional[pathlib.Path],
-        mean_resample: str = '1h',
-        summary_resample: str = 'MS',
-        time_dim: str = 'time',
-        chunks: typing.Optional[typing.Dict[str, int]] = None,
-        overwrite: bool = False
-) -> xarray.Dataset:
-    """
-
-    :param files: List of (or single) pathlib.Path's to be read in and processed
-    :param outfile: Output path -- where data will be written to. If None nothing will be written to!
-    :param mean_resample: resample period for mean
-    :param summary_resample: resample period for summary stats (computed on mean_resampled data)
-    :param time_dim: Name of time dimension
-    :param chunks: Chunk. See xarray.open_dataset for details.
-    :param overwrite: If True overwrite existing data.
-    :return: dataset of processed data.
-
-    """
-
-    if not overwrite and outfile and outfile.exists():
-        raise FileExistsError(f"{outfile} exists and overwrite is False")
-    # convert singleton args into lists.
-
-    if isinstance(files, pathlib.Path):
-        files = [files]
-
-    if chunks is None:
-        chunks = {}
-
-    # open up the files
-    input_dataset = xarray.open_mfdataset(files, chunks=chunks, parallel=True)
-
-    # now read them
-
-    ds = process_radar(input_dataset, mean_resample=mean_resample, summary_resample=summary_resample,
-                       time_dim=time_dim
-                       ).compute()
-
-    my_logger.info("Processed  radar")
-    encode = dict(zlib=True, complevel=5)
-    ds.encoding.update(encode)
-    # set the time_max_rain units to days since 1970-0-01
-    ds.time_max_rain.encoding['units'] = "hours since 1970-01-01T00:00"
-
-    if outfile:  # want to write data out
-        my_logger.info("Writing data out")
-        outfile.parent.mkdir(parents=True, exist_ok=True)  # make dir for output
-        ds.to_netcdf(outfile, format='NETCDF4')  # write out
-        my_logger.info(f"Wrote data to {outfile}")
-
-    return ds  # and return the dataset.
 
 
 def dask_client() -> 'dask.distributed.Client':
@@ -737,9 +434,11 @@ def index_ll_pts(
     return np.column_stack((col_indices, row_indices)).T  # return as x,y
 
 
-def lc_none(attrs: typing.Dict[str, str],
-            key: str,
-            default: typing.Optional[str] = None) -> typing.Optional[str]:
+def lc_none(
+        attrs: typing.Dict[str, str],
+        key: str,
+        default: typing.Optional[str] = None
+) -> typing.Optional[str]:
     """
     Handy function to retrieve value from attributes and lowercase it or return None if not present.
     :param attrs: Attributes dict
@@ -805,9 +504,9 @@ def coarsen_ds(
         result = coarse.median()
     else:
         raise ValueError(f"Unknown coarsen method {coarsen_method}")
-    for var in  speckle_vars:
-        speckle= ds[var].coarsen(**coarsen).std()
-        speckle = speckle.rename(var+'_speckle')
+    for var in speckle_vars:
+        speckle = ds[var].coarsen(**coarsen).std()
+        speckle = speckle.rename(var + '_speckle')
         result = result.merge(speckle)
     result = result.merge(xarray.Dataset(bounds))  # overwrite bounds.
     for v in vars_to_leave:
@@ -829,7 +528,7 @@ def read_radar_zipfile(
         path: pathlib.Path,
         concat_dim: str = 'valid_time',
         first_file: bool = False,
-        region:typing.Optional[typing.Dict[str,slice]] = None,
+        region: typing.Optional[typing.Dict[str, slice]] = None,
         **load_kwargs
 ) -> typing.Optional[xarray.Dataset]:
     """
@@ -859,7 +558,8 @@ def read_radar_zipfile(
 
         except RuntimeError as error:
             my_logger.warning(
-                f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files")
+                f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files"
+            )
             time.sleep(0.1)  # sleep a bit and try again with loading
             datasets = []
             load_args = load_kwargs.copy()
@@ -887,7 +587,6 @@ def read_radar_zipfile(
             ds = ds.drop_vars(concat_dim, errors='ignore')  # drop the concat dim as only want the first value
         # check dimension sizes are OK
 
-
         ds = ds.compute()  # compute/load before closing the files.
         ds.close()  # close the files
         my_logger.debug('Read in data. Cleaning tempdir')
@@ -902,17 +601,25 @@ def read_radar_zipfile(
     return ds
 
 
-def site_info(site: str) -> pd.DataFrame:
+def site_info(site_no: int) -> pd.DataFrame:
     """
     Get information on a site.
     Args:
-        site: site to get info on
+        site_no: site to get info on
     Returns: pandas series with information on site.
     """
     from importlib.resources import files
     file = files('meta_data') / 'long_radar_stns.csv'
-    df = pd.read_csv(file, index_col='id_long').drop(columns='Unnamed: 0')
-    L = df.short_name == site
+    df = pd.read_csv(file, index_col='id_long', parse_dates=['postchange_start', 'prechange_end'],
+                     dayfirst=True,na_values='-',
+                     true_values=['Yes'],
+                     dtype={'site_lat': np.float32, 'site_lon': np.float32, 'site_alt': np.float32}
+                     ).drop(columns='Unnamed: 0')
+
+    # Set NaN to False
+    for col in ['dp', 'doppler']:
+        df[col] = ~df[col].isnull()
+    L = df.id == site_no
     meta = df[L]
     return meta
 
@@ -950,7 +657,7 @@ def read_acorn(
         url = f'http://www.bom.gov.au/climate/change/hqsites/data/temp/t{what}.{site:06d}.daily.csv'
         my_logger.info(f"Retrieving data from {url}")
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
+                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
         # fake we are interactive...
         # retrieve data writing it to local cache.
         with requests.get(url, headers=headers, stream=True) as r:
@@ -968,10 +675,13 @@ def read_acorn(
     df = df.rename(what)
     return df
 
-def list_vars(data_set:xarray.Dataset,prefix:str,
-              show_dims:bool = False,
-              show_attrs:bool = False,
-              fract_nan:bool = False) -> typing.List[str]:
+
+def list_vars(
+        data_set: xarray.Dataset, prefix: str,
+        show_dims: bool = False,
+        show_attrs: bool = False,
+        fract_nan: bool = False
+) -> typing.List[str]:
     """
     List variables in a dataset with a given prefix
     Args:
@@ -984,7 +694,7 @@ def list_vars(data_set:xarray.Dataset,prefix:str,
     """
     vars = [str(v) for v in data_set.data_vars if prefix in str(v)]
     for v in vars:
-        sprint_str= ''
+        sprint_str = ''
         if show_dims:
             sprint_str += f'{data_set[v].dims}'
         if show_attrs:
@@ -994,3 +704,178 @@ def list_vars(data_set:xarray.Dataset,prefix:str,
         if len(sprint_str) > 0:
             print(f'{v} {sprint_str}')
     return vars
+
+
+def gen_radar_projection(longitude: float, latitude: float,parallel_offset: float = 1.5) -> dict:
+    proc_attrs = {
+            "grid_mapping_name": "albers_conical_equal_area",
+            "standard_parallel": np.round([latitude-parallel_offset,latitude+parallel_offset],1),
+            "longitude_of_central_meridian": longitude,
+            "latitude_of_projection_origin": latitude,
+            "false_easting": 0.0,
+            "false_northing": 0.0,
+            "semi_major_axis": 6378137.0,
+            "semi_minor_axis": 6356752.31414
+    }
+    return proc_attrs
+
+
+def radar_projection(attrs: dict) -> ccrs.Projection:
+    """
+    Create a projection from radar projection information.
+    :param attrs: attributes containing projection information.
+    :return: cartopy projection
+    """
+
+    kw_proj = attrs.copy()
+    if kw_proj.pop('grid_mapping_name') != 'albers_conical_equal_area':
+        raise ValueError("Only Albers Equal Area supported")
+    globe = ccrs.Globe(semimajor_axis=kw_proj.pop('semi_major_axis'),
+                       semiminor_axis=kw_proj.pop('semi_minor_axis')
+                       )  # globe used.
+    # rename some keys
+    kw_proj['central_longitude'] = kw_proj.pop('longitude_of_central_meridian')
+    kw_proj['central_latitude'] = kw_proj.pop('latitude_of_projection_origin')
+    kw_proj['standard_parallels'] = kw_proj.pop('standard_parallel').tolist()
+    proj_radar = ccrs.AlbersEqualArea(globe=globe, **kw_proj)
+
+    return proj_radar
+
+
+def add_long_lat_coords(data_set: xarray.Dataset) -> xarray.Dataset:
+    """
+    Add long/lat coords to a data array.
+    Must contain a proj variable which is used to compute the projection. From that
+    the long/lat coords are computed.
+    Args:
+        data_set:   dataset to add long/lat coords to.
+    Returns: dataset with long/lat coords added
+    """
+    proj = radar_projection(data_set.proj.attrs)
+    # get the lon & lat coords for the radar
+    X, Y = np.meshgrid(data_set.x.values, data_set.y.values)
+    coords = ccrs.PlateCarree().transform_points(src_crs=proj, x=X, y=Y)
+    vars_xy = [v for v in data_set.data_vars if
+               ('x' in data_set[v].dims) and ('y' in data_set[v].dims)]
+    result = data_set.copy()
+    for v in vars_xy:
+        result[v] = result[v].assign_coords(longitude=(['x', 'y'], coords[:, :, 0]),
+                                            latitude=(['x', 'y'], coords[:, :, 1])
+                                            )
+
+    return result
+
+
+def data_array_station_match(
+        data_array: xarray.DataArray,
+        projection: ccrs.Projection,
+        station_metadata: pd.DataFrame,
+        tolerance: typing.Optional[float] = None,
+        array_coords: typing.Tuple[str, str] = ('x', 'y'),
+        station_coords: typing.Tuple[str, str] = ('Longitude', 'Latitude')
+) -> xarray.DataArray:
+    """
+    Extract radar dataset to the gauge locations.
+
+    :param data_array: radar datat array to be extracted
+    :param projection -- projection of the  data
+    :param station_metadata:  metadata for station. Only Longitude & Latitude are used. Index used to name the data.
+    :param tolerance: tolerance in units of projection for matching the data_array to the station cooords.
+    :param array_coords: tuple of the names of the x and y coords in the data_array.
+    :param station_coords: tuple of the names of the Longitude and Latitude in the station_metadata.
+    :return: Data array of  data at the station locations
+    """
+    # work out the co-ords of the stations  in the  projection for the data_array
+    station_coords = projection.transform_points(src_crs=ccrs.PlateCarree(),
+                                                 x=station_metadata.loc[:, station_coords[0]],
+                                                 y=station_metadata.loc[:, station_coords[1]]
+                                                 )
+    # construct the selector so can use "fancy" indexing.
+    sel = dict()
+    for ind, c in enumerate(array_coords):
+        sel[c] = xarray.DataArray(station_coords[:, ind],
+                                  dims='station', coords=dict(station=station_metadata.index)
+                                  )
+    match = data_array.sel(method='nearest', tolerance=tolerance, **sel)  # do the match
+
+    return match
+
+
+type_time_range = typing.Tuple[typing.Optional[str], typing.Optional[str]]
+
+
+def read_gauge_metadata(
+        radar_coords: np.ndarray,
+        radius: float,
+        time_range: type_time_range = (None, None)
+) -> pd.DataFrame:
+    """
+    Read the gauge metadata file, extract the gauges within the radius of the radar
+    :param radar_coords: coords as numpy array (longitude, latitude) of the radar
+    :param radius: radius in m
+    :param time_range: time range to extract the gauges.
+        Extracted if the start date is greater than the first element and the end date is less than the second element.
+    :return: pd.DataFrame
+    """
+    #TODO -- when ausLib has a root directory use that so can run this code from anywhere.
+    all_metadata = read_gsdr_csv("meta_data/AU_GSDR_metadata.csv")
+    earth_geo = cartopy.geodesic.Geodesic()
+    pts = np.array([all_metadata.Longitude, all_metadata.Latitude]).T
+    dist = earth_geo.inverse(radar_coords, pts)
+    L = (dist[:, 0] < radius)
+    with pd.option_context("mode.copy_on_write", True):
+        radar_metadata = all_metadata[L]  # extract to  points close enough
+        radar_metadata['Distance'] = dist[L, 0]
+    if time_range[0] is not None or time_range[1] is not None:
+        # filter on time.
+        L = pd.Series(True, index=radar_metadata.index)
+        if time_range[0] is not None:
+            L = L & (radar_metadata['End_time'] >= time_range[0])  # Finish *after* the desired start date
+        if time_range[1] is not None:
+            L = L & (radar_metadata['Start_time'] <= time_range[1])  # Start *before* the desired end date
+        radar_metadata = radar_metadata[L]
+    return radar_metadata
+
+
+def add_std_arguments(parser: argparse.ArgumentParser) -> None:
+    """
+    Add std arguments to a parser.
+    These are:
+    -v -- verbose
+    --dask -- turn on dask.
+    --log_file -- have a log file.
+    --overwrite -- overwrite files.
+    Args:
+        parser: parser to be modified.
+
+    Returns: nada
+
+    """
+    parser.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
+    parser.add_argument('--dask', action='store_true', help='Start dask client')
+    parser.add_argument('--log_file',
+                        help='Name of log file -- if provided. log info goes there as well as std out/err'
+                        )
+    parser.add_argument('--overwrite', action='store_true', help='Overwrite files')
+
+
+def setup_log(
+        verbose_level: int,
+        log_file: typing.Optional[str] = None
+) -> logging.Logger:
+    """
+    Set up logging
+    Args:
+        verbose_level: level of verbosity
+        log_file: log file to write to if not None
+
+    Returns: logger
+    """
+    if verbose_level > 1:
+        level = 'DEBUG'
+    elif verbose_level > 0:
+        level = 'INFO'
+    else:
+        level = 'WARNING'
+    init_log(my_logger, level=level, log_file=log_file, mode='w')
+    return my_logger
