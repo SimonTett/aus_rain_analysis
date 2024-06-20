@@ -15,7 +15,7 @@ import rioxarray
 import cartopy.crs as ccrs
 import ausLib
 # for sites apart from Mebourne there are (small) changes in ht/location and beamwidth. Will need to deal with that.
-# fortunately forme Melbourne is "easy"
+# fortunately for me Melbourne is "easy"
 STRM_dir = ausLib.data_dir/'SRTM_Data'
 sitecoords: tuple[float, float, float] = (144.7555, -37.8553, 45.)  # from stn metadata file.
 site = 'Melbourne'
@@ -37,9 +37,9 @@ lon = coords[..., 0]
 lat = coords[..., 1]
 alt = coords[..., 2]
 polcoords = coords[..., :2]
-print("lon,lat,alt:", coords.shape)
+my_logger.debug("lon,lat,alt:", coords.shape)
 rlimits = (lon.min(), lat.min(), lon.max(), lat.max())
-print(
+my_logger.info(
     "Radar bounding box:\n\t%.2f\n%.2f             %.2f\n\t%.2f"
     % (lat.max(), lon.min(), lon.max(), lat.min())
 )
@@ -66,8 +66,7 @@ CBB = wrl.qual.cum_beam_block_frac(PBB)
 CBB = wrl.georef.create_xarray_dataarray(
     CBB, r=r, phi=coord[:, 0, 1], site=sitecoords, theta=el,
 ).wrl.georef.georeference(crs=proj_rad)
-# the cumulative beam blockage.
-CBB.to_netcdf(STRM_dir / 'cbb_melbourne.nc')
+
 # and regrid -- coords from inspection of the Melbourne ground reflectivity.
 cart = xarray.Dataset(coords={"x": (["x"], np.arange(-127.75e3, 127.5e3, 500)),
                               "y": (["y"], np.arange(-127.75e3, 127.5e3, 500))}

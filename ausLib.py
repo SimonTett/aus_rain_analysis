@@ -1,4 +1,5 @@
 # Library for australian analysis.
+import argparse
 import io
 import os
 import pathlib
@@ -20,7 +21,7 @@ import xarray
 import logging
 import pandas as pd
 import typing
-import ast # thanks chaptGPT co-pilot
+import ast  # thanks chaptGPT co-pilot
 
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
@@ -38,7 +39,7 @@ elif hostname == 'geos-w-048':  # my laptop
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
-module_path = pathlib.Path(__file__).parent # path to this module
+module_path = pathlib.Path(__file__).parent  # path to this module
 
 my_logger = logging.getLogger(__name__)  # for logging
 # dict to control logging
@@ -46,7 +47,8 @@ my_logger = logging.getLogger(__name__)  # for logging
 
 timezone_finder = TimezoneFinder()  # instance of timezone_finder -- only want one,
 
-def extract_rgn(radar_ds:xarray.Dataset) -> typing.Dict[str, float]:
+
+def extract_rgn(radar_ds: xarray.Dataset) -> typing.Dict[str, float]:
     """
     Extract region from radar dataset attributes.
     Args:
@@ -59,10 +61,9 @@ def extract_rgn(radar_ds:xarray.Dataset) -> typing.Dict[str, float]:
     rgn = np.array(ast.literal_eval(rgn.split(':')[1]))  # thanks chatgpt fot this
     # convert to m from km
     rgn *= 1000.
-    rgn = dict(x=slice(*rgn[0:2]), y=slice(*rgn[-1:-3:-1]))
+    rgn = dict(x=slice(*rgn[0:2]), y=slice(*rgn[-1:-3:-1]))  # need to reverse the y index.
 
     return rgn
-
 
 
 def gsdr_metadata(files: typing.Iterable[pathlib.Path]) -> pd.DataFrame:
@@ -433,9 +434,11 @@ def index_ll_pts(
     return np.column_stack((col_indices, row_indices)).T  # return as x,y
 
 
-def lc_none(attrs: typing.Dict[str, str],
-            key: str,
-            default: typing.Optional[str] = None) -> typing.Optional[str]:
+def lc_none(
+        attrs: typing.Dict[str, str],
+        key: str,
+        default: typing.Optional[str] = None
+) -> typing.Optional[str]:
     """
     Handy function to retrieve value from attributes and lowercase it or return None if not present.
     :param attrs: Attributes dict
@@ -555,7 +558,8 @@ def read_radar_zipfile(
 
         except RuntimeError as error:
             my_logger.warning(
-                f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files")
+                f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files"
+            )
             time.sleep(0.1)  # sleep a bit and try again with loading
             datasets = []
             load_args = load_kwargs.copy()
@@ -597,17 +601,25 @@ def read_radar_zipfile(
     return ds
 
 
-def site_info(site: str) -> pd.DataFrame:
+def site_info(site_no: int) -> pd.DataFrame:
     """
     Get information on a site.
     Args:
-        site: site to get info on
+        site_no: site to get info on
     Returns: pandas series with information on site.
     """
     from importlib.resources import files
     file = files('meta_data') / 'long_radar_stns.csv'
-    df = pd.read_csv(file, index_col='id_long').drop(columns='Unnamed: 0')
-    L = df.short_name == site
+    df = pd.read_csv(file, index_col='id_long', parse_dates=['postchange_start', 'prechange_end'],
+                     dayfirst=True,na_values='-',
+                     true_values=['Yes'],
+                     dtype={'site_lat': np.float32, 'site_lon': np.float32, 'site_alt': np.float32}
+                     ).drop(columns='Unnamed: 0')
+
+    # Set NaN to False
+    for col in ['dp', 'doppler']:
+        df[col] = ~df[col].isnull()
+    L = df.id == site_no
     meta = df[L]
     return meta
 
@@ -645,7 +657,7 @@ def read_acorn(
         url = f'http://www.bom.gov.au/climate/change/hqsites/data/temp/t{what}.{site:06d}.daily.csv'
         my_logger.info(f"Retrieving data from {url}")
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
+                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
         # fake we are interactive...
         # retrieve data writing it to local cache.
         with requests.get(url, headers=headers, stream=True) as r:
@@ -664,10 +676,12 @@ def read_acorn(
     return df
 
 
-def list_vars(data_set: xarray.Dataset, prefix: str,
-              show_dims: bool = False,
-              show_attrs: bool = False,
-              fract_nan: bool = False) -> typing.List[str]:
+def list_vars(
+        data_set: xarray.Dataset, prefix: str,
+        show_dims: bool = False,
+        show_attrs: bool = False,
+        fract_nan: bool = False
+) -> typing.List[str]:
     """
     List variables in a dataset with a given prefix
     Args:
@@ -692,6 +706,20 @@ def list_vars(data_set: xarray.Dataset, prefix: str,
     return vars
 
 
+def gen_radar_projection(longitude: float, latitude: float,parallel_offset: float = 1.5) -> dict:
+    proc_attrs = {
+            "grid_mapping_name": "albers_conical_equal_area",
+            "standard_parallel": np.round([latitude-parallel_offset,latitude+parallel_offset],1),
+            "longitude_of_central_meridian": longitude,
+            "latitude_of_projection_origin": latitude,
+            "false_easting": 0.0,
+            "false_northing": 0.0,
+            "semi_major_axis": 6378137.0,
+            "semi_minor_axis": 6356752.31414
+    }
+    return proc_attrs
+
+
 def radar_projection(attrs: dict) -> ccrs.Projection:
     """
     Create a projection from radar projection information.
@@ -703,7 +731,8 @@ def radar_projection(attrs: dict) -> ccrs.Projection:
     if kw_proj.pop('grid_mapping_name') != 'albers_conical_equal_area':
         raise ValueError("Only Albers Equal Area supported")
     globe = ccrs.Globe(semimajor_axis=kw_proj.pop('semi_major_axis'),
-                       semiminor_axis=kw_proj.pop('semi_minor_axis'))  # globe used.
+                       semiminor_axis=kw_proj.pop('semi_minor_axis')
+                       )  # globe used.
     # rename some keys
     kw_proj['central_longitude'] = kw_proj.pop('longitude_of_central_meridian')
     kw_proj['central_latitude'] = kw_proj.pop('latitude_of_projection_origin')
@@ -731,17 +760,20 @@ def add_long_lat_coords(data_set: xarray.Dataset) -> xarray.Dataset:
     result = data_set.copy()
     for v in vars_xy:
         result[v] = result[v].assign_coords(longitude=(['x', 'y'], coords[:, :, 0]),
-                                            latitude=(['x', 'y'], coords[:, :, 1]))
+                                            latitude=(['x', 'y'], coords[:, :, 1])
+                                            )
 
     return result
 
 
-def data_array_station_match(data_array: xarray.DataArray,
-                             projection: ccrs.Projection,
-                             station_metadata: pd.DataFrame,
-                             tolerance: typing.Optional[float] = None,
-                             array_coords: typing.Tuple[str, str] = ('x', 'y'),
-                             station_coords: typing.Tuple[str, str] = ('Longitude', 'Latitude')) -> xarray.DataArray:
+def data_array_station_match(
+        data_array: xarray.DataArray,
+        projection: ccrs.Projection,
+        station_metadata: pd.DataFrame,
+        tolerance: typing.Optional[float] = None,
+        array_coords: typing.Tuple[str, str] = ('x', 'y'),
+        station_coords: typing.Tuple[str, str] = ('Longitude', 'Latitude')
+) -> xarray.DataArray:
     """
     Extract radar dataset to the gauge locations.
 
@@ -756,20 +788,27 @@ def data_array_station_match(data_array: xarray.DataArray,
     # work out the co-ords of the stations  in the  projection for the data_array
     station_coords = projection.transform_points(src_crs=ccrs.PlateCarree(),
                                                  x=station_metadata.loc[:, station_coords[0]],
-                                                 y=station_metadata.loc[:, station_coords[1]])
+                                                 y=station_metadata.loc[:, station_coords[1]]
+                                                 )
     # construct the selector so can use "fancy" indexing.
     sel = dict()
     for ind, c in enumerate(array_coords):
         sel[c] = xarray.DataArray(station_coords[:, ind],
-                                  dims='station', coords=dict(station=station_metadata.index))
+                                  dims='station', coords=dict(station=station_metadata.index)
+                                  )
     match = data_array.sel(method='nearest', tolerance=tolerance, **sel)  # do the match
 
     return match
 
+
 type_time_range = typing.Tuple[typing.Optional[str], typing.Optional[str]]
-def read_gauge_metadata(radar_coords: np.ndarray,
-                        radius: float,
-                        time_range: type_time_range = (None, None)) -> pd.DataFrame:
+
+
+def read_gauge_metadata(
+        radar_coords: np.ndarray,
+        radius: float,
+        time_range: type_time_range = (None, None)
+) -> pd.DataFrame:
     """
     Read the gauge metadata file, extract the gauges within the radius of the radar
     :param radar_coords: coords as numpy array (longitude, latitude) of the radar
@@ -796,3 +835,47 @@ def read_gauge_metadata(radar_coords: np.ndarray,
             L = L & (radar_metadata['Start_time'] <= time_range[1])  # Start *before* the desired end date
         radar_metadata = radar_metadata[L]
     return radar_metadata
+
+
+def add_std_arguments(parser: argparse.ArgumentParser) -> None:
+    """
+    Add std arguments to a parser.
+    These are:
+    -v -- verbose
+    --dask -- turn on dask.
+    --log_file -- have a log file.
+    --overwrite -- overwrite files.
+    Args:
+        parser: parser to be modified.
+
+    Returns: nada
+
+    """
+    parser.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
+    parser.add_argument('--dask', action='store_true', help='Start dask client')
+    parser.add_argument('--log_file',
+                        help='Name of log file -- if provided. log info goes there as well as std out/err'
+                        )
+    parser.add_argument('--overwrite', action='store_true', help='Overwrite files')
+
+
+def setup_log(
+        verbose_level: int,
+        log_file: typing.Optional[str] = None
+) -> logging.Logger:
+    """
+    Set up logging
+    Args:
+        verbose_level: level of verbosity
+        log_file: log file to write to if not None
+
+    Returns: logger
+    """
+    if verbose_level > 1:
+        level = 'DEBUG'
+    elif verbose_level > 0:
+        level = 'INFO'
+    else:
+        level = 'WARNING'
+    init_log(my_logger, level=level, log_file=log_file, mode='w')
+    return my_logger
