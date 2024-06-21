@@ -120,7 +120,10 @@ def comp_events(
     return event_ds
 
 
-acorn_lookup = dict(Melbourne=86338)  # temp stations for sites.
+acorn_lookup = dict(Adelaide=23000, Melbourne=86338, Wtakone=96003, Sydney=66214, Brisbane=40842, Canberra=70351,
+                    Cairns=31011, Mornington=29077,
+                    Grafton=59151, Newcastle=61078, Gladstone=39083)
+# temp stations for sites. See www.bom.gov.au/climate/data/acorn-sat
 if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
     parser = argparse.ArgumentParser(description="Compute events for Australian radar data")
