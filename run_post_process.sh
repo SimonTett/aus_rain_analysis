@@ -98,9 +98,8 @@ done
 eval set -- "$PARAMS"
 
 # Now you can access your optional argument with $optional_arg and positional arguments with $@
-echo "Optional arguments are: name: ${name} extra_agrs: ${extra_args}"
-echo "Positional arguments are: $*"
 
+# set up defaults
 if [[ -z "$site" ]]; then
     echo "Site is required"
     exit 1
@@ -113,13 +112,15 @@ if [[ -z "$root_dir" ]]; then
     echo "root_dir is required"
     exit 1
 fi
+if [[ -z ${cbb_dir} ]]; then
+    cbb_dir="/scratch/wq02/st7295/radar/site_data/${site}"
+    echo "set cbb_dir to ${cbb_dir}"
+fi
 input_dir=$1 ; shift
 files=${input_dir}/*.nc # get all the files passed as arguments
-if [[ -z ${cbb_dir} ]]; then
-    CBB_dir="${root_dir}/${site}/cbb_dir"
-else
-  CBB_dir="${cbb_dir}/${site}"
-fi
+
+CBB_dir="${cbb_dir}/${site}"
+
 
 mn_file="${root_dir}/seas_mean_${name}_${seas_str}.nc"
 event_file="${root_dir}/events_${name}_${seas_str}.nc"

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # submit scripts to process reflectivity data and then (once all ran) submit post-processing
+time_str=$(date +"%Y%m%d_%H%M%S")
 extra_args="" # extra args
+max_qsub_args="" # argumnets for max qsub cmd.
 name=''
 site=''
 pp_root_dir='/scratch/wq02/st7295/radar/processed'
 max_root_dir="/scratch/wq02/st7295/radar/summary"
-
 max_extra_args=""
-
+# and add to history file cmd args so we can refer to it later.
+history_file="history_$(basename ${0}).txt"
+echo "history file is: ${history_file}"
+echo "${time_str}: $0 $*" >> "${history_file}"
 # Loop through all the positional parameters
 while (( "$#" )); do
   case "$1" in
@@ -114,6 +118,16 @@ while (( "$#" )); do
       dryrun=True
       shift
       ;;
+    --holdafter)
+      shift
+      qsub_args+=" -W depend=afterany:${holdafter}"
+      shift
+      ;;
+    --purpose)
+      shift
+      purpose=$1
+      shift
+      ;;
     -*|--*=) # unsupported flags
       echo "Error: Unsupported flag $1" >&2
       exit 1
@@ -149,7 +163,7 @@ walltime='12:00:00'
 project=wq02
 memory=25GB
 ncpus=4 # WIll have a few CPs coz of memory and so will use then
-time_str=$(date +"%Y%m%d_%H%M%S")
+
 resample='30min 1h 2h 4h 8h'
 region="-125 125 125 -125" # region to extract
 coarse=4
@@ -205,11 +219,11 @@ echo \$result
 EOF
     return 0
     }
-
-job_depend=''
+log_dir="${max_root_dir}/${name}/${name}_pbs_log"
+echo "max processing log_dir: ${log_dir}" >> ${history_file}
 for year in ${years_to_gen}
   do
-  log_dir="${max_root_dir}/${name}/${name}_pbs_log"
+
   script_cmd="gen_max_script ${site} ${name} ${year} ${max_root_dir} ${log_dir}"
   echo "Running ${script_cmd}"
   if [[ -n "$dryrun" ]]
@@ -217,8 +231,8 @@ for year in ${years_to_gen}
       echo "Would submit job for ${site} ${name} and year ${year} with log dir ${log_dir}. Script is:"
       eval $script_cmd
   else
-    echo "Submitting max job"
-    job_name=$(gen_max_script ${site} ${name} ${year} ${max_root_dir} ${log_dir} | qsub - ) # generate and submit script
+    echo "Submitting max job with args ${qsub_args}"
+    job_name=$(gen_max_script ${site} ${name} ${year} ${max_root_dir} ${log_dir} | qsub ${qsub_args} - ) # generate and submit script
     echo "Submitted job with name ${job_name} "
     job_depend+=":${job_name}"
   fi
@@ -228,8 +242,11 @@ done
 # now submit the post-processing with a holdafter for the processing jobs.
 memory=15GB
 job_name="pp_${name}_${time_str}"
-log_file="${pp_root_dir}/log/pp_${name}_${time_str}"
-cmd="./run_post_process.sh --input_dir ${max_root_dir} --name ${name} --site ${site} --root_dir ${pp_root_dir}  ${pp_extra_args} ${extra_args}"
+log_dir="${pp_root_dir}/log/"
+mkdir -p ${log_dir}
+log_file=${log_dir}/"pp_${name}_${time_str}"
+echo "post-processing log file is: ${log_file}" >> ${history_file}
+cmd="./run_post_process.sh  ${max_root_dir} --name ${name} --site ${site} --root_dir ${pp_root_dir}  ${pp_extra_args} ${extra_args}"
 gen_pp_script () {
 cat <<EOF
 #PBS -P ${project}
@@ -263,3 +280,5 @@ else
   job_name=$(gen_pp_script | qsub -W "depend=afterok${job_depend}" -) # generate and submit script
   echo "Submitted post-processing job with name ${job_name} dependant on ${job_depend}"
 fi
+
+echo "=============================" >> ${history_file}
