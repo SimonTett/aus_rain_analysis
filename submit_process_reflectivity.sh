@@ -71,7 +71,7 @@ while (( "$#" )); do
       ;;
     --ccb_dir)
       if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
-        pp_extra_args+="--cbb_dir $2"
+        cbb_dir=$2
         shift 2
       else
         echo "Error: Argument for $1 is missing" >&2
@@ -125,8 +125,11 @@ while (( "$#" )); do
       ;;
     --purpose)
       shift
-      purpose=$1
-      shift
+      purpose=''
+      while (( "$#" )) && [[ $1 != -* ]]; do # eat all the arg. Purpose doesn't do anything. Needed for history.
+        purpose+="$1 "
+        shift
+      done
       ;;
     -*|--*=) # unsupported flags
       echo "Error: Unsupported flag $1" >&2
@@ -158,6 +161,11 @@ if [[ -n ${pp_root_dir} ]]
 then
     pp_root_dir="/scratch/wq02/st7295/radar/processed/${name}"
 fi
+if [[ -z ${cbb_dir} ]]
+then
+    cbb_dir="/scratch/wq02/st7295/radar/site_data/${site}"
+fi
+pp_extra_args+="--cbb_dir ${cbb_dir}"
 years_to_gen="1995 2000 2005 2010 2015 2020" # want those years.
 walltime='12:00:00'
 project=wq02
@@ -233,6 +241,13 @@ for year in ${years_to_gen}
   else
     echo "Submitting max job with args ${qsub_args}"
     job_name=$(gen_max_script ${site} ${name} ${year} ${max_root_dir} ${log_dir} | qsub ${qsub_args} - ) # generate and submit script
+    status=$?
+    if [[ $status -ne 0 ]]
+    then
+        echo "Error submitting job for ${site} ${name} and year ${year} with log dir ${log_dir}. Script is:"
+        eval $script_cmd
+        exit $status
+    fi
     echo "Submitted job with name ${job_name} "
     job_depend+=":${job_name}"
   fi

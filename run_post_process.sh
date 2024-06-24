@@ -72,6 +72,7 @@ while (( "$#" )); do
     -v)
       extra_args+=" -v"
       shift
+      verbose='True'
       ;;
     --overwrite)
       extra_args+=" --overwrite"
@@ -81,6 +82,11 @@ while (( "$#" )); do
       ;;
     --verbose)
       extra_args+=" --verbose"
+      shift
+      ;;
+    --dryrun)
+      dryrun='True'
+      echo "Dry run only"
       shift
       ;;
     -*|--*=) # unsupported flags
@@ -119,32 +125,48 @@ fi
 input_dir=$1 ; shift
 files=${input_dir}/*.nc # get all the files passed as arguments
 
-CBB_dir="${cbb_dir}/${site}"
+
 
 
 mn_file="${root_dir}/seas_mean_${name}_${seas_str}.nc"
 event_file="${root_dir}/events_${name}_${seas_str}.nc"
 fit_root="${root_dir}/gev_fits_${name}_" # for fits -- not currently active.
 
-cmd="./process_beam_blockage.py ${site} --output_dir ${CBB_dir} -v"
+cmd="./process_beam_blockage.py ${site} --output_dir ${cbb_dir} -v"
 # generate the DEM and beam blockage data for the site. Note no extra args used as this only updates rarely.
 # User should do it explicitly
-echo "cmd is $cmd"
-result=$($cmd)
-echo "Result is $result"
+echo -e "cmd is:\n$cmd"
+if [[ -z "${dryrun}" ]] # NOT dryrun...
+then
+  result=$($cmd)
+  stat=$?
+  if [[ $stat -ne 0 ]]; then
+      echo "Error running command  $cmd"
+      exit 1
+  fi
+  echo -e "$cmd:\n Result is $result"
+else
+  echo "Dry run only"
 
-CBB_files="$CBB_dir"/*cbb_dem.nc # get the beam blockage files
+fi
+
+CBB_files="$cbb_dir"/*cbb_dem.nc # get the beam blockage files
 cmds=("./process_seas_avg_mask.py ${files} --output ${mn_file}  ${process_seas_mean_args} --cbb_dem_files ${CBB_files}  ${extra_args}" \
 "./process_events.py ${mn_file} ${event_file} --cbb_dem_files ${CBB_files}  ${extra_args}"
 #"./process_gev_fits.py ${event_file}  ${fit_root} ${extra_args} # generate the GEV fits for the site."
 )
 for cmd in "${cmds[@]}"; do
-    echo "Running command: $cmd"
+    # shellcheck disable=SC2028
+    echo -e 'cmd is:\n '"${cmd}"
+    if [[ -n "${dryrun}" ]]; then # dryrun SET.
+      echo "Dry run only"
+      continue
+    fi
     result=$($cmd)
     stat=$?
-    echo "Result is $result"
+    echo -e "$cmd:\n Result is $result"
     if [[ $stat -ne 0 ]]; then
-        echo "Error running command"
+        echo "Error running command $cmd"
         exit 1
     fi
 done

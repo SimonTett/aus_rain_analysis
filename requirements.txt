@@ -1,3 +1,5 @@
+# requirements for python environment
+# update with pip update -r requirements.txt
 xarray~=2024.1.1
 flox~=0.8
 scipy~=1.11
@@ -39,8 +41,9 @@ pytz~=2024.1
 arm_pyart
 xradar~=0.5.0
 wradlib~=2.0.3
-gdal
+#gdal # can't install gdal with pip
 pyarrow
+earthaccess # so can retrieve data from earthdata
 r-base>=4.0.5
 rpy2==3.5.11
 r-extRemes
@@ -49,3 +52,4 @@ r-fields
 r-raster
 r-codetools
 r-terra==1.7-29 # need to downgrade to work on jasmin
+

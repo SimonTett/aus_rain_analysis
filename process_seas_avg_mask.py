@@ -160,6 +160,7 @@ if __name__ == '__main__':
 
     variable_name = 'rain_rate'
 
+
     # select season we want
     L = radar.time.dt.season == args.season
     if args.years:
@@ -167,6 +168,9 @@ if __name__ == '__main__':
 
     radar = radar.where(L, drop=True)
     my_logger.info(radar.proj.dims)
+    # Keep values where sample_resolution <=15 minutes (900 seconds)
+    L=(radar.sample_resolution.dt.total_seconds() <= 900).load()
+    radar = radar.where(L, drop=True)
     # extract the region used from the meta-data
     regn = ausLib.extract_rgn(radar)
 
