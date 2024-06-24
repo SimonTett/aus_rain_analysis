@@ -263,14 +263,16 @@ log_file=${log_dir}/"pp_${name}_${time_str}"
 echo "post-processing log file is: ${log_file}" >> ${history_file}
 cmd="./run_post_process.sh  ${max_root_dir} --name ${name} --site ${site} --root_dir ${pp_root_dir}  ${pp_extra_args} ${extra_args}"
 gen_pp_script () {
+  # function to generate PBS script for post-processing. This needs acess to the internet to download
+  # srtm and acorn data.  Sp runs on copyq
 cat <<EOF
 #PBS -P ${project}
-#PBS -q normalbw
-#PBS -l walltime=${walltime}
+#PBS -q copyq
+#PBS -l walltime=01:00:00
 #PBS -l storage=gdata/rq0+gdata/hh5+gdata/ua8
-#PBS -l mem=${memory}
+#PBS -l mem=15GB
 #PBS -l ncpus=1
-#PBS -l jobfs=10GB
+#PBS -l jobfs=20GB
 #PBS -l wd
 #PBS -m abe
 #PBS -M simon.tett@ed.ac.uk
