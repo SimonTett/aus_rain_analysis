@@ -2,7 +2,7 @@
 # submit scripts to process reflectivity data and then (once all ran) submit post-processing
 time_str=$(date +"%Y%m%d_%H%M%S")
 extra_args="" # extra args
-max_qsub_args="" # argumnets for max qsub cmd.
+max_qsub_args="" # arguments for max qsub cmd.
 name=''
 site=''
 pp_root_dir='/scratch/wq02/st7295/radar/processed'
@@ -254,7 +254,9 @@ for year in ${years_to_gen}
 
 done
 
-# now submit the post-processing with a holdafter for the processing jobs.
+memory=10GB
+
+# now submit the post-processing with a holdafter for the processing jobs and the meta-data generation job.
 memory=15GB
 job_name="pp_${name}_${time_str}"
 log_dir="${pp_root_dir}/log/"
@@ -263,7 +265,7 @@ log_file=${log_dir}/"pp_${name}_${time_str}"
 echo "post-processing log file is: ${log_file}" >> ${history_file}
 cmd="./run_post_process.sh  ${max_root_dir} --name ${name} --site ${site} --root_dir ${pp_root_dir}  ${pp_extra_args} ${extra_args}"
 gen_pp_script () {
-  # function to generate PBS script for post-processing. This needs acess to the internet to download
+  # function to generate PBS script for post-processing. This needs access to the internet to download
   # srtm and acorn data.  Sp runs on copyq
 cat <<EOF
 #PBS -P ${project}

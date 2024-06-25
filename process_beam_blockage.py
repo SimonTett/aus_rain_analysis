@@ -188,7 +188,8 @@ if __name__ == '__main__':
             f"Radar bounding box:\n\t{rlimits[3]:.2f}\n{rlimits[0]:.2f}      {rlimits[2]:.2f}\n\t{rlimits[1]:.2f}"
         )
         # possibly create the strm data. Quite slow...
-
+        delta=0.5
+        relimits_broad=(rlimits[0]-delta,rlimits[1]-delta,rlimits[2]+delta,rlimits[3]+delta)
         ds = comp_strm(bounding_box=rlimits, base_name=site, cache=(not args.make_srtm))['90m']
         rastervalues = ds.values.squeeze()
         rastercoords = np.stack(np.meshgrid(ds.x, ds.y), axis=-1)

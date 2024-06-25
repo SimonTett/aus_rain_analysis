@@ -30,7 +30,7 @@ site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50,
 hostname = platform.node()
 if hostname.startswith('gadi'):  # aus super-computer
     radar_dir = pathlib.Path("/g/data/rq0/level_2/")
-    data_dir = pathlib.Path("/scratch/wq02/st7295/aus_rain_analysis")
+    data_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
     hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/")
 elif hostname.startswith('ccrc'):  # CCRC desktop
     data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis")
@@ -879,3 +879,24 @@ def setup_log(
         level = 'WARNING'
     init_log(my_logger, level=level, log_file=log_file, mode='w')
     return my_logger
+
+def write_out(data: xarray.Dataset | xarray.DataArray,
+              time_unit: str,
+              outpath: pathlib.Path,
+              extra_attrs: typing.Optional[dict]= None) -> None:
+    """
+    Write out data. Encoding and attributes are modified.
+    :param data: data array or dataset to be written out
+    :param time_unit: units of time.
+    :param outpath: path for where data to be written to
+    :param extra_attrs: extra attributes for the dataset
+    :return:
+    """
+    if extra_attrs is None:
+        extra_attrs={}
+    data.time.attrs.pop("units", None)
+    data.time.encoding.update(units=time_unit, dtype='float64')
+    data.encoding.update(zlib=True, complevel=4)
+    data.attrs.update(extra_attrs)
+    data.to_netcdf(outpath, unlimited_dims='time')
+    my_logger.info(f'Wrote data to {outpath}')

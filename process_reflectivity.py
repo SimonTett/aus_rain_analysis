@@ -480,25 +480,7 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
     return ds
 
 
-def write_out(data: xarray.Dataset | xarray.DataArray,
-              time_unit: str,
-              outpath: pathlib.Path,
-              extra_attrs: typing.Optional[dict]= None) -> None:
-    """
-    Write out data
-    :param data: data array or dataset to be written out
-    :param time_unit: units of time.
-    :param outpath: path for where data to be written to
-    :param extra_attrs:
-    :return:
-    """
-    if extra_attrs is None:
-        extra_attrs={}
-    data.time.attrs.pop("units", None)
-    data.time.encoding.update(units=time_unit, dtype='float64')
-    data.encoding.update(zlib=True, complevel=4)
-    data.attrs.update(extra_attrs)
-    data.to_netcdf(outpath, unlimited_dims='time')
+
 
 ##
 if __name__ == "__main__":
@@ -644,13 +626,13 @@ if __name__ == "__main__":
                 ValueError(f'small sample resolution {min_res} mins')
             elif min_res > 15:
                 ValueError(f'large sample resolution {min_res} mins')
-            write_out(summary_data, time_unit, outpath, extra_attrs)
+            ausLib.write_out(summary_data, time_unit, outpath, extra_attrs)
             my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
             summary_data.to_netcdf(outpath, unlimited_dims='time')
 
             if args.write_full:  # write out the full file.
                 full_file = outdir_full / file
-                write_out(ds,time_unit,full_file,extra_attrs)
+                ausLib.write_out(ds,time_unit,full_file,extra_attrs)
                 my_logger.info(f'wrote full data to {full_file} {ausLib.memory_use()}')
 
             if args.extract_coords_csv: # write out co-ords
@@ -659,7 +641,7 @@ if __name__ == "__main__":
                 coord_da = ausLib.data_array_station_match(ds[basename],radar_proj, coord_df)
                 att = attr_var.drop_vars(['longitude','latitude','y_bounds','x_bounds']).squeeze('time',drop=True)
                 masked_ds = att.merge(coord_da).drop_dims(['x','y']) # drop the time dimension and merge in the coord
-                write_out(masked_ds,time_unit,coord_file,extra_attrs)
+                ausLib.write_out(masked_ds,time_unit,coord_file,extra_attrs)
                 my_logger.info(f'wrote coord data to {coord_file} {ausLib.memory_use()}')
 
 
