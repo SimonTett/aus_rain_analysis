@@ -42,7 +42,7 @@ def get_dem_files(bounding_box: tuple[float, float, float, float],
     """
     if not (isinstance(bounding_box, tuple) and len(bounding_box) == 4):
         raise ValueError('Bounding box should be a tuple of 4 floats')
-    cache_dir.mkdir(exist_ok=True, parents=True) # create cache dir if needed.
+    cache_dir.mkdir(exist_ok=True, parents=True)  # create cache dir if needed.
     # use earthaccess to get the files.
     stat = earthaccess.login(strategy='netrc')  # if userid etc not found this still works. So check
     if not stat.authenticated:
@@ -88,13 +88,15 @@ def get_dem_files(bounding_box: tuple[float, float, float, float],
 def comp_strm(
         bounding_box: Tuple[float, float, float, float],
         base_name: str,
+        site_dir: pathlib.Path,
         srtm_dir: pathlib.Path = SRTM_dir,
         resoln: typing.Optional[list[int]] = None,
         cache: bool = True
 ) -> dict[str, xarray.DataArray]:
     if resoln is None:
         resoln = [90, 1000, 2000]
-    files_to_make = {f'{r}m': srtm_dir / f'{base_name}_{int(r):d}m.tif' for r in resoln}
+    site_dir.mkdir(exist_ok=True, parents=True)
+    files_to_make = {f'{r}m': site_dir / f'{base_name}_{int(r):d}m.tif' for r in resoln}
     result = dict()
     if cache:
         for res, file in files_to_make.items():
@@ -110,7 +112,7 @@ def comp_strm(
     ds_raw = rioxarray.merge.merge_arrays([rioxarray.open_rasterio(f, parallel=True) for f in files])
 
     ds_raw = ds_raw.sel(x=slice(bounding_box[0], bounding_box[2]),
-                        y=slice(bounding_box[3], bounding_box[1]) # y coords are reversed.
+                        y=slice(bounding_box[3], bounding_box[1])  # y coords are reversed.
                         )
     ds_raw = ds_raw.where(ds_raw != ds_raw._FillValue, 0.0)  # Set missing values to zero.
 
@@ -133,10 +135,10 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
     parser = argparse.ArgumentParser(description="Generate beam blockage and topog data for radar")
     parser.add_argument('site', type=str, help='site name for radar data')
-    parser.add_argument('--output_dir', type=pathlib.Path, help='Output directory for CB/DEM data')
+    parser.add_argument('--output_dir', type=pathlib.Path, help='Output directory for CBB/DEM data')
     parser.add_argument('--make_srtm', action='store_true',
                         help='Remake SRTM data if set otherwise cache data. Note STRM data used to generate DEM data')
-    parser.add_argument('--srtm_cache_dir',type=pathlib.Path, default=SRTM_dir,
+    parser.add_argument('--srtm_cache_dir', type=pathlib.Path, default=SRTM_dir,
                         help='Where SRTM data downloaded from earthdata is stored')
 
     ausLib.add_std_arguments(parser)  # add on the std args
@@ -151,25 +153,33 @@ if __name__ == '__main__':
         dask.config.set(scheduler="single-threaded")  # make sure dask is single threaded.
         my_logger.info('Running single threaded')
 
-    # open up the metadata file
+    extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
+                       utc_time=pd.Timestamp.utcnow().isoformat(),
+                       program_args=[f'{k}: {v}' for k, v in vars(args).items()]
+                       )
 
     #  get the co-ords.
     site = args.site
     metadata = ausLib.site_info(ausLib.site_numbers[site])
-
+    time_unit = 'minutes since 1970-01-01'  # units for time in output files
+    outdir = args.output_dir
+    if outdir is None:
+        outdir = ausLib.data_dir / 'site_data'/site
+    outdir.mkdir(exist_ok=True, parents=True)
+    my_logger.info(f'Output dir is {outdir}')
     for name, info in metadata.iterrows():
-        outfile = pathlib.Path(args.output_dir) / f'{name}_cbb_dem.nc'
-        outfile.parent.mkdir(exist_ok=True, parents=True)
+        outfile = pathlib.Path(outdir) / f'{site}_{name}_cbb_dem.nc'
+
         # see if outfile exists and if we are allowed to overwrite it.
         if outfile.exists() and (not args.overwrite):
             my_logger.warning(f"Output file {outfile} exists and overwrite not set. Skipping further processing")
             continue
         my_logger.info(f"Output file: {outfile}")
-        sitecoords =   (info.site_lon, info.site_lat, info.site_alt)
-        nrays = int(np.ceil(360 / info.beamwidth))  # number of rays
+        sitecoords = (info.site_lon, info.site_lat, info.site_alt)
+        nrays = 360  # number of rays
         nbins = 400  # number of range bins
-        el = info.beamwidth / 2.  # vertical antenna pointing angle (deg)
-        bw = info.beamwidth  # half power beam width (deg) -- check with Joshua
+        el = 0.5  # vertical antenna pointing angle (deg)
+        bw = info.beamwidth  # half power beam width (deg) # note that PPI data has sparse beamwidth data but does not always agree with this.
         range_res = 500.0  # range resolution (meters)
         r = np.arange(nbins) * range_res
         beamradius = wrl.util.half_power_radius(r, bw)
@@ -187,15 +197,15 @@ if __name__ == '__main__':
         my_logger.info(
             f"Radar bounding box:\n\t{rlimits[3]:.2f}\n{rlimits[0]:.2f}      {rlimits[2]:.2f}\n\t{rlimits[1]:.2f}"
         )
-        # possibly create the strm data. Quite slow...
-        delta=0.5
-        relimits_broad=(rlimits[0]-delta,rlimits[1]-delta,rlimits[2]+delta,rlimits[3]+delta)
-        ds = comp_strm(bounding_box=rlimits, base_name=site, cache=(not args.make_srtm))['90m']
+        # possibly create the strm data. Quite slow... Increase width by 0.5 degrees.
+        delta = 0.5
+        relimits_broad = (rlimits[0] - delta, rlimits[1] - delta, rlimits[2] + delta, rlimits[3] + delta)
+        ds = comp_strm(bounding_box=relimits_broad, base_name=site, site_dir=outdir/'dem',cache=(not args.make_srtm))['90m']
         rastervalues = ds.values.squeeze()
         rastercoords = np.stack(np.meshgrid(ds.x, ds.y), axis=-1)
         crs = ds.rio.crs
 
-        # Map rastervalues to polar grid points. Q ? Where does the cord ref system come in?
+        # Map rastervalues to polar grid points.
         polarvalues = wrl.ipol.cart_to_irregular_spline(
             rastercoords, rastervalues, polcoords, order=3, prefilter=False
         )
@@ -228,7 +238,7 @@ if __name__ == '__main__':
         proj = xarray.DataArray(1).assign_attrs(proj_info)
         ds_grid[f'proj_{name}'] = proj
         # add in the postchange_start as time.
-        time_unit = 'minutes since 1970-01-01'  # units for time in output files
+
         ds_grid = ds_grid.assign_coords(postchange_start=info['postchange_start'])
         ds_grid.postchange_start.encoding.update(units=time_unit, dtype='float64')
 
@@ -244,5 +254,5 @@ if __name__ == '__main__':
                 site_meta_data[k] = int(site_meta_data[k])
 
         ds_grid = ds_grid.assign_attrs(site_meta_data)
-        ds_grid.to_netcdf(outfile, unlimited_dims='postchange_start')  # and save it
-        my_logger.info(f"Saved {outfile}")
+        ausLib.write_out(ds_grid, time_unit, outfile, extra_attrs=extra_attrs, time_dim='postchange_start')
+

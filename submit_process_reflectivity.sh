@@ -254,50 +254,6 @@ for year in ${years_to_gen}
 
 done
 
-memory=10GB
 
-# now submit the post-processing with a holdafter for the processing jobs and the meta-data generation job.
-memory=15GB
-job_name="pp_${name}_${time_str}"
-log_dir="${pp_root_dir}/log/"
-mkdir -p ${log_dir}
-log_file=${log_dir}/"pp_${name}_${time_str}"
-echo "post-processing log file is: ${log_file}" >> ${history_file}
-cmd="./run_post_process.sh  ${max_root_dir} --name ${name} --site ${site} --root_dir ${pp_root_dir}  ${pp_extra_args} ${extra_args}"
-gen_pp_script () {
-  # function to generate PBS script for post-processing. This needs access to the internet to download
-  # srtm and acorn data.  Sp runs on copyq
-cat <<EOF
-#PBS -P ${project}
-#PBS -q copyq
-#PBS -l walltime=01:00:00
-#PBS -l storage=gdata/rq0+gdata/hh5+gdata/ua8
-#PBS -l mem=15GB
-#PBS -l ncpus=1
-#PBS -l jobfs=20GB
-#PBS -l wd
-#PBS -m abe
-#PBS -M simon.tett@ed.ac.uk
-#PBS -N ${job_name}
-#PBS -o ${log_file}.out
-#PBS -e ${log_file}.err
-export TMPDIR=\$PBS_JOBFS
-cd /home/561/st7295/aus_rain_analysis || exit # make sure we are in the right directory
-. ./setup.sh # setup software and then run the processing
-echo Cmd is ${cmd}
-result=\$($cmd)
-echo \$result
-EOF
-return 0
-}
-
-if [[ -n "$dryrun" ]]
-then
-    echo "post-processing script is:"
-    gen_pp_script
-else
-  job_name=$(gen_pp_script | qsub -W "depend=afterok${job_depend}" -) # generate and submit script
-  echo "Submitted post-processing job with name ${job_name} dependant on ${job_depend}"
-fi
 
 echo "=============================" >> ${history_file}

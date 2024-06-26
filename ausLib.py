@@ -603,7 +603,7 @@ def read_radar_zipfile(
     return ds
 
 
-def read_radar_file(path: pathlib.Path|str) -> pd.DataFrame:
+def read_radar_file(path: pathlib.Path | str) -> pd.DataFrame:
     """
     Read in radar data from a file.
     Args:
@@ -896,36 +896,41 @@ def setup_log(
 def write_out(data: xarray.Dataset | xarray.DataArray,
               time_unit: str,
               outpath: pathlib.Path,
-              extra_attrs: typing.Optional[dict] = None) -> None:
+              extra_attrs: typing.Optional[dict] = None,
+              time_dim: str = 'time') -> None:
     """
     Write out data. Encoding and attributes are modified.
     :param data: data array or dataset to be written out
     :param time_unit: units of time.
     :param outpath: path for where data to be written to
     :param extra_attrs: extra attributes for the dataset
+    :param time_dim: time dimension
     :return:
     """
     if extra_attrs is None:
         extra_attrs = {}
-    data.time.attrs.pop("units", None)
-    data.time.encoding.update(units=time_unit, dtype='float64')
+    if time_unit is None:
+        time_unit = 'minutes since 1970-01-01'  # units for time in output files
+    data[time_dim].attrs.pop("units", None)
+    data[time_dim].encoding.update(units=time_unit, dtype='float64')
     data.encoding.update(zlib=True, complevel=4)
     data.attrs.update(extra_attrs)
-    data.to_netcdf(outpath, unlimited_dims='time')
+    data.to_netcdf(outpath, unlimited_dims=time_dim)
     my_logger.info(f'Wrote data to {outpath}')
 
 
-def std_fig_axs(fig_num, reduce_spline:bool = True,   **kwargs) \
+def std_fig_axs(fig_num, reduce_spline: bool = True, **kwargs) \
         -> tuple['matplotlib.figure.Figure', 'matplotlib.axes.Axes']:
     mosaic = [['Mornington', 'BLANK', 'Cairns'],
               ['Grafton', 'Brisbane', 'Gladstone'],
               ['Canberra', 'Sydney', 'Newcastle'],
               ['Adelaide', 'Wtakone', 'Melbourne'],
               ]
-    args = dict(num=fig_num, clear=True, figsize= (6, 9),layout='constrained', empty_sentinel='BLANK',)  # default args,
+    args = dict(num=fig_num, clear=True, figsize=(6, 9), layout='constrained',
+                empty_sentinel='BLANK', )  # default args,
     args.update(**kwargs)  # update with any passed in args
     fig, axes = plt.subplot_mosaic(mosaic, **args)
-    if reduce_spline: # remove the top and right spines
+    if reduce_spline:  # remove the top and right spines
         for ax in axes.values():
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
