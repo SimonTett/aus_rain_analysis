@@ -47,7 +47,7 @@ def iso_to_timedelta64(iso_string: str) -> np.timedelta64:
     if seconds is not None:
         timedelta += np.timedelta64(int(float(seconds)), 's')
 
-    timedelta = np.timedelta64(0, 'ns')  # convert to nano-secs to supress annoying warning.
+    timedelta += np.timedelta64(0, 'ns')  # convert to nano-secs to supress annoying warning.
 
     return timedelta
 
@@ -156,9 +156,10 @@ if __name__ == "__main__":
     outdir.mkdir(parents=True, exist_ok=True)
     my_logger.info(f'Output dir is {outdir}')
 
-    dataset = []
+
 
     for year in args.years:
+
         outfile= outdir / f'{site}_{year:04d}_metadata.nc'
         my_logger.info(f'Processing year {year}')
         if outfile.exists() and not args.overwrite:
@@ -178,7 +179,7 @@ if __name__ == "__main__":
         for k, g in itertools.groupby(zip_files, key=month_sort):
             files.append(list(g)[0])  # just want the first file from each month.
             ukeys.append(k)
-
+        dataset = []
         for f in files:
             my_logger.debug(f'Processing {f}')
             ds = read_ppi(f)

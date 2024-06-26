@@ -10,6 +10,8 @@ import time
 import zipfile
 import cartopy.crs as ccrs
 import cartopy.geodesic
+import matplotlib
+import matplotlib.pyplot as plt
 
 import requests
 # stuff for timezones!
@@ -601,6 +603,24 @@ def read_radar_zipfile(
     return ds
 
 
+def read_radar_file(path: pathlib.Path|str) -> pd.DataFrame:
+    """
+    Read in radar data from a file.
+    Args:
+        :param path -- path to csv file
+    """
+    df = pd.read_csv(path, index_col='id_long', parse_dates=['postchange_start', 'prechange_end'],
+                     dayfirst=True, na_values='-',
+                     true_values=['Yes'],
+                     dtype={'site_lat': np.float32, 'site_lon': np.float32, 'site_alt': np.float32}
+                     ).drop(columns='Unnamed: 0')
+
+    # Set NaN to False
+    for col in ['dp', 'doppler']:
+        df[col] = ~df[col].isnull()
+    return df
+
+
 def site_info(site_no: int) -> pd.DataFrame:
     """
     Get information on a site.
@@ -610,15 +630,7 @@ def site_info(site_no: int) -> pd.DataFrame:
     """
     from importlib.resources import files
     file = files('meta_data') / 'long_radar_stns.csv'
-    df = pd.read_csv(file, index_col='id_long', parse_dates=['postchange_start', 'prechange_end'],
-                     dayfirst=True,na_values='-',
-                     true_values=['Yes'],
-                     dtype={'site_lat': np.float32, 'site_lon': np.float32, 'site_alt': np.float32}
-                     ).drop(columns='Unnamed: 0')
-
-    # Set NaN to False
-    for col in ['dp', 'doppler']:
-        df[col] = ~df[col].isnull()
+    df = read_radar_file(file)
     L = df.id == site_no
     meta = df[L]
     return meta
@@ -657,7 +669,7 @@ def read_acorn(
         url = f'http://www.bom.gov.au/climate/change/hqsites/data/temp/t{what}.{site:06d}.daily.csv'
         my_logger.info(f"Retrieving data from {url}")
         headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
+            'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
         # fake we are interactive...
         # retrieve data writing it to local cache.
         with requests.get(url, headers=headers, stream=True) as r:
@@ -706,16 +718,16 @@ def list_vars(
     return vars
 
 
-def gen_radar_projection(longitude: float, latitude: float,parallel_offset: float = 1.5) -> dict:
+def gen_radar_projection(longitude: float, latitude: float, parallel_offset: float = 1.5) -> dict:
     proc_attrs = {
-            "grid_mapping_name": "albers_conical_equal_area",
-            "standard_parallel": np.round([latitude-parallel_offset,latitude+parallel_offset],1),
-            "longitude_of_central_meridian": longitude,
-            "latitude_of_projection_origin": latitude,
-            "false_easting": 0.0,
-            "false_northing": 0.0,
-            "semi_major_axis": 6378137.0,
-            "semi_minor_axis": 6356752.31414
+        "grid_mapping_name": "albers_conical_equal_area",
+        "standard_parallel": np.round([latitude - parallel_offset, latitude + parallel_offset], 1),
+        "longitude_of_central_meridian": longitude,
+        "latitude_of_projection_origin": latitude,
+        "false_easting": 0.0,
+        "false_northing": 0.0,
+        "semi_major_axis": 6378137.0,
+        "semi_minor_axis": 6356752.31414
     }
     return proc_attrs
 
@@ -880,10 +892,11 @@ def setup_log(
     init_log(my_logger, level=level, log_file=log_file, mode='w')
     return my_logger
 
+
 def write_out(data: xarray.Dataset | xarray.DataArray,
               time_unit: str,
               outpath: pathlib.Path,
-              extra_attrs: typing.Optional[dict]= None) -> None:
+              extra_attrs: typing.Optional[dict] = None) -> None:
     """
     Write out data. Encoding and attributes are modified.
     :param data: data array or dataset to be written out
@@ -893,10 +906,27 @@ def write_out(data: xarray.Dataset | xarray.DataArray,
     :return:
     """
     if extra_attrs is None:
-        extra_attrs={}
+        extra_attrs = {}
     data.time.attrs.pop("units", None)
     data.time.encoding.update(units=time_unit, dtype='float64')
     data.encoding.update(zlib=True, complevel=4)
     data.attrs.update(extra_attrs)
     data.to_netcdf(outpath, unlimited_dims='time')
     my_logger.info(f'Wrote data to {outpath}')
+
+
+def std_fig_axs(fig_num, reduce_spline:bool = True,   **kwargs) \
+        -> tuple['matplotlib.figure.Figure', 'matplotlib.axes.Axes']:
+    mosaic = [['Mornington', 'BLANK', 'Cairns'],
+              ['Grafton', 'Brisbane', 'Gladstone'],
+              ['Canberra', 'Sydney', 'Newcastle'],
+              ['Adelaide', 'Wtakone', 'Melbourne'],
+              ]
+    args = dict(num=fig_num, clear=True, figsize= (6, 9),layout='constrained', empty_sentinel='BLANK',)  # default args,
+    args.update(**kwargs)  # update with any passed in args
+    fig, axes = plt.subplot_mosaic(mosaic, **args)
+    if reduce_spline: # remove the top and right spines
+        for ax in axes.values():
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+    return fig, axes

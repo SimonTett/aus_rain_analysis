@@ -25,6 +25,15 @@ while (( "$#" )); do
       sleep 5
       shift
       ;;
+    --log_file)
+      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+        extra_args+="--log_file ${2}"
+        shift 2
+      else
+        echo "Error: Argument for $1 is missing" >&2
+        exit 1
+      fi
+      ;;
     --outdir)
       if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
         extra_args+=" --outdir  $2"

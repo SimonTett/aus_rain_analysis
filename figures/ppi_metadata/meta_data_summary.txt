@@ -1,0 +1,25 @@
+ Not all ppi information is always present.
+
+ min-elevation. Seems to be broadly constant though with some jumps.
+ Adelaide & Mornington increases from 0.5 to 0.8 from 2020-11-01T00 on.
+
+Time resolution -- sampling period. Seems inconsistent with other data -- diff between 2 consecutive timestamps is not consistant.
+Seems to be 6 minutes until near the end when it goes to 10 minutes:
+Adelaide has resolution > 400 seconds from  2021-09-01
+Melbourne has resolution > 400 seconds from  2021-01-01
+Wtakone has resolution > 400 seconds from  2021-01-01
+Sydney has resolution > 400 seconds from  2021-01-01
+Canberra has resolution > 400 seconds from  2021-10-01
+Cairns has resolution > 400 seconds from  2021-10-01
+Mornington has resolution > 400 seconds from  2021-09-01
+Newcastle has resolution > 400 seconds from  2021-10-01
+Gladstone has resolution > 400 seconds from  2022-01-01
+
+Frequency changes and not when radar changes... Not always avalable in metadata.
+Altitude changes but when radar changes.
+Beamwidth changes (and is not always available in metadata) outside radar changes.
+Mornington -- changes  from 1.7 to 1 (2018-05-01) then to 1.6 from  2018-08-01
+Grafton -- mainly 1.9 but 1 from 2018-05-01 to 2022-08-01
+Brisbane -- mainly 1.9 but 1 from 2018-05-01 to 2022-12-01
+Adelaide -- mainly 1.7 but 1.53 from 2018-05-01 to 2022-12-01
+
