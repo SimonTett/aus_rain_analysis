@@ -166,5 +166,5 @@ then
     gen_script
 else
   job_name=$(gen_script | qsub ${qsub_args} -) # generate and submit script
-  echo "Submitted post-processing job with name ${job_name} dependant on ${job_depend}" >&2
+  echo "Submitted post-processing job with name ${job_name} submitted with qsub args ${qsub_args}" >&2
 fi

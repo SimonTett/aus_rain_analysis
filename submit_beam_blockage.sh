@@ -78,7 +78,7 @@ fi
 # stuff for PBS script
 walltime='1:00:00'
 project=wq02
-memory=10GB
+memory=20GB # actually need 20GB
 ncpus=1 # single core job as largely doing IO
 cmd="./process_beam_blockage.py ${site} ${extra_args}"
 name="${site}_beam"
