@@ -24,18 +24,23 @@ import logging
 import pandas as pd
 import typing
 import ast  # thanks chaptGPT co-pilot
+import numpy.random as random
 
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
                     )
+acorn_lookup = dict(Adelaide=23000, Melbourne=86338, Wtakone=96003, Sydney=66214, Brisbane=40842, Canberra=70351,
+                    Cairns=31011, Mornington=29077,
+                    Grafton=59151, Newcastle=61078, Gladstone=39083
+                    )  # acorn station IDs for each site.
 hostname = platform.node()
 if hostname.startswith('gadi'):  # aus super-computer
     radar_dir = pathlib.Path("/g/data/rq0/level_2/")
     data_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
     hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/")
 elif hostname.startswith('ccrc'):  # CCRC desktop
-    data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis")
+    data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis/radar")
 elif hostname == 'geos-w-048':  # my laptop
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis")
 else:
@@ -669,7 +674,7 @@ def read_acorn(
         url = f'http://www.bom.gov.au/climate/change/hqsites/data/temp/t{what}.{site:06d}.daily.csv'
         my_logger.info(f"Retrieving data from {url}")
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
+                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
         # fake we are interactive...
         # retrieve data writing it to local cache.
         with requests.get(url, headers=headers, stream=True) as r:
@@ -720,14 +725,14 @@ def list_vars(
 
 def gen_radar_projection(longitude: float, latitude: float, parallel_offset: float = 1.5) -> dict:
     proc_attrs = {
-        "grid_mapping_name": "albers_conical_equal_area",
-        "standard_parallel": np.round([latitude - parallel_offset, latitude + parallel_offset], 1),
-        "longitude_of_central_meridian": longitude,
-        "latitude_of_projection_origin": latitude,
-        "false_easting": 0.0,
-        "false_northing": 0.0,
-        "semi_major_axis": 6378137.0,
-        "semi_minor_axis": 6356752.31414
+            "grid_mapping_name"            : "albers_conical_equal_area",
+            "standard_parallel"            : np.round([latitude - parallel_offset, latitude + parallel_offset], 1),
+            "longitude_of_central_meridian": longitude,
+            "latitude_of_projection_origin": latitude,
+            "false_easting"                : 0.0,
+            "false_northing"               : 0.0,
+            "semi_major_axis"              : 6378137.0,
+            "semi_minor_axis"              : 6356752.31414
     }
     return proc_attrs
 
@@ -893,11 +898,116 @@ def setup_log(
     return my_logger
 
 
-def write_out(data: xarray.Dataset | xarray.DataArray,
-              time_unit: str,
-              outpath: pathlib.Path,
-              extra_attrs: typing.Optional[dict] = None,
-              time_dim: str = 'time') -> None:
+def sample_events(
+        data_set: xarray.Dataset,
+        nsamples: int = 100,
+        rng: np.random.BitGenerator = None,
+        dim: str = 'EventTime',
+        dim2: str = 'quantv'
+) -> xarray.Dataset:
+    """
+    Sample events with replacement from a data array
+    Args:
+        data_set: xarray data set
+        nsamples: number of bootstrap samples to take
+        rng: random number generator
+        dim: dimension over which to apply dropna and sampling.
+        dim2: dim over which to randomly sample.
+    Returns: xarray data array
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    ds = data_set.dropna(dim)
+    npts = ds.EventTime.size
+    locs = rng.integers(0, npts, size=(nsamples, npts))  # boot strap samples.
+    # wrap it up in  data array to allow fancy indexing
+    coords = dict(bootstrap_sample=np.arange(0, nsamples), index=np.arange(0, npts))
+    locs = xarray.DataArray(locs, coords=coords)
+    ds = ds.isel({dim: locs})  # and sample at dim
+    # pick random dim2 samples for each case and collapse
+    rand_index = rng.integers(1, len(data_set[dim2]) - 2, size=(nsamples, npts))  # don't want the min or max quantiles
+    rand_index = xarray.DataArray(rand_index, coords=(ds.bootstrap_sample, ds.index))
+    ds = ds.isel({dim2: rand_index}).drop_vars([dim, dim2])
+    return ds
+
+
+def comp_radar_fit(
+        dataset: xarray.Dataset,
+        cov: typing.Optional[list[str]|str] = None,
+        n_samples: int = 100,
+        bootstrap_samples: int = 0,
+        rng_seed: int = 123456,
+        file: typing.Optional[pathlib.Path] = None,
+        bootstrap_file: typing.Optional[pathlib.Path] = None,
+        recreate_fit: bool = False,
+        name: typing.Optional[str] = None,
+        extra_attrs: typing.Optional[dict] = None
+) -> tuple[xarray.Dataset, typing.Optional[xarray.Dataset]]:
+    """
+    Compute the GEV fits for radar data. This is a wrapper around the R code to do the fits.
+    Args:
+
+        dataset: dataset
+        cov: List of covariate names. Extracted from dataset.
+        n_samples: number of samples for random selection
+        bootstrap_samples:  Number of samples for bootstrap calculation. If 0 no bootstrap is done.
+        rng_seed: seed for random number generator
+        file: file for output
+        bootstrap_file: file for bootstrap output
+        recreate_fit: if True recreate the fit
+        name:  name of dataset. _bs will be appended for bootstrap fit
+        extra_attrs: any extra attributes to be added
+
+    Returns:fit
+
+    """
+    # doing this at run time as R is not always available.
+    from R_python import gev_r
+    if isinstance(cov, str):
+        cov = [cov] # convert it to a list.
+    rng = random.default_rng(rng_seed)
+    rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
+    coord = dict(sample=np.arange(0, n_samples))
+    ds = dataset.isel(quantv=rand_index). \
+        rename(dict(quantv='sample')).assign_coords(**coord)
+    cov_rand = None
+    if cov is not None:
+        cov_rand = [ds[c] for c in cov]
+
+    wt = ds.count_cells
+    mx = ds.max_value
+
+    fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=True,
+                           recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs
+                           )
+    if bootstrap_samples > 0:
+        my_logger.info(f"Calculating bootstrap for {name}")
+        ds_bs = dataset.groupby('resample_prd').map(sample_events,
+                                               rng=rng, nsamples=bootstrap_samples,
+                                               dim='EventTime', dim2='quantv'  )
+
+        cov_rand = None
+        if cov is not None:
+            cov_rand = [ ds_bs[c] for c in cov]
+
+        bs_fit = gev_r.xarray_gev(ds_bs.max_value, cov=cov_rand, dim='index', weights=ds_bs.count_cells, verbose=True,
+                              recreate_fit=recreate_fit, file=bootstrap_file, name=name + '_bs',
+                              extra_attrs=extra_attrs,
+
+                              )
+    else:
+        bs_fit = None
+    return fit, bs_fit
+
+
+
+def write_out(
+        data: xarray.Dataset | xarray.DataArray,
+        time_unit: str,
+        outpath: pathlib.Path,
+        extra_attrs: typing.Optional[dict] = None,
+        time_dim: str = 'time'
+        ) -> None:
     """
     Write out data. Encoding and attributes are modified.
     :param data: data array or dataset to be written out

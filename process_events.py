@@ -191,6 +191,7 @@ if __name__ == '__main__':
     obs_temperature = obs_temperature.to_xarray().rename('ObsT').rename(dict(date='time'))
     obs_temperature = obs_temperature.where(obs_temperature.time.dt.season == 'DJF', drop=True)
 
+
     # want the topography
     regn = ausLib.extract_rgn(radar)
     if args.cbb_dem_files:
@@ -213,6 +214,7 @@ if __name__ == '__main__':
                                extras=[obs_temperature, radar.fraction,
                                        (radar.sample_resolution.dt.seconds / 60.).rename('sample_resolution')]
                                )
+    #TODO  add in the obs_temperature and radar.fraction timeseries
     radar_events.attrs = radar.attrs
 
     radar_events.attrs.update(extra_attrs)

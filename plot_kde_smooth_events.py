@@ -15,15 +15,22 @@ import commonLib
 import cftime
 my_logger = ausLib.my_logger
 
-commonLib.init_log(my_logger,level='DEBUG')
+commonLib.init_log(my_logger,level='INFO')
 site = 'Melbourne'
-radar_dataset = xarray.load_dataset(ausLib.data_dir/f"events/{site}_hist_gndrefl_DJF.nc") # load the processed radar
-radar_dataset = radar_dataset.where(radar_dataset.t.dt.year > 2000) # drop the first years.
-topog = xarray.load_dataset(ausLib.data_dir/f'ancil/{site}_cbb_dem.nc').elevation
-topog = topog.coarsen(x=4, y=4, boundary='trim').mean()
+name='Melb_rain'
+site = 'Sydney'
+name = 'Sydney_rain_melbourne'
+radar_dataset = xarray.load_dataset(ausLib.data_dir/f"radar/processed/{name}/events_{name}_DJF.nc") # load the processed radar events
+#radar_dataset = radar_dataset.where(radar_dataset.t.dt.year > 2000) # drop the first years.
+topog_file = list((ausLib.data_dir/f'radar/site_data/{site}').glob('*_cbb_dem.nc'))[0]
+topog_cbb = xarray.load_dataset(topog_file).coarsen(x=4, y=4, boundary='trim').mean()
+topog = topog_cbb.elevation
+cbb = topog_cbb.CBB
+topog = topog.where(cbb <= 0.5)# mask values where CBB > 0.5
+
 my_logger.debug(f"Loaded datasets")
 fig, axs = plt.subplots(nrows=3, ncols=4, figsize=[8, 8],clear=True,
-                        num='kde_smooth_events',sharex='col', sharey='col',layout='constrained')
+                        num=f'kde_smooth_events_{name}',sharex='col', sharey='col',layout='constrained')
 
 fig.get_layout_engine().set(rect=[0.05,0.0,0.95,1.0])#.execute(fig)
 
@@ -42,14 +49,14 @@ for q,axis in zip([0.1,0.5,0.9],axs):
     colors=['brown','firebrick','red','darkorange','orange']
     for ax,var,xlabel,kdeplot_args in zip(axis.flatten(),
                         ['Solar Hour','Area','height','max_value'],
-                        ['Solar Hour','Area (km$^2$)','Height (m)','Mx Ref (mm^6/m^3)'],
+                        ['Solar Hour','Area (km$^2$)','Height (m)','Mx Rain (mm/h)'],
                         [ dict(gridsize=24,clip=(0,24)), # hours
                           dict(gridsize=50,log_scale=(10,None)), # area
                           dict(gridsize=50,clip=(0,1000),log_scale=(10,None)), # ht
-                          dict(gridsize=50,clip=(20,None),log_scale=(10,10)) # refl
+                          dict(gridsize=50,clip=(0,None),log_scale=(None,10)) # rain
                           ]):
 
-        for prd,color in zip(radar_quant.resample_prd.values[0:-1],colors): # don;t want the last resample prd.
+        for prd,color in zip(radar_quant.resample_prd.values[0:-1],colors): # don't want the last resample prd.
             if var == 'Area':
                 da = radar_quant[var].dropna('EventTime')
             else:
@@ -87,20 +94,5 @@ axs[1][2].legend(fontsize='x-small',ncols=2,loc='upper left',columnspacing=0.1,b
 fig.show()
 commonLib.saveFig(fig)
 
-## plot hot - cold for mid quantile
-kde_kw = dict(common_norm=True,log_scale=(None,10),clip=(15,None))
-datatset_1h_05=radar_dataset.sel(quantv=0.5,resample_prd='1h')
-q_temp = datatset_1h_05.temp.quantile([0.25,0.5,0.75])
-hot = datatset_1h_05.max_value.where(datatset_1h_05.temp > q_temp[2],drop=True)
-hot = hot.where(hot > 15,drop=True)
-cold = datatset_1h_05.max_value.where(datatset_1h_05.temp < q_temp[0],drop=True)
-cold = cold.where(cold > 15,drop=True)
-fig,ax = plt.subplots(nrows=1,ncols=1,clear=True,num='hot_cold_delta',figsize=(6,4))
-sns.kdeplot(hot,ax=ax,label='Hot',color='red',**kde_kw)
-sns.kdeplot(cold,ax=ax,label='Cold',color='blue',**kde_kw)
-fig.show()
-commonLib.saveFig(fig)
-print(f'Medians hot:{float(hot.median()):4.1f} cold:{float(cold.median()):4.1f}')
-with np.printoptions(precision=1,suppress=True):
-    print(f'10-90% Hot: {np.percentile(hot,[10,90])} Cold: {np.percentile(cold,[10,90])}')
+
 
