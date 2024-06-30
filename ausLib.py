@@ -1,4 +1,6 @@
 # Library for australian analysis.
+from __future__ import annotations
+
 import argparse
 import io
 import os
@@ -55,7 +57,7 @@ my_logger = logging.getLogger(__name__)  # for logging
 timezone_finder = TimezoneFinder()  # instance of timezone_finder -- only want one,
 
 
-def extract_rgn(radar_ds: xarray.Dataset) -> typing.Dict[str, float]:
+def extract_rgn(radar_ds: xarray.Dataset) -> typing.Dict[str, slice]:
     """
     Extract region from radar dataset attributes.
     Args:
@@ -674,7 +676,7 @@ def read_acorn(
         url = f'http://www.bom.gov.au/climate/change/hqsites/data/temp/t{what}.{site:06d}.daily.csv'
         my_logger.info(f"Retrieving data from {url}")
         headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
+            'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
         # fake we are interactive...
         # retrieve data writing it to local cache.
         with requests.get(url, headers=headers, stream=True) as r:
@@ -725,14 +727,14 @@ def list_vars(
 
 def gen_radar_projection(longitude: float, latitude: float, parallel_offset: float = 1.5) -> dict:
     proc_attrs = {
-            "grid_mapping_name"            : "albers_conical_equal_area",
-            "standard_parallel"            : np.round([latitude - parallel_offset, latitude + parallel_offset], 1),
-            "longitude_of_central_meridian": longitude,
-            "latitude_of_projection_origin": latitude,
-            "false_easting"                : 0.0,
-            "false_northing"               : 0.0,
-            "semi_major_axis"              : 6378137.0,
-            "semi_minor_axis"              : 6356752.31414
+        "grid_mapping_name": "albers_conical_equal_area",
+        "standard_parallel": np.round([latitude - parallel_offset, latitude + parallel_offset], 1),
+        "longitude_of_central_meridian": longitude,
+        "latitude_of_projection_origin": latitude,
+        "false_easting": 0.0,
+        "false_northing": 0.0,
+        "semi_major_axis": 6378137.0,
+        "semi_minor_axis": 6356752.31414
     }
     return proc_attrs
 
@@ -854,12 +856,14 @@ def read_gauge_metadata(
     return radar_metadata
 
 
-def add_std_arguments(parser: argparse.ArgumentParser) -> None:
+def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = False) -> None:
     """
+    :param parser: parser to be modified.
+    :param dask: If True add dask argument
     Add std arguments to a parser.
     These are:
     -v -- verbose
-    --dask -- turn on dask.
+    --dask -- turn on dask. (if dask set)
     --log_file -- have a log file.
     --overwrite -- overwrite files.
     Args:
@@ -869,11 +873,31 @@ def add_std_arguments(parser: argparse.ArgumentParser) -> None:
 
     """
     parser.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
-    parser.add_argument('--dask', action='store_true', help='Start dask client')
+    if dask: # some codes don't want dask.
+        parser.add_argument('--dask', action='store_true', help='Start dask client')
     parser.add_argument('--log_file',
                         help='Name of log file -- if provided. log info goes there as well as std out/err'
                         )
     parser.add_argument('--overwrite', action='store_true', help='Overwrite files')
+
+
+def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
+    """
+    Process standard arguments. See add_std_arguments for setup.
+    Args:
+        args: arguments to be processed.
+          Deals with verbose, log_file and dask
+
+    Returns: logger
+    """
+    raise NotImplementedError('Needs some testing!')
+    logger = setup_log(args.verbose, args.log_file)
+    try:
+        if args.dask:
+            dask_client()
+    except KeyError:  # no dask
+        logger.debug('No dask setup')
+    return logger
 
 
 def setup_log(
@@ -933,7 +957,7 @@ def sample_events(
 
 def comp_radar_fit(
         dataset: xarray.Dataset,
-        cov: typing.Optional[list[str]|str] = None,
+        cov: typing.Optional[list[str] | str] = None,
         n_samples: int = 100,
         bootstrap_samples: int = 0,
         rng_seed: int = 123456,
@@ -964,7 +988,7 @@ def comp_radar_fit(
     # doing this at run time as R is not always available.
     from R_python import gev_r
     if isinstance(cov, str):
-        cov = [cov] # convert it to a list.
+        cov = [cov]  # convert it to a list.
     rng = random.default_rng(rng_seed)
     rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
     coord = dict(sample=np.arange(0, n_samples))
@@ -983,22 +1007,21 @@ def comp_radar_fit(
     if bootstrap_samples > 0:
         my_logger.info(f"Calculating bootstrap for {name}")
         ds_bs = dataset.groupby('resample_prd').map(sample_events,
-                                               rng=rng, nsamples=bootstrap_samples,
-                                               dim='EventTime', dim2='quantv'  )
+                                                    rng=rng, nsamples=bootstrap_samples,
+                                                    dim='EventTime', dim2='quantv')
 
         cov_rand = None
         if cov is not None:
-            cov_rand = [ ds_bs[c] for c in cov]
+            cov_rand = [ds_bs[c] for c in cov]
 
         bs_fit = gev_r.xarray_gev(ds_bs.max_value, cov=cov_rand, dim='index', weights=ds_bs.count_cells, verbose=True,
-                              recreate_fit=recreate_fit, file=bootstrap_file, name=name + '_bs',
-                              extra_attrs=extra_attrs,
+                                  recreate_fit=recreate_fit, file=bootstrap_file, name=name + '_bs',
+                                  extra_attrs=extra_attrs,
 
-                              )
+                                  )
     else:
         bs_fit = None
     return fit, bs_fit
-
 
 
 def write_out(
@@ -1007,7 +1030,7 @@ def write_out(
         outpath: pathlib.Path,
         extra_attrs: typing.Optional[dict] = None,
         time_dim: str = 'time'
-        ) -> None:
+) -> None:
     """
     Write out data. Encoding and attributes are modified.
     :param data: data array or dataset to be written out
