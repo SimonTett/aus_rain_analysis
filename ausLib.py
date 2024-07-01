@@ -32,6 +32,18 @@ import numpy.random as random
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
                     )
+region_names = dict(Tropics=['Cairns', 'Mornington'],
+                    QLD=['Gladstone', 'Brisbane', 'Grafton'],
+                    NSW=['Newcastle', 'Sydney', 'Canberra'],
+                    South=['Melbourne', 'Wtakone', 'Adelaide']
+                    )
+# need a reverse sort -- sites -> regions
+names_to_region=dict()
+for site in site_numbers.keys():
+    for region, sites in region_names.items():
+        if site in sites:
+            names_to_region[site]=region
+            break
 acorn_lookup = dict(Adelaide=23000, Melbourne=86338, Wtakone=96003, Sydney=66214, Brisbane=40842, Canberra=70351,
                     Cairns=31011, Mornington=29077,
                     Grafton=59151, Newcastle=61078, Gladstone=39083
@@ -43,8 +55,9 @@ if hostname.startswith('gadi'):  # aus super-computer
     hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/")
 elif hostname.startswith('ccrc'):  # CCRC desktop
     data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis/radar")
+    common_data = pathlib.Path("/home/z3542688/data/common_data")
 elif hostname == 'geos-w-048':  # my laptop
-    data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis")
+    data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
@@ -856,7 +869,7 @@ def read_gauge_metadata(
     return radar_metadata
 
 
-def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = False) -> None:
+def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> None:
     """
     :param parser: parser to be modified.
     :param dask: If True add dask argument
@@ -879,6 +892,20 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = False) -> No
                         help='Name of log file -- if provided. log info goes there as well as std out/err'
                         )
     parser.add_argument('--overwrite', action='store_true', help='Overwrite files')
+    # add a submit sub-command,
+    subparsers = parser.add_subparsers(dest='Submit')
+    submit = subparsers.add_parser('--submit', help='Options for submission of self')
+    submit.add_argument('--queue', help='Queue to submit to',required=True)
+    submit.add_argument('--project', help='Project to submit to', required=True)
+    submit.add_argument('--storage', help='Storage options')
+    submit.add_argument('--time', help='Time to run for', default='1:00:00')
+    submit.add_argument('--cpus', help='Number of nodes', default=1)
+    submit.add_argument('--memory',nargs=1, help='Memory to use', default='4G')
+    submit.add_argument('--job_name', help='Job name')
+    submit.add_argument('--email', help='Email address to send job info to')
+    submit.add_argument('--queue_log_base', help='Base name for q system logs')
+    submit.add_argument('--holdafter', help='Hold job until the holdafter job has ran.')
+
 
 
 def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
@@ -1052,13 +1079,16 @@ def write_out(
     my_logger.info(f'Wrote data to {outpath}')
 
 
-def std_fig_axs(fig_num, reduce_spline: bool = True, **kwargs) \
+def std_fig_axs(fig_num, reduce_spline: bool = True, regions:bool = False,**kwargs) \
         -> tuple['matplotlib.figure.Figure', 'matplotlib.axes.Axes']:
     mosaic = [['Mornington', 'BLANK', 'Cairns'],
               ['Grafton', 'Brisbane', 'Gladstone'],
               ['Canberra', 'Sydney', 'Newcastle'],
               ['Adelaide', 'Wtakone', 'Melbourne'],
               ]
+
+    if regions:
+        mosaic = [ row + [rname] for row,rname in zip(mosaic,region_names.keys())]
     args = dict(num=fig_num, clear=True, figsize=(6, 9), layout='constrained',
                 empty_sentinel='BLANK', )  # default args,
     args.update(**kwargs)  # update with any passed in args
