@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import pathlib
 import platform
@@ -38,11 +39,11 @@ region_names = dict(Tropics=['Cairns', 'Mornington'],
                     South=['Melbourne', 'Wtakone', 'Adelaide']
                     )
 # need a reverse sort -- sites -> regions
-names_to_region=dict()
+names_to_region = dict()
 for site in site_numbers.keys():
     for region, sites in region_names.items():
         if site in sites:
-            names_to_region[site]=region
+            names_to_region[site] = region
             break
 acorn_lookup = dict(Adelaide=23000, Melbourne=86338, Wtakone=96003, Sydney=66214, Brisbane=40842, Canberra=70351,
                     Cairns=31011, Mornington=29077,
@@ -886,26 +887,86 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
 
     """
     parser.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
-    if dask: # some codes don't want dask.
+    if dask:  # some codes don't want dask.
         parser.add_argument('--dask', action='store_true', help='Start dask client')
     parser.add_argument('--log_file',
                         help='Name of log file -- if provided. log info goes there as well as std out/err'
                         )
     parser.add_argument('--overwrite', action='store_true', help='Overwrite files')
     # add a submit sub-command,
-    subparsers = parser.add_subparsers(dest='Submit')
-    submit = subparsers.add_parser('--submit', help='Options for submission of self')
-    submit.add_argument('--queue', help='Queue to submit to',required=True)
-    submit.add_argument('--project', help='Project to submit to', required=True)
+    submit = parser.add_argument_group('Submit')
+    submit.add_argument('--submit', help='Submit self to Q system', action='store_true')
+    submit.add_argument('--queue', help='Queue to submit to')
+    submit.add_argument('--project', help='Project to submit to')
     submit.add_argument('--storage', help='Storage options')
     submit.add_argument('--time', help='Time to run for', default='1:00:00')
-    submit.add_argument('--cpus', help='Number of nodes', default=1)
-    submit.add_argument('--memory',nargs=1, help='Memory to use', default='4G')
+    submit.add_argument('--cpus', type=int, help='Number of nodes', default=1)
+    submit.add_argument('--memory', help='Memory to use', default='4G')
     submit.add_argument('--job_name', help='Job name')
     submit.add_argument('--email', help='Email address to send job info to')
-    submit.add_argument('--queue_log_base', help='Base name for q system logs')
-    submit.add_argument('--holdafter', help='Hold job until the holdafter job has ran.')
+    submit.add_argument('--log_base', help='Base name for q system logs')
+    submit.add_argument('--json_submit_file',type=pathlib.Path,help='JSON file containing default options. These overwritten by command line args')
+    submit.add_argument('--holdafter', help='Hold job until the held after job has ran.')
+    submit.add_argument('--dryrun', help='Dry run only. Nothing will be submitted and script will exit',
+                        action='store_true')
 
+
+def gen_pbs_script( cmd_to_run: str,
+                    holdafter: typing.Optional[str] = None,
+                    queue: typing.Optional[str] = None,
+                   project: typing.Optional[str] = None,
+                   storage: typing.Optional[str] = None,
+                   time: typing.Optional[str] = None,
+                   cpus: int = 1,
+                   memory: typing.Optional[str] = None,
+                   job_name: typing.Optional[str] = None,
+                   email: typing.Optional[str] = None,
+                   log_base: typing.Optional[str] = None
+                   ) -> tuple[list[str], str]:
+    # generate the qsub command
+    # check all values are set.
+
+    for var in [queue, project, storage, time, cpus, memory, job_name, log_base]:
+        if var is None:
+            raise ValueError('All values must be set')
+    qsub_cmd = ["qsub ", "-V"]
+    if holdafter:
+        qsub_cmd.append(f'-W depend=afterok:{holdafter} ')
+    qsub_cmd.append('-')  # read from std in.
+    my_logger.debug('qsub_cmd: ' + ' '.join(qsub_cmd))
+    if len(job_name) > 15:
+        job_name = job_name[0:14]  # must be less than 15 chars.
+        my_logger.debug('Truncated job_name to 15 chars')
+    # construct the PBD script
+    cmd_str = f"""
+#PBS -P {project}
+#PBS -q {queue}
+#PBS -l walltime={time}
+#PBS -l storage={storage}
+#PBS -l mem={memory}
+#PBS -l ncpus={cpus}
+#PBS -l jobfs=20GB
+#PBS -l wd
+#PBS -N {job_name}
+#PBS -o {log_base}.out
+#PBS -e {log_base}.err
+"""
+    if email:
+        cmd_str += \
+            f"""
+#PBS -m e
+#PBS -M {email}
+    """
+    cmd_str += \
+        fr'''export TMPDIR=\$PBS_JOBFS
+. ./setup.sh # setup software and then run the processing'
+cmd={cmd_to_run}
+echo Cmd is $cmd
+result=\$($cmd)
+echo \$result
+'''
+    my_logger.debug('Cmd_str: ' + cmd_str)
+    return qsub_cmd, cmd_str
 
 
 def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
@@ -917,14 +978,48 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
 
     Returns: logger
     """
-    raise NotImplementedError('Needs some testing!')
-    logger = setup_log(args.verbose, args.log_file)
+    #raise NotImplementedError('Needs some testing!')
+    my_logger = setup_log(args.verbose, args.log_file)
+    # log the args
+    for name, value in vars(args).items():
+        my_logger.info(f"Arg:{name} =  {value}")
+    # deal with submission.
+    if args.submit:
+        my_logger.debug('Submitting job')
+        cmd =[c for c in sys.argv if not c.startswith('--submit')]
+        cmd = ' '.join(cmd) # remake the cmd.
+        my_logger.info('Cmd is: '+cmd)
+
+        # generate the command and qsub_cmd
+        sub_args = dict(project=args.project, queue=args.queue, storage=args.storage,
+                        time=args.time,cpus=args.cpus,memory = args.memory,job_name=args.job_name,
+                        email = args.email,log_base=args.log_base)
+        if args.json_submit_file:
+            with open(args.json_submit_file) as f:
+                json_args = json.load(f)
+            my_logger.debug(f'Updating {json_args} with sub_args')
+            json_args.update(sub_args)
+            sub_args = json_args.copy()
+
+        qsub_cmd, cmd_str = gen_pbs_script(cmd,holdafter=args.holdafter, **sub_args)
+        if not args.dryrun: # actually run the job
+            my_logger.info('Running qsub: '+ ' '.join(qsub_cmd))
+            import subprocess
+            result = subprocess.run(qsub_cmd, input = cmd_str, text=True, capture_output=True)
+            result.check_returncode()
+            my_logger.warning(f'Output from {qsub_cmd} is {result.stdout}')
+            if len(result.stderr) > 0:
+                my_logger.warning(f'Stderr from {qsub_cmd} is {result.stderr}')
+            print(result.stdout)
+        my_logger.debug('Exiting')
+        sys.exit(0)
+
     try:
         if args.dask:
             dask_client()
     except KeyError:  # no dask
-        logger.debug('No dask setup')
-    return logger
+        my_logger.debug('No dask setup')
+    return my_logger
 
 
 def setup_log(
@@ -1079,7 +1174,7 @@ def write_out(
     my_logger.info(f'Wrote data to {outpath}')
 
 
-def std_fig_axs(fig_num, reduce_spline: bool = True, regions:bool = False,**kwargs) \
+def std_fig_axs(fig_num, reduce_spline: bool = True, regions: bool = False, **kwargs) \
         -> tuple['matplotlib.figure.Figure', 'matplotlib.axes.Axes']:
     mosaic = [['Mornington', 'BLANK', 'Cairns'],
               ['Grafton', 'Brisbane', 'Gladstone'],
@@ -1088,7 +1183,7 @@ def std_fig_axs(fig_num, reduce_spline: bool = True, regions:bool = False,**kwar
               ]
 
     if regions:
-        mosaic = [ row + [rname] for row,rname in zip(mosaic,region_names.keys())]
+        mosaic = [row + [rname] for row, rname in zip(mosaic, region_names.keys())]
     args = dict(num=fig_num, clear=True, figsize=(6, 9), layout='constrained',
                 empty_sentinel='BLANK', )  # default args,
     args.update(**kwargs)  # update with any passed in args

@@ -29,17 +29,7 @@ if __name__ == "__main__":
 
     ausLib.add_std_arguments(parser)  # add on the std args
     args = parser.parse_args()
-    my_logger = ausLib.setup_log(args.verbose, log_file=args.log_file)  # setup the logging
-    for name, value in vars(args).items():
-        my_logger.info(f"Arg:{name} =  {value}")
-    if args.dask:
-        my_logger.info('Starting dask client')
-        client = ausLib.dask_client()
-    else:
-        dask.config.set(scheduler="single-threaded")  # make sure dask is single threaded.
-        my_logger.info('Running single threaded')
-
-        #
+    my_logger = ausLib.process_std_arguments(args)  # setup the std stuff
     if args.outdir is None:
         output_dir = args.input_file.parent / 'fits'
     else:
