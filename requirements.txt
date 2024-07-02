@@ -45,7 +45,7 @@ wradlib~=2.0.3
 pyarrow
 earthaccess # so can retrieve data from earthdata
 r-base>=4.0.5
-rpy2==3.5.11
+rpy2
 r-extRemes
 r-viridis
 r-fields

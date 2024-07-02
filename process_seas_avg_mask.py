@@ -109,24 +109,16 @@ def group_data_set(ds: xarray.Dataset, *args, group_dim: str = 'time', **kwargs)
 if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
     parser = argparse.ArgumentParser(description="Compute Masked seasonal mean data for processed radar data")
-    parser.add_argument('input_files', nargs='+', type=pathlib.Path, help='Input files for radar data')
+    parser.add_argument('input_dir',  type=pathlib.Path, help='Input dir for radar data')
     parser.add_argument('--output', type=pathlib.Path, help='name of output file', required=True)
     parser.add_argument('--site', type=str, help='Site name -- overrides meta data in input files')
     parser.add_argument('--cbb_dem_files', type=pathlib.Path, help='Names of CCB/DEM files', nargs='+')
     parser.add_argument('--season', type=str, help='Season to use', default='DJF')
     parser.add_argument('--years', nargs='+', help='years to use', type=int)
-    ausLib.add_std_arguments(parser)  # add on the std args
+    parser.add_argument('--no_mask_file',type=pathlib.Path, help='File where no mask data written out')
+    ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Very I/O code so avoid dask
     args = parser.parse_args()
-    my_logger = ausLib.setup_log(args.verbose, log_file=args.log_file)  # setup the logging
-    for name, value in vars(args).items():
-        my_logger.info(f"Arg:{name} =  {value}")
-    if args.dask:
-        my_logger.info('Starting dask client')
-        client = ausLib.dask_client()
-        my_logger.warning('Use of dask likely slows this down.')
-    else:
-        dask.config.set(scheduler="single-threaded")  # make sure dask is single threaded.
-        my_logger.info('Running single threaded')
+    my_logger = ausLib.process_std_arguments(args)  # setup the logging
 
     out_radar = args.output
     if out_radar.exists() and (not args.overwrite):
@@ -134,7 +126,9 @@ if __name__ == '__main__':
         sys.exit(0)
     out_radar.parent.mkdir(exist_ok=True, parents=True)  # make directory if it doesn't exist.
 
-    in_radar = sorted(args.input_files)
+    input_files = list(args.input_dir.glob('*.nc'))
+    in_radar = sorted(input_files)
+    my_logger.info(f'Processing {len(in_radar)} files')
     for file in in_radar:
         if not file.exists():
             raise FileNotFoundError(f"Input file {file} not found")
@@ -158,7 +152,7 @@ if __name__ == '__main__':
         cbb_dem_files = args.cbb_dem_files
     else:
         site_index = ausLib.site_numbers[site]
-        cbb_dem_files = list((ausLib.data_dir / 'SRTM_Data/radar_strm').glob(f'{site_index:03d}_[0-9]_*cbb_dem.nc'))
+        cbb_dem_files = list((ausLib.data_dir / f'site_data/{site}').glob(f'{site}_{site_index:03d}_[0-9]_*cbb_dem.nc'))
         my_logger.info(f"Inferred CBB/DEM files are: {cbb_dem_files}")
 
     variable_name = 'rain_rate'
@@ -180,14 +174,8 @@ if __name__ == '__main__':
     CBB_DEM = xarray.open_mfdataset(cbb_dem_files, concat_dim='prechange_start', combine='nested').sel(**regn)
     CBB_DEM = CBB_DEM.max('prechange_start').coarsen(x=4, y=4, boundary='trim').mean()
     bbf = CBB_DEM.CBB.clip(0, 1)
-    # keep where BBF < 0.5 and land.
-    msk = (bbf < 0.5) & (CBB_DEM.elevation > 0.0)
-    # msk variables which have both an x and y dimension.
-    xy_vars = [v for v in radar.variables if ('x' in radar[v].dims) and ('y' in radar[v].dims)]
-    for var in xy_vars:
-        radar[var] = radar[var].where(msk)
-        my_logger.debug(f"Masked {var}")
-    my_logger.info('Masked xy dims')
+    # all data loaded.
+
     # compute max no of samples
     resamp_prd = xarray.DataArray([pd.Timedelta(str(c)).total_seconds() for c in radar.resample_prd.values],
                                   dims='resample_prd', coords=dict(resample_prd=radar.resample_prd))
@@ -221,8 +209,21 @@ if __name__ == '__main__':
     max_samples_resamp = max_samples_resamp.where(L, drop=True).load()
     max_samples = max_samples.where(L, drop=True).load()
     my_logger.info('resampled')
+    # Write out prior to masking
+    if args.no_mask_file:
+        ausLib.write_out(radar,args.no_mask_file, extra_attrs=extra_attrs)
+    # keep where BBF < 0.5 and land.
+    msk = (bbf < 0.5) & (CBB_DEM.elevation > 0.0)
+    # msk variables which have both an x and y dimension.
+    xy_vars = [v for v in radar.variables if ('x' in radar[v].dims) and ('y' in radar[v].dims)]
+    for var in xy_vars:
+        radar[var] = radar[var].where(msk)
+        my_logger.debug(f"Masked {var}")
+    my_logger.info('Masked xy dims')
+
     # and where count_raw_var_thresh < 20% of samples -- crude mask for artifacts.
     tmsk = radar[f'count_raw_{variable_name}_thresh'] < 0.2 * samples
+    tmsk=tmsk.load()
 
     # mask out the x-y vars
     for var in xy_vars:
@@ -240,6 +241,5 @@ if __name__ == '__main__':
     # now  write out the data.
     if len(radar.time) == 0:
         raise ValueError("No data left after masking")
-    radar = radar.assign_attrs(extra_attrs)
-    radar.to_netcdf(out_radar, unlimited_dims='time')
-    my_logger.info(f"Written out data to {out_radar}")
+    ausLib.write_out(radar,out_radar, extra_attrs=extra_attrs)
+

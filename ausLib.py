@@ -29,6 +29,8 @@ import typing
 import ast  # thanks chaptGPT co-pilot
 import numpy.random as random
 
+import ausLib
+
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
@@ -886,15 +888,19 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     Returns: nada
 
     """
-    parser.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
+    std = parser.add_argument_group('Standard')
+    std.add_argument('--overwrite', action='store_true', help='Overwrite files')
+    std.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
     if dask:  # some codes don't want dask.
-        parser.add_argument('--dask', action='store_true', help='Start dask client')
-    parser.add_argument('--log_file',
-                        help='Name of log file -- if provided. log info goes there as well as std out/err'
-                        )
-    parser.add_argument('--overwrite', action='store_true', help='Overwrite files')
+        std.add_argument('--dask', action='store_true', help='Start dask client')
+    std.add_argument('--log_file',
+                     help='Name of log file -- if provided. log info goes there as well as std out/err'
+                     )
+
     # add a submit sub-command,
+    # note that a value of '' means do not do anything. This is to allow checking for values we actually need
     submit = parser.add_argument_group('Submit')
+
     submit.add_argument('--submit', help='Submit self to Q system', action='store_true')
     submit.add_argument('--queue', help='Queue to submit to')
     submit.add_argument('--project', help='Project to submit to')
@@ -903,41 +909,57 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     submit.add_argument('--cpus', type=int, help='Number of nodes', default=1)
     submit.add_argument('--memory', help='Memory to use', default='4G')
     submit.add_argument('--job_name', help='Job name')
-    submit.add_argument('--email', help='Email address to send job info to')
-    submit.add_argument('--log_base', help='Base name for q system logs')
-    submit.add_argument('--json_submit_file',type=pathlib.Path,help='JSON file containing default options. These overwritten by command line args')
-    submit.add_argument('--holdafter', help='Hold job until the held after job has ran.')
+    submit.add_argument('--email', help='Email address to send job info to', default='')
+    submit.add_argument('--log_base', type=pathlib.Path, help='Base name for q system logs')
+    submit.add_argument('--json_submit_file', type=pathlib.Path,
+                        help='JSON file containing default options. These overwritten by command line args')
+    submit.add_argument('--setup_script', help='Script to run before running the command', type=pathlib.Path)
+    submit.add_argument('--holdafter', help='Hold job until the held after job has ran.', default='')
     submit.add_argument('--dryrun', help='Dry run only. Nothing will be submitted and script will exit',
                         action='store_true')
+    submit.add_argument('--history_file', help='Store command in history file', type=pathlib.Path)
+    submit.add_argument('--purpose', nargs='+',help='Purpose of the job. Does nothing but put in log file')
 
 
-def gen_pbs_script( cmd_to_run: str,
-                    holdafter: typing.Optional[str] = None,
-                    queue: typing.Optional[str] = None,
+def gen_pbs_script(cmd_to_run: str,
+                   holdafter: str = '',
+                   queue: typing.Optional[str] = None,
                    project: typing.Optional[str] = None,
                    storage: typing.Optional[str] = None,
                    time: typing.Optional[str] = None,
                    cpus: int = 1,
                    memory: typing.Optional[str] = None,
                    job_name: typing.Optional[str] = None,
-                   email: typing.Optional[str] = None,
-                   log_base: typing.Optional[str] = None
+                   email: str = '',
+                   log_base: typing.Optional[pathlib.Path] = None,
+                   setup_script: typing.Optional[pathlib.Path] = None,
                    ) -> tuple[list[str], str]:
     # generate the qsub command
     # check all values are set.
+    args = locals()
+    none_vars = []
 
-    for var in [queue, project, storage, time, cpus, memory, job_name, log_base]:
-        if var is None:
-            raise ValueError('All values must be set')
-    qsub_cmd = ["qsub ", "-V"]
-    if holdafter:
-        qsub_cmd.append(f'-W depend=afterok:{holdafter} ')
+    for name, value in args.items():
+        if value is None:
+            my_logger.warning(f'Must set {name}')
+            none_vars += [name]
+    if len(none_vars) > 0:
+        raise ValueError(f'Must set {" ".join(none_vars)} to values')
+    qsub_cmd = ["qsub"]
+    wd = pathlib.Path.cwd()  # where we are now.
     qsub_cmd.append('-')  # read from std in.
     my_logger.debug('qsub_cmd: ' + ' '.join(qsub_cmd))
     if len(job_name) > 15:
         job_name = job_name[0:14]  # must be less than 15 chars.
         my_logger.debug('Truncated job_name to 15 chars')
-    # construct the PBD script
+    # make the directory for logs
+    log_base.parent.mkdir(exist_ok=True, parents=True)
+    # check setup script exists
+    if not setup_script.exists():
+        raise FileNotFoundError(f'Setup script {setup_script} does not exist')
+    # construct the PBS script
+    log_stdout = log_base.with_name(log_base.name + '.out')
+    log_stderr = log_base.with_name(log_base.name + '.err')
     cmd_str = f"""
 #PBS -P {project}
 #PBS -q {queue}
@@ -948,22 +970,25 @@ def gen_pbs_script( cmd_to_run: str,
 #PBS -l jobfs=20GB
 #PBS -l wd
 #PBS -N {job_name}
-#PBS -o {log_base}.out
-#PBS -e {log_base}.err
+#PBS -o {log_stdout}
+#PBS -e {log_stderr}
 """
-    if email:
-        cmd_str += \
-            f"""
+    if (len(email) > 0) and ('@' in email):
+        cmd_str += f"""
 #PBS -m e
 #PBS -M {email}
     """
-    cmd_str += \
-        fr'''export TMPDIR=\$PBS_JOBFS
-. ./setup.sh # setup software and then run the processing'
-cmd={cmd_to_run}
-echo Cmd is $cmd
-result=\$($cmd)
-echo \$result
+    if len(holdafter) > 0:
+        cmd_str += f'#PBS -W depend=afterok:{holdafter}\n'
+        #qsub_cmd.append(f'-W depend=afterok:{holdafter} ')
+    cmd_str += fr'''
+export TMPDIR=$PBS_JOBFS
+cd {wd} || exit # make sure we are in the right directory        
+. {setup_script} # setup software and then run the command
+cmd="{cmd_to_run}"
+echo "Cmd is $cmd"
+result=$($cmd)
+echo $result
 '''
     my_logger.debug('Cmd_str: ' + cmd_str)
     return qsub_cmd, cmd_str
@@ -974,7 +999,7 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
     Process standard arguments. See add_std_arguments for setup.
     Args:
         args: arguments to be processed.
-          Deals with verbose, log_file and dask
+          Deals with verbose, log_file and dask and submission options
 
     Returns: logger
     """
@@ -986,38 +1011,71 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
     # deal with submission.
     if args.submit:
         my_logger.debug('Submitting job')
-        cmd =[c for c in sys.argv if not c.startswith('--submit')]
-        cmd = ' '.join(cmd) # remake the cmd.
-        my_logger.info('Cmd is: '+cmd)
+        cmd = [c for c in sys.argv if not (c.startswith('--submit') or c.startswith('--dryrun'))]
+        cmd = ' '.join(cmd)  # remake the cmd.
+        my_logger.info('Cmd is: ' + cmd)
 
         # generate the command and qsub_cmd
         sub_args = dict(project=args.project, queue=args.queue, storage=args.storage,
-                        time=args.time,cpus=args.cpus,memory = args.memory,job_name=args.job_name,
-                        email = args.email,log_base=args.log_base)
+                        time=args.time, cpus=args.cpus, memory=args.memory, job_name=args.job_name,
+                        email=args.email, log_base=args.log_base)
+        history_file = args.history_file
         if args.json_submit_file:
             with open(args.json_submit_file) as f:
                 json_args = json.load(f)
-            my_logger.debug(f'Updating {json_args} with sub_args')
-            json_args.update(sub_args)
-            sub_args = json_args.copy()
+            # remove anything with a comment in it.
+            keys = list(json_args.keys())  # need to get out keys as removing them
+            for k in keys:
+                if k.endswith('comment'):
+                    del json_args[k]
+                    my_logger.debug(f'removed {k} from json file')
+            # convert things that should be paths from strings to paths
+            keys = ['setup_script', 'log_base','history_file']  # things that should be converted to paths
+            for k in keys:
+                try:
+                    json_args[k] = pathlib.Path(json_args[k])
+                except KeyError:
+                    pass
+            # deal with history
+            try:
+                history_file=json_args.pop('history_file')
+            except KeyError:
+                pass # no history file
 
-        qsub_cmd, cmd_str = gen_pbs_script(cmd,holdafter=args.holdafter, **sub_args)
-        if not args.dryrun: # actually run the job
-            my_logger.info('Running qsub: '+ ' '.join(qsub_cmd))
+            my_logger.debug(f'Updating {json_args} with sub_args')
+
+            sub_args.update({k: v for k, v in json_args.items() if ( k in sub_args.keys() and
+                    (sub_args.get(k) is not None) or (sub_args.get(k) != ''))})  # update not None/empty
+
+            if sub_args['cpus'] > 1 and not args.dask:
+                my_logger.warning('Setting cpus to 1 as not using dask. Waiting for 5 seconds.')
+                sub_args['cpus'] = 1
+                time.sleep(5)  # so can see the warning
+
+        qsub_cmd, cmd_str = gen_pbs_script(cmd, holdafter=args.holdafter, **sub_args)
+        if not args.dryrun:  # actually run the job
+            my_logger.info('Running qsub: ' + ' '.join(qsub_cmd))
+            # if we have a history file append to it.
+            if history_file is not None:
+                history_file.parent.mkdir(exist_ok=True, parents=True) # make directory if needed
+                with open(history_file, 'a') as f:
+                    print(str(datetime.utcnow())+': '+cmd, file=f)
             import subprocess
-            result = subprocess.run(qsub_cmd, input = cmd_str, text=True, capture_output=True)
+            result = subprocess.run(qsub_cmd, input=cmd_str, text=True, capture_output=True)
             result.check_returncode()
             my_logger.warning(f'Output from {qsub_cmd} is {result.stdout}')
             if len(result.stderr) > 0:
                 my_logger.warning(f'Stderr from {qsub_cmd} is {result.stderr}')
-            print(result.stdout)
+            print(result.stdout)  # so can get the job id.
+        else:
+            print("fake_job.999999")
         my_logger.debug('Exiting')
         sys.exit(0)
 
     try:
         if args.dask:
             dask_client()
-    except KeyError:  # no dask
+    except AttributeError:  # no dask
         my_logger.debug('No dask setup')
     return my_logger
 
@@ -1077,6 +1135,36 @@ def sample_events(
     return ds
 
 
+def sample_events2(
+        data_set: xarray.Dataset,
+        nsamples: int = 100,
+        rng: np.random.BitGenerator = None,
+        dim: str = 'EventTime',
+
+) -> xarray.Dataset:
+    """
+    Sample events with replacement from a data array
+    Args:
+        data_set: xarray data set
+        nsamples: number of bootstrap samples to take
+        rng: random number generator
+        dim: dimension over which to apply dropna and sampling.
+        dim2: dim over which to randomly sample.
+    Returns: xarray data array
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    ds = data_set.dropna(dim)
+    npts = ds.EventTime.size
+    locs = rng.integers(0, npts, size=(nsamples, npts))  # boot strap samples.
+    # wrap it up in  data array to allow fancy indexing
+    coords = dict(bootstrap_sample=np.arange(0, nsamples), index=np.arange(0, npts))
+    locs = xarray.DataArray(locs, coords=coords)
+    ds = ds.isel({dim: locs})  # and sample at dim
+
+    return ds
+
+
 def comp_radar_fit(
         dataset: xarray.Dataset,
         cov: typing.Optional[list[str] | str] = None,
@@ -1108,9 +1196,19 @@ def comp_radar_fit(
 
     """
     # doing this at run time as R is not always available.
+
     from R_python import gev_r
     if isinstance(cov, str):
         cov = [cov]  # convert it to a list.
+    if (file is not None) and file.exists() and (
+            not recreate_fit):  # got a file specified, it exists and we are not recreating fit
+        fit = xarray.load_dataset(file)  # just load the dataset
+        if (bootstrap_file is not None) and bootstrap_file.exists() and (
+            not recreate_fit):  # got a file specified, it exists and we are not recreating fit
+            bs_fit = xarray.load_dataset(bootstrap_file).mean('sample')  # just load the dataset
+            return fit,bs_fit # can now return the fit and bootstrap fit
+
+    # normal stuff
     rng = random.default_rng(rng_seed)
     rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
     coord = dict(sample=np.arange(0, n_samples))
@@ -1127,10 +1225,13 @@ def comp_radar_fit(
                            recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs
                            )
     if bootstrap_samples > 0:
-        my_logger.info(f"Calculating bootstrap for {name}")
-        ds_bs = dataset.groupby('resample_prd').map(sample_events,
-                                                    rng=rng, nsamples=bootstrap_samples,
-                                                    dim='EventTime', dim2='quantv')
+        my_logger.info(f"Calculating bootstrap for {name} {ausLib.memory_use()}")
+
+        ds_bs = ds.groupby('resample_prd').map(sample_events2,
+                                               rng=rng, nsamples=bootstrap_samples,
+                                               dim='EventTime')
+
+        my_logger.debug(f"Generated Bootstrap samples {ausLib.memory_use()}")
 
         cov_rand = None
         if cov is not None:
@@ -1140,7 +1241,7 @@ def comp_radar_fit(
                                   recreate_fit=recreate_fit, file=bootstrap_file, name=name + '_bs',
                                   extra_attrs=extra_attrs,
 
-                                  )
+                                  ).mean('sample')
     else:
         bs_fit = None
     return fit, bs_fit
@@ -1148,8 +1249,8 @@ def comp_radar_fit(
 
 def write_out(
         data: xarray.Dataset | xarray.DataArray,
-        time_unit: str,
         outpath: pathlib.Path,
+        time_unit: typing.Optional[str] = None,
         extra_attrs: typing.Optional[dict] = None,
         time_dim: str = 'time'
 ) -> None:

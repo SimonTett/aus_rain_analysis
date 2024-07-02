@@ -70,6 +70,7 @@ if __name__ == "__main__":
                                  name='fit_nocov', file=output_fit, bootstrap_file=output_fit_bs,
                                  extra_attrs=extra_attrs, recreate_fit=args.overwrite,
                                  )
+    my_logger.info(f"Computed no cov fits {ausLib.memory_use()}") # memory use
 
     fit_t, fit_t_bs = comp_radar_fit(radar_dataset, cov=['Tanom'],
                                      n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
@@ -77,7 +78,7 @@ if __name__ == "__main__":
                                      bootstrap_file=output_fit_t_bs,
                                      recreate_fit=args.overwrite,
                                      )
-    my_logger.info(f"Computed fits")
+    my_logger.info(f"Computed t fits {ausLib.memory_use()}")
 
     #
     def comp_dist(ds, samples=100):
@@ -91,24 +92,28 @@ if __name__ == "__main__":
                                        )
         dist_sample = dist_sample.rename('cov_param_samp')
         return dist_sample
+
     with output_summary.open('w') as f:
         # print out the AIC
         q_aic = (fit_t.AIC - fit.AIC).quantile([0.1, 0.5, 0.9], dim='sample').to_dataframe().unstack()
         print(f"AIC: {q_aic.round(-1)}", file=f)
         if args.bootstrap_samples > 0:
-            q_aic = (fit_t_bs.AIC - fit_bs.AIC).quantile([0.1, 0.5, 0.9], dim='bootstrap_sample').to_dataframe().unstack()
-            print(f"AIC_bs: {q_aic.round(-1)}", file=f)
+            q_aic_bs = (fit_t_bs.AIC - fit_bs.AIC).quantile([0.1, 0.5, 0.9], dim='bootstrap_sample').to_dataframe().unstack()
+            print(f"AIC_bs: {q_aic_bs.round(-1)}", file=f)
         # Uncertainties from the covariance matrix
         cov_mean = fit_t.Cov.mean('sample')
         p_mean = fit_t.Parameters.mean('sample')
         ds_cov = xarray.Dataset(dict(cov=cov_mean, mean=p_mean))
-        samp_params = ds_cov.groupby('resample_prd').map(comp_dist,samples=args.nsamples)
+        samp_params = ds_cov.groupby('resample_prd').map(comp_dist,samples=args.nsamples).\
+            sel(resample_prd=ds_cov.resample_prd)
 
         for p in ['location', 'scale']:
             dp = f'D{p}_Tanom'
             dfract = samp_params.sel(parameter=dp) / samp_params.sel(parameter=p)
             q = dfract.quantile([0.1, 0.5, 0.9], dim='sample').to_dataframe().unstack()
             print(f"   fract -cov  {dp}: {q.round(3)}", file=f)
-            dfract_bs = fit_t_bs.Parameters.sel(parameter=dp) / fit_t_bs.Parameters.sel(parameter=p)
-            q_bs = dfract_bs.quantile([0.1, 0.5, 0.9], dim='bootstrap_sample').to_dataframe().unstack()
-            print(f"BS fract -cov  {dp}: {q_bs.round(3)}", file=f)
+            if args.bootstrap_samples > 0:
+                dfract_bs = fit_t_bs.Parameters.sel(parameter=dp) / fit_t_bs.Parameters.sel(parameter=p)
+                q_bs = dfract_bs.quantile([0.1, 0.5, 0.9], dim='bootstrap_sample').to_dataframe().unstack()
+                print(f"BS fract -cov  {dp}: {q_bs.round(3)}", file=f)
+    my_logger.info(f"Done")

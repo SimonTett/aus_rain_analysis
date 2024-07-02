@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 # submit scripts to post-process the radar data
-time_str=$(date +"%Y%m%d_%H%M%S")
-history_file="history_$(basename ${0}).txt"
-echo "history file is: ${history_file}"
-echo "${time_str}: $0 $*" >> "${history_file}"
+
 base_dir="/scratch/wq02/st7295/radar"
 # Loop through all the positional parameters
 while (( "$#" )); do
@@ -163,7 +160,7 @@ return 0
 if [[ -n "$dryrun" ]]
 then
     echo "post-processing script is:"
-    gen_script
+    gen_script >&2
 else
   job_name=$(gen_script | qsub ${qsub_args} -) # generate and submit script
   echo "Submitted post-processing job with name ${job_name} submitted with qsub args ${qsub_args}" >&2

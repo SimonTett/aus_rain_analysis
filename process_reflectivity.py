@@ -519,33 +519,20 @@ if __name__ == "__main__":
     parser.add_argument('--to_rain',type=float, nargs=2, help='Convert Reflectivity to rain using R=c[0]Z^c[1]')
     ausLib.add_std_arguments(parser)
     args = parser.parse_args()
+    my_logger  = ausLib.process_std_arguments(args) # deal with the std arguments
 
     time_unit = 'minutes since 1970-01-01'  # units for time in output files
-    # deal with verbosity!
-    if args.verbose > 1:
-        level = 'DEBUG'
-    elif args.verbose > 0:
-        level = 'INFO'
-    else:
-        level = 'WARNING'
-    ausLib.init_log(my_logger, level=level, log_file=args.log_file, mode='w')
+
     # print out all the arguments and add them to attributes of the final dataset.
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()],
-                       site=args.site)
+                       site=args.site,dbz_range=args.dbz_range,min_fract_avg=args.min_fract_avg)
     if args.to_rain is not None:
         extra_attrs.update(to_rain=args.to_rain)
-
-    for name, value in vars(args).items():
-        my_logger.info(f"Arg:{name} =  {value}")
-    if args.dask:
-        my_logger.info('Starting dask client')
-        client = ausLib.dask_client()
-    else:
-        dask.config.set(scheduler="single-threaded")  # make sure dask is single threaded.
-        my_logger.info('Running single threaded')
+    if args.coarsen is not None:
+        extra_attrs.update(coarsen=args.coarsen, coarsen_method=args.coarsen_method)
 
     site_number = f'{site_numbers[args.site]:d}'
     indir = pathlib.Path('/g/data/rq0/hist_gndrefl') / site_number
