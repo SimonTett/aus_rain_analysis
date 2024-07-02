@@ -205,8 +205,5 @@ if __name__ == '__main__':
                                )
     #TODO  add in the obs_temperature and radar.fraction timeseries
     radar_events.attrs = radar.attrs
+    ausLib.write_out(radar_events,extra_attrs=extra_attrs)
 
-    radar_events.attrs.update(extra_attrs)
-    # finally we can save the events
-    radar_events.to_netcdf(out_file)
-    my_logger.info(f'Events saved to {out_file}')
