@@ -137,17 +137,10 @@ if __name__ == '__main__':
                              'If not provided computed from site  in input file'
                         )
     parser.add_argument('--site', type=str, help='site name for radar data. If not provided taken from input file')
-    ausLib.add_std_arguments(parser)  # add on the std args
+    ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Turn of dask as this is rather I/O bound.
     args = parser.parse_args()
-    my_logger = ausLib.setup_log(args.verbose, log_file=args.log_file)  # setup the logging
-    for name, value in vars(args).items():
-        my_logger.info(f"Arg:{name} =  {value}")
-    if args.dask:
-        my_logger.info('Starting dask client')
-        client = ausLib.dask_client()
-    else:
-        dask.config.set(scheduler="single-threaded")  # make sure dask is single threaded.
-        my_logger.info('Running single threaded')
+    my_logger = ausLib.process_std_arguments(args) # setup the logging and do std stuff
+
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
@@ -181,11 +174,7 @@ if __name__ == '__main__':
         my_logger.debug('No station id provided. Using default')
     my_logger.info(f'Using acorn id of {station_id}')
 
-    extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
-                       utc_time=pd.Timestamp.utcnow().isoformat(),
-                       program_args=[f'{k}: {v}' for k, v in vars(args).items()],
-                       site=site, station_id=station_id
-                       )
+    extra_attrs.update(station_id=station_id)
     # get the temperature data for the site.
     obs_temperature = ausLib.read_acorn(station_id, what='mean').resample('QS-DEC').mean()
     obs_temperature = obs_temperature.to_xarray().rename('ObsT').rename(dict(date='time'))
@@ -198,7 +187,7 @@ if __name__ == '__main__':
         cbb_dem_files = args.cbb_dem_files
     else:
         site_index = ausLib.site_numbers[site]
-        cbb_dem_files = list((ausLib.data_dir / 'SRTM_Data/radar_strm').glob(f'{site_index:03d}_[0-9]_*cbb_dem.nc'))
+        cbb_dem_files = list((ausLib.data_dir / f'site_data/{site}').glob(f'{site}_{site_index:03d}_[0-9]_*cbb_dem.nc'))
         my_logger.info(f"Inferred CBB/DEM files are: {cbb_dem_files}")
 
     CBB_DEM = xarray.open_mfdataset(cbb_dem_files, concat_dim='prechange_start', combine='nested').sel(**regn)
@@ -207,7 +196,7 @@ if __name__ == '__main__':
     # and extract the radar data
     mx = radar[f'max_{variable}']
     mxTime = radar[f'time_max_{variable}']
-    # utc hour of 14:00 corresponds to 00 in Australia.
+    # utc hour of 14:00 corresponds to 00 in Eastern Australia.
     ref_time = '1970-01-01T14:00'
     grp = np.floor(((mxTime - np.datetime64(ref_time)) / np.timedelta64(1, 'D'))).rename('EventTime').compute()
     radar_events = comp_events(mx, mxTime, grp, source='RADAR', topog=topog,
