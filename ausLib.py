@@ -29,12 +29,12 @@ import typing
 import ast  # thanks chaptGPT co-pilot
 import numpy.random as random
 
-import ausLib
 
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
                     )
+site_names = dict(zip(site_numbers.values(), site_numbers.keys()))# reverse lookup
 region_names = dict(Tropics=['Cairns', 'Mornington'],
                     QLD=['Gladstone', 'Brisbane', 'Grafton'],
                     NSW=['Newcastle', 'Sydney', 'Canberra'],
@@ -636,7 +636,7 @@ def read_radar_file(path: pathlib.Path | str) -> pd.DataFrame:
                      dayfirst=True, na_values='-',
                      true_values=['Yes'],
                      dtype={'site_lat': np.float32, 'site_lon': np.float32, 'site_alt': np.float32}
-                     ).drop(columns='Unnamed: 0')
+                     )
 
     # Set NaN to False
     for col in ['dp', 'doppler']:
@@ -882,9 +882,27 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     --dask -- turn on dask. (if dask set)
     --log_file -- have a log file.
     --overwrite -- overwrite files.
-    Args:
-        parser: parser to be modified.
+    And  arguments for submitting jobs to a queue system.
+    --submit -- submit to queue system
+    --queue -- queue to submit to
+    --project -- project to submit to
+    --storage -- storage options
+    --time -- time to run for
+    --cpus -- number of cpus to use.
+    --memory -- memory to use
+    --job_name -- job name
+    --email -- email address to send job info to
+    --log_base -- base name for q system logs
+    --json_submit_file -- JSON file containing default options.
+                   These are overwritten by command line args.
+                   Keys are the same as the long form of the argument with -- removed.
+                   Any keys ending in comment are also removed
 
+    --setup_script -- script to run before running the command
+    --holdafter -- hold job until the held after job has ran.
+    --dryrun -- dry run only. Nothing will be submitted and script will exit
+    --history_file -- store command in history file
+    --purpose -- purpose of the job. Does nothing but put in log file
     Returns: nada
 
     """
@@ -899,7 +917,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
 
     # add a submit sub-command,
     # note that a value of '' means do not do anything. This is to allow checking for values we actually need
-    submit = parser.add_argument_group('Submit')
+    submit = parser.add_argument_group('Submit. Only used if --submit set')
 
     submit.add_argument('--submit', help='Submit self to Q system', action='store_true')
     submit.add_argument('--queue', help='Queue to submit to')
@@ -1212,7 +1230,7 @@ def comp_radar_fit(
     rng = random.default_rng(rng_seed)
     rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
     coord = dict(sample=np.arange(0, n_samples))
-    ds = dataset.isel(quantv=rand_index). \
+    ds = dataset.drop_vars('Observed_temperature',errors='ignore').isel(quantv=rand_index). \
         rename(dict(quantv='sample')).assign_coords(**coord)
     cov_rand = None
     if cov is not None:
@@ -1224,6 +1242,10 @@ def comp_radar_fit(
     fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=True,
                            recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs
                            )
+    try:
+        fit['Observed_temperature']=dataset['Observed_temperature']
+    except KeyError:
+        pass
     if bootstrap_samples > 0:
         my_logger.info(f"Calculating bootstrap for {name} {ausLib.memory_use()}")
 
@@ -1242,6 +1264,7 @@ def comp_radar_fit(
                                   extra_attrs=extra_attrs,
 
                                   ).mean('sample')
+
     else:
         bs_fit = None
     return fit, bs_fit

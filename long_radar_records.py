@@ -1,8 +1,13 @@
 # find the radar stations that have long records. Print out relevant meta-data
+import pathlib
+
 import pandas as pd
 from matplotlib import pyplot as plt
 import cartopy.crs as ccrs
 import seaborn as sns
+
+import ausLib
+
 
 def print_df(df):
     """
@@ -25,52 +30,46 @@ file_data = pd.read_csv("file_count.txt",header=None).rename(columns={0:'root_di
 long_dirs = file_data[file_data.file_count > 6500].root_dir # remove this
 ids = long_dirs.str.split("/",expand=True).iloc[:,5].astype('int')
 
-radar_stn_data= pd.read_csv("meta_data/radar_site_list.csv")
-L=radar_stn_data.id.isin(ids)
-max_Time_str = pd.to_datetime(radar_stn_data.prechange_end.str.replace('-','1/1/2000'),dayfirst=True).max().strftime('%d/%m/%Y')
-long_radar_data = radar_stn_data[L]
+radar_stn_data= ausLib.read_radar_file("meta_data/radar_site_list.csv")
+# fill the dates
+for c,d in zip(['postchange_start','prechange_end'],['1997-01-01','2024-01-01']):
+    radar_stn_data[c]=radar_stn_data[c].fillna(d)
+
+
+long_radar_data = radar_stn_data
 # remove ALL WF44 & WF100.
 radar = long_radar_data.radar_type
 ok = ~(radar.str.startswith('WF44') | radar.str.startswith('WF100'))
+print('Stations being dropped for radar check are: ',long_radar_data[~ok].short_name.values)
 long_radar_data=long_radar_data[ok]
 tmp = long_radar_data.loc[:,['id','postchange_start','prechange_end']]
-for k in ['postchange_start','prechange_end']:
-    tmp[k]=pd.to_datetime(tmp[k].str.replace("-",max_Time_str),dayfirst=True)
+
 # work out current stations...
-current = tmp.groupby('id').prechange_end.max() > '2022-01-01'
+current = tmp.groupby('id').prechange_end.max() > '2020-01-01'
 # and old
 old = tmp.groupby('id').postchange_start.min()  < '2005-01-01'
 ids_ok = current.index.where(current & old ).dropna().astype('int')
+print('Stations being dropped for date check are: ',
+      long_radar_data[~long_radar_data.id.isin(ids_ok)].short_name.values)
 long_radar_data = long_radar_data[long_radar_data.id.isin(ids_ok)]#.)
+
+# now find cases with enough files...
+
+my_logger = ausLib.setup_log(1)
+file_count=dict()
+
+for stn_id in long_radar_data.id.unique():
+    name=long_radar_data.query(f'id=={stn_id}').head(1).short_name.values[0]
+    root_dir = pathlib.Path(f'/g/data/rq0/hist_gndrefl/{stn_id}')
+    n_files = len(list(root_dir.glob('*/*.zip')))
+    file_count[stn_id] = n_files
+    my_logger.info(f"ID: {stn_id} {name} has {n_files} files")
+
+file_count=pd.Series(file_count,name='file_count')
+ids=file_count[file_count>6000].index.unique()
+long_radar_data = long_radar_data[long_radar_data.id.isin(ids)]#.)
+
 # save results
-long_radar_data.to_csv("meta_data/long_radar_stns.csv")
+long_radar_data.to_csv("meta_data/long_radar_stns.csv",date_format='%d/%m/%Y')
 ## print out result
 print_df(long_radar_data)
-
-
-## make a map of the long lasting radar stations
-
-fig = plt.figure(num="long_radar_aus",figsize=(8,5),clear=True,layout='constrained')
-ax = fig.add_subplot(111,projection=ccrs.PlateCarree())
-ax.set_extent([110,160,-45,-10])
-ax.coastlines()
-lr=long_radar_data.groupby('id').tail(1) # most recent records for each ID
-lr = lr.sort_values('id',axis=0).set_index('id',drop=False)
-
-# add in changes.
-changes = long_radar_data.id.value_counts().rename("changes")
-lr = lr.join(changes)
-
-sns.scatterplot(data=lr,x='site_lon',y='site_lat',hue='radar_type',style='beamwidth',
-                ax=ax,sizes=(40,80),size='changes',markers=['o','s','h'])
-#lr.plot.scatter(x='site_lon',y='site_lat',marker='o',ax=ax,s=20)
-for name,row in lr.iterrows():
-    ax.text(row.site_lon,row.site_lat,row.short_name,va='bottom')
-
-ax.set_title("Australian radars with > 6500 obs days")
-fig.show()
-fig.savefig('figures/long_radar_aus.png')
-print_df(lr)
-
-
-

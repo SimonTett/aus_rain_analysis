@@ -143,15 +143,8 @@ if __name__ == '__main__':
 
     ausLib.add_std_arguments(parser)  # add on the std args
     args = parser.parse_args()
-    my_logger = ausLib.setup_log(args.verbose, log_file=args.log_file)  # setup the logging
-    for name, value in vars(args).items():
-        my_logger.info(f"Arg:{name} =  {value}")
-    if args.dask:
-        my_logger.info('Starting dask client')
-        client = ausLib.dask_client()
-    else:
-        dask.config.set(scheduler="single-threaded")  # make sure dask is single threaded.
-        my_logger.info('Running single threaded')
+    my_logger = ausLib.process_std_arguments(args)  # setup the logging and deal with standard args.
+
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
@@ -254,5 +247,5 @@ if __name__ == '__main__':
                 site_meta_data[k] = int(site_meta_data[k])
 
         ds_grid = ds_grid.assign_attrs(site_meta_data)
-        ausLib.write_out(ds_grid, time_unit, outfile, extra_attrs=extra_attrs, time_dim='postchange_start')
+        ausLib.write_out(ds_grid, outfile, extra_attrs=extra_attrs, time_dim='postchange_start')
 
