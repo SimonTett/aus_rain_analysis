@@ -57,10 +57,11 @@ if hostname.startswith('gadi'):  # aus super-computer
     data_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
     hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/")
 elif hostname.startswith('ccrc'):  # CCRC desktop
-    data_dir = pathlib.Path("/home/z3542688/data/aus_rain_analysis/radar")
-    common_data = pathlib.Path("/home/z3542688/data/common_data")
+    data_dir = pathlib.Path("/home/z3542688/OneDrive/data/aus_radar_analysis/radar")
+    common_data = pathlib.Path("/home/z3542688/OneDrive/data/common_data")
 elif hostname == 'geos-w-048':  # my laptop
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
+    common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
@@ -1247,13 +1248,13 @@ def comp_radar_fit(
     except KeyError:
         pass
     if bootstrap_samples > 0:
-        my_logger.info(f"Calculating bootstrap for {name} {ausLib.memory_use()}")
+        my_logger.info(f"Calculating bootstrap for {name} {memory_use()}")
 
         ds_bs = ds.groupby('resample_prd').map(sample_events2,
                                                rng=rng, nsamples=bootstrap_samples,
                                                dim='EventTime')
 
-        my_logger.debug(f"Generated Bootstrap samples {ausLib.memory_use()}")
+        my_logger.debug(f"Generated Bootstrap samples {memory_use()}")
 
         cov_rand = None
         if cov is not None:

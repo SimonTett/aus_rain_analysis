@@ -19,6 +19,8 @@ uncert_sd = 1.3 # roughly 10-90% range
 end_name='_rain_melbourne' # calibration
 
 for site in ausLib.site_numbers.keys():
+    if site == 'Mornington':
+        continue # skip!
     name = site+end_name
     gev_t_file = ausLib.data_dir / f'processed/{name}/fits/gev_fit_temp.nc'
     gev_t_bs_file = ausLib.data_dir / f'processed/{name}/fits/gev_fit_temp_bs.nc'
@@ -26,10 +28,10 @@ for site in ausLib.site_numbers.keys():
     gev_bs_file = ausLib.data_dir / f'processed/{name}/fits/gev_fit_bs.nc'
     be_t = xarray.load_dataset(gev_t_file).mean(dim='sample').drop_vars('postchange_start', errors='ignore')
     best_est[site] = be_t
-    bs_t = xarray.load_dataset(gev_t_bs_file).drop_vars('postchange_start', errors='ignore')
+    bs_t = xarray.load_dataset(gev_t_bs_file).mean(dim='sample').drop_vars('postchange_start', errors='ignore')
     bootstrap[site] = bs_t
     be = xarray.load_dataset(gev_file).mean(dim='sample').drop_vars('postchange_start', errors='ignore')
-    bs = xarray.load_dataset(gev_bs_file).drop_vars('postchange_start', errors='ignore')
+    bs = xarray.load_dataset(gev_bs_file).mean(dim='sample').drop_vars('postchange_start', errors='ignore')
 
     # compute the fractional location and shape changes + uncerts.
 
@@ -54,6 +56,9 @@ for rng, sites in ausLib.region_names.items():
     # first extract the datasets for the sites wanted
     site_ds = []
     for site in sites:
+        if site not in gev:
+            my_logger.warning(f'No data for {site}')
+            continue
         site_ds += [gev[site].expand_dims(site=[site])]
     site_ds = xarray.concat(site_ds, dim='site')
     ds = dict()
