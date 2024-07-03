@@ -101,6 +101,7 @@ def comp_events(
                 da_extreme_times = da.sel(resample_prd=roll).squeeze(drop=True).sel(time=dd.t, method='nearest')
             except KeyError:
                 da_extreme_times = da.sel(time=dd.t, method='nearest')  #.rename(dict(time='EventTime'))
+
             dd = dd.merge(da_extreme_times.drop_vars('time'))
             my_logger.debug(f'Added {da_extreme_times.name} in')
         # add in hts
@@ -128,7 +129,7 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
     parser = argparse.ArgumentParser(description="Compute events for Australian radar data")
     parser.add_argument('input_file', type=pathlib.Path, help='input file for seasonal processed radar data')
-    parser.add_argument('output_file', type=pathlib.Path, help='Filename for events file. ')
+    parser.add_argument('output', type=pathlib.Path, help='Filename for events file. ')
     parser.add_argument('--station_id', type=int, help='ACORN id for station used to generate temperature covariate. '
                                                        'If not provided computed from site in input file'
                         )
@@ -149,7 +150,7 @@ if __name__ == '__main__':
 
     variable = 'rain_rate'  # set to reflectivity for reflectivity data
     in_file = args.input_file
-    out_file = args.output_file
+    out_file = args.output
     out_file.parent.mkdir(exist_ok=True, parents=True)
     if out_file.exists() and (not args.overwrite):
         my_logger.warning(f"Output file {out_file} exists and overwrite not set. Exiting")
@@ -173,13 +174,11 @@ if __name__ == '__main__':
         station_id = acorn_lookup[site]
         my_logger.debug('No station id provided. Using default')
     my_logger.info(f'Using acorn id of {station_id}')
-
     extra_attrs.update(station_id=station_id)
     # get the temperature data for the site.
     obs_temperature = ausLib.read_acorn(station_id, what='mean').resample('QS-DEC').mean()
-    obs_temperature = obs_temperature.to_xarray().rename('ObsT').rename(dict(date='time'))
-    obs_temperature = obs_temperature.where(obs_temperature.time.dt.season == 'DJF', drop=True)
-
+    attrs=obs_temperature.attrs.copy()
+    obs_temperature = obs_temperature.to_xarray().rename('ObsT').rename(dict(date='time')).assign_attrs(attrs)
 
     # want the topography
     regn = ausLib.extract_rgn(radar)
@@ -203,7 +202,9 @@ if __name__ == '__main__':
                                extras=[obs_temperature, radar.fraction,
                                        (radar.sample_resolution.dt.seconds / 60.).rename('sample_resolution')]
                                )
+    radar_events['Observed_temperature']=obs_temperature
     #TODO  add in the obs_temperature and radar.fraction timeseries
     radar_events.attrs = radar.attrs
-    ausLib.write_out(radar_events,extra_attrs=extra_attrs)
+    ausLib.write_out(radar_events,out_file,extra_attrs=extra_attrs,time_dim=None)
+    
 

@@ -110,7 +110,7 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
     parser = argparse.ArgumentParser(description="Compute Masked seasonal mean data for processed radar data")
     parser.add_argument('input_dir',  type=pathlib.Path, help='Input dir for radar data')
-    parser.add_argument('--output', type=pathlib.Path, help='name of output file', required=True)
+    parser.add_argument('output', type=pathlib.Path, help='name of output file')
     parser.add_argument('--site', type=str, help='Site name -- overrides meta data in input files')
     parser.add_argument('--cbb_dem_files', type=pathlib.Path, help='Names of CCB/DEM files', nargs='+')
     parser.add_argument('--season', type=str, help='Season to use', default='DJF')

@@ -1,5 +1,5 @@
 {
-  "comment": "Configuration for post_process scripts. Uses copyq as needs access to internet",
+  "comment": "Configuration for process_events. Uses copyq as needs access to internet to get ACORN temp data",
   "memory": "10GB",
   "time": "01:00:00",
   "cpus": 1,
@@ -7,5 +7,5 @@
   "project": "wq02",
   "storage": "gdata/rq0+gdata/hh5+gdata/ua8",
   "setup_script": "/home/561/st7295/aus_rain_analysis/setup.sh",
-  "history_file": "/home/561/st7295/aus_rain_analysis/histories/post_process.txt"
+  "history_file": "/home/561/st7295/aus_rain_analysis/histories/process_event.txt"
 }

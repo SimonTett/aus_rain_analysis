@@ -1252,7 +1252,7 @@ def write_out(
         outpath: pathlib.Path,
         time_unit: typing.Optional[str] = None,
         extra_attrs: typing.Optional[dict] = None,
-        time_dim: str = 'time'
+        time_dim: typing.Optional[str] = 'time'
 ) -> None:
     """
     Write out data. Encoding and attributes are modified.
@@ -1267,8 +1267,9 @@ def write_out(
         extra_attrs = {}
     if time_unit is None:
         time_unit = 'minutes since 1970-01-01'  # units for time in output files
-    data[time_dim].attrs.pop("units", None)
-    data[time_dim].encoding.update(units=time_unit, dtype='float64')
+    if time_dim is not None:
+        data[time_dim].attrs.pop("units", None)
+        data[time_dim].encoding.update(units=time_unit, dtype='float64')
     data.encoding.update(zlib=True, complevel=4)
     data.attrs.update(extra_attrs)
     data.to_netcdf(outpath, unlimited_dims=time_dim)
