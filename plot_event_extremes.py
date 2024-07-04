@@ -11,8 +11,8 @@ my_logger = ausLib.setup_log(1)
 rain_extremes = dict()
 temp_extremes = dict()
 
-calib = '_rain_brisbane'  # calibration
-max_dbz = 55.0  # should be the events file.
+calib = '_rain_melbourne'  # calibration
+
 for site in ausLib.site_numbers.keys():
     name = site + calib
     event_file = ausLib.data_dir / f'processed/{name}/events_{name}_DJF.nc'
@@ -53,10 +53,9 @@ import scipy.stats
 
 for site, ax in axes.items():
     da = rain_extremes[site]
-    print(da.max(['quantv', 'EventTime']))
     for col, prd in zip(colors, ['30min', '1h', '2h', '4h']):
         sel = dict(resample_prd=prd)
-        data = da.sel(**sel).isel(quantv=-2)
+        data = da.sel(**sel).isel(quantv=-1)
         data = data.where(data > 0.5).dropna('EventTime')
         # statsmodels.graphics.gofplots.qqplot(ds.dropna('EventTime'),
         #                                      dist=scipy.stats.genextreme,fit=True,line='45',ax=ax,color='red',fmt='',ms=2)

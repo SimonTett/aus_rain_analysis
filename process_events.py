@@ -138,7 +138,9 @@ if __name__ == '__main__':
                              'If not provided computed from site  in input file'
                         )
     parser.add_argument('--site', type=str, help='site name for radar data. If not provided taken from input file')
+    parser.add_argument('--region', type=float, nargs=4, help='Region: x0, y0, x1, y1. Default is whole dataset')
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Turn of dask as this is rather I/O bound.
+    print(sys.argv)
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args) # setup the logging and do std stuff
 
@@ -147,6 +149,8 @@ if __name__ == '__main__':
                        utc_time=pd.Timestamp.utcnow().isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()]
                        )
+    if args.region:
+        extra_attrs.update(region=args.region)
 
     variable = 'rain_rate'  # set to reflectivity for reflectivity data
     in_file = args.input_file
@@ -156,7 +160,13 @@ if __name__ == '__main__':
         my_logger.warning(f"Output file {out_file} exists and overwrite not set. Exiting")
         sys.exit(0)
 
-    radar = xarray.open_dataset(in_file).load()
+    radar = xarray.open_dataset(in_file)
+    regn = None
+    if args.region:
+        rgn = args.region
+        regn = dict(x=slice(rgn[0], rgn[2]), y=slice(rgn[1], rgn[3]))
+        radar = radar.sel(**regn)
+
     site = radar.attrs.get('site', None)
     if args.site:
         site = args.site
@@ -181,7 +191,7 @@ if __name__ == '__main__':
     obs_temperature = obs_temperature.to_xarray().rename('ObsT').rename(dict(date='time')).assign_attrs(attrs)
 
     # want the topography
-    regn = ausLib.extract_rgn(radar)
+    orig_regn = ausLib.extract_rgn(radar)
     if args.cbb_dem_files:
         cbb_dem_files = args.cbb_dem_files
     else:
@@ -189,13 +199,15 @@ if __name__ == '__main__':
         cbb_dem_files = list((ausLib.data_dir / f'site_data/{site}').glob(f'{site}_{site_index:03d}_[0-9]_*cbb_dem.nc'))
         my_logger.info(f"Inferred CBB/DEM files are: {cbb_dem_files}")
 
-    CBB_DEM = xarray.open_mfdataset(cbb_dem_files, concat_dim='prechange_start', combine='nested').sel(**regn)
+    CBB_DEM = xarray.open_mfdataset(cbb_dem_files, concat_dim='prechange_start', combine='nested').sel(**orig_regn)
     # important to select to region before coarsening for consistency with radar data processing.
     topog = CBB_DEM.elevation.max('prechange_start').coarsen(x=4, y=4, boundary='trim').mean()
+    if regn is not None:# select to the region requested here.
+        topog = topog.sel(**regn)
     # and extract the radar data
     mx = radar[f'max_{variable}']
     mxTime = radar[f'time_max_{variable}']
-    # utc hour of 14:00 corresponds to 00 in Eastern Australia.
+    # utc hour of 14:00 corresponds to roughly 00 in Eastern Australia.
     ref_time = '1970-01-01T14:00'
     grp = np.floor(((mxTime - np.datetime64(ref_time)) / np.timedelta64(1, 'D'))).rename('EventTime').compute()
     radar_events = comp_events(mx, mxTime, grp, source='RADAR', topog=topog,
@@ -203,7 +215,6 @@ if __name__ == '__main__':
                                        (radar.sample_resolution.dt.seconds / 60.).rename('sample_resolution')]
                                )
     radar_events['Observed_temperature']=obs_temperature
-    #TODO  add in the obs_temperature and radar.fraction timeseries
     radar_events.attrs = radar.attrs
     ausLib.write_out(radar_events,out_file,extra_attrs=extra_attrs,time_dim=None)
     

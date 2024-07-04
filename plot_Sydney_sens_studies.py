@@ -58,11 +58,11 @@ for (name, parameters),col in zip(events.items(), ['blue', 'orange', 'green']):
         ax_fit.axhline(r,  color=col, linestyle='--')
 ax_fit.axline((5.0, 5.0), slope=1.0, color='black', linestyle='--')
 ax_fit.axhline(0.5*float(resample_hours.sel(resample_prd=prd)), color='black', linestyle='--')
-ax_fit.set_xlabel('GEV fit (mm)')
+ax_fit.set_xlabel(f'GEV fit (mm) ')
 ax_fit.set_ylabel('Radar (mm)')
 ax_fit.set_xscale('log')
 ax_fit.set_yscale('log')
-ax_fit.set_title('GEV fit')
+ax_fit.set_title(f' Rx{prd} fit vs data')
 ax_fit.legend(loc='upper left',fontsize='small',handletextpad=0.1,handlelength=0.5)
 ## now to plot the gev ratios.
 for (name, parameters),col in zip(gev_t_fit.items(), ['blue', 'orange', 'green']):
