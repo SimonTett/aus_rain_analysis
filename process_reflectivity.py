@@ -1,17 +1,17 @@
 #!/usr/bin/env python
-# process reflectivity data
-# currently y and x_bounds are nan. Probably coming from when they get merged in,
-# and merge seems to be doing something odd to the co-ords...
+# process reflectivity data. Iterates over data processing a month at a time worth of data.
 import pathlib
 import typing
 import argparse
 import numpy as np
 import xarray
-import multiprocessing
 import ausLib
 from ausLib import memory_use, my_logger, site_numbers
-import dask
 import pandas as pd
+import multiprocessing
+
+
+raise NotImplementedError('Test sub-sample opt')
 
 ##
 def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
@@ -70,7 +70,8 @@ def summary_process(data_array: xarray.DataArray,
         base_name: basename to be used. If not provided then long_name in attrs of data_array will be used. 
         time_dim: the name of the time dimension
         threshold: the threshold above which var is used in *_thresh dataArrays. 
-        min_fract_avg: minimum fraction of data that must be available for a time period. If less than this then the time period is dropped.
+        min_fract_avg: minimum fraction of data that must be available for a time period. 
+          If less than this then the time period is dropped.
         If not provided All _thresh vars will be empty
 
 
@@ -131,9 +132,10 @@ def summary_process(data_array: xarray.DataArray,
     L = (td != time_resoln)
     if L.any():
         scale = np.timedelta64(1, 'm')
+        res = time_resoln/scale
         bad_td = td.where(L, drop=True) / scale
         my_logger.warning(
-            f"Time resolution not consistent -- median {time_resoln / scale} mins with {len(bad_td)} bad values {np.unique(bad_td.values)}")
+            f"Time resolution not consistent -- median {res} mins. {len(bad_td)} bad values {np.unique(bad_td.values)}")
         for v in bad_td:
             my_logger.debug(f'{v.values} mins @ {v.time.values}')
 
@@ -163,7 +165,7 @@ def summary_process(data_array: xarray.DataArray,
     for mn_resamp in mean_resample:
         rr = result.sel(resample_prd=mn_resamp).drop_vars(
             no_resample_vars)  # remove those vars that don't have resampling!
-        resample_dict = {time_dim: mn_resamp,'closed':'right','label':'right'}
+        resample_dict = {time_dim: mn_resamp, 'closed': 'right', 'label': 'right'}
         # for consistency with sub-daily precip -- time-samples are at the *end* of the record.
         mean_resamp = (data_array.resample(**resample_dict).mean(skipna=True).
                        expand_dims(resample_prd=[mn_resamp]))
@@ -289,7 +291,8 @@ def fix_spatial_units(ds: xarray.Dataset):
 
 ##
 type_cm = typing.Literal['mean', 'median']
-type_rain_conv = typing.Optional[typing.Tuple[float,float]] # for converting to rain
+type_rain_conv = typing.Optional[typing.Tuple[float, float]]  # for converting to rain
+
 
 def read_zip(path: pathlib.Path,
              concat_dim: str = 'valid_time',
@@ -301,7 +304,8 @@ def read_zip(path: pathlib.Path,
              check_finite: bool = True,
              first_file: bool = False,
              region: typing.Optional[typing.Dict[str, slice]] = None,
-             to_rain:type_rain_conv = None,
+             to_rain: type_rain_conv = None,
+             subsample: typing.Optional[pd.Timedelta] = None,
              **load_kwargs
              ) -> typing.Optional[xarray.Dataset]:
     """
@@ -318,10 +322,12 @@ def read_zip(path: pathlib.Path,
         If None no limits are applied.
     :param coarsen: dict for coarsening. If None no coarsening done
     :param coarsen_method: method to coarsen by
-    :param coarsen_cv_max: Maximum coefficient of variability (std/mean) for coarsened data.Values above this are set to missing.  If set var_speckle will be computed
+    :param coarsen_cv_max: Maximum coefficient of variability (std/mean) for coarsened data.
+    Values above this are set to missing.  If set var_speckle will be computed
     :param bounds_vars:  tuple of variables that are bounds
     :param region -- region to select from.
     :param to_rain -- if set convert reflectivty to rain using these co-efficients. Happens after dbz_ref_limits used.
+    :param subsample -- if set then subsample the data to this period. If None then no subsampling is done.
     :param load_kwargs: kwargs for loading in read_radar_zipfile
 
     :return:
@@ -350,11 +356,20 @@ def read_zip(path: pathlib.Path,
         my_logger.warning(f'No data for {path}')
         return None
     # sort variables so all dimensions are monotonically increasing.
+    # deal with subsample
+    times = None
+    if subsample:  # want to sub-sample the data.
+        times = pd.date_range(start=radar_dataset.valid_time.values[0] - subsample,
+                              end=radar_dataset.valid_time.values[-1],
+                              freq=subsample, inclusive='right')
     result = dict()
     for var in radar_dataset.data_vars:
         v = radar_dataset[var]
         for d in list(v.dims):
             v = v.sortby(d)
+        if subsample:
+            v = v.reindex(valid_time=times, method='nearest', tolerance=subsample / 2)
+            my_logger.debug(f'sub-sampled variable {var}')
         result[var] = v
         my_logger.debug(f'Sorted variable {var}')
     radar_dataset = xarray.Dataset(result)
@@ -368,7 +383,7 @@ def read_zip(path: pathlib.Path,
             if std_name != 'equivalent_reflectivity_factor':
                 ValueError(f'Std name for reflectivity is {std_name} not equivalent_reflectivity_factor')
             # count number of missing values but only for reflectivity data
-            miss_var = 'count_' + str(v)+'_missing'
+            miss_var = 'count_' + str(v) + '_missing'
             vars_non_time = set(list(radar_dataset[v].dims)) - {concat_dim}
             mv = radar_dataset[v].isnull()
             mv = mv.sum(vars_non_time)
@@ -381,9 +396,10 @@ def read_zip(path: pathlib.Path,
                 L0 = radar_dataset[v] < dbz_ref_limits[0]
                 L1 = radar_dataset[v] > dbz_ref_limits[1]
                 vars_non_time = set(list(L1.dims)) - {concat_dim}
-                miss_var = 'count_'+str(v) + '_high'
-                radar_dataset[miss_var] = L1.sum(vars_non_time).  \
-                    assign_attrs(units='', extra='Count of values set missing as > thresh', threshold_dbz=dbz_ref_limits[1])  # fraction of values > thresh
+                miss_var = 'count_' + str(v) + '_high'
+                radar_dataset[miss_var] = L1.sum(vars_non_time). \
+                    assign_attrs(units='', extra='Count of values set missing as > thresh',
+                                 threshold_dbz=dbz_ref_limits[1])  # fraction of values > thresh
 
                 if L1.sum() > 0:  # got some values above the max thresh
                     radar_dataset[v] = radar_dataset[v].where(~L1, other=np.nan)  # above threshold nan
@@ -396,10 +412,10 @@ def read_zip(path: pathlib.Path,
                     my_logger.debug(f'Set {L0.values.sum():,} values below  {dbz_ref_limits[0]} to 0 ')
                 radar_dataset[v].attrs['units'] = 'mm**6/m**3'
             if to_rain is not None:
-                radar_dataset[v] = (radar_dataset[v]**to_rain[1]) * to_rain[0]
-                radar_dataset[v].attrs.update(units='mm/h',standard_name='rainfall_rate',
-                                              long_name='Ranfall_rate computed from '+
-                                                        radar_dataset[v].attrs.get('long_name',''))
+                radar_dataset[v] = (radar_dataset[v] ** to_rain[1]) * to_rain[0]
+                radar_dataset[v].attrs.update(units='mm/h', standard_name='rainfall_rate',
+                                              long_name='Ranfall_rate computed from ' +
+                                                        radar_dataset[v].attrs.get('long_name', ''))
                 my_logger.debug(f'Converted {v} to rain rate using {to_rain}')
 
     if coarsen is not None:  # coarsen the data
@@ -421,12 +437,12 @@ def read_zip(path: pathlib.Path,
                 my_logger.warning(f'Set CV {msk.values.sum():,} values above {coarsen_cv_max} to missing for {bname}')
             vars_non_time = set(list(msk.dims)) - {concat_dim}
 
-            v = msk.sum(vars_non_time)   # No of values above threshold
+            v = msk.sum(vars_non_time)  # No of values above threshold
             radar_dataset[miss_var] = v.assign_attrs(units='', extra=f'Number coarsened CV > {coarsen_cv_max}')
     # fix names -- convert reflectivity to  rain_rate
     if to_rain is not None:
-        vars = [v for v in radar_dataset.data_vars if 'reflectivity' in v]
-        for v in vars:
+        variables = [v for v in radar_dataset.data_vars if 'reflectivity' in v]
+        for v in variables:
             newname = str(v).replace('reflectivity', 'rain_rate')
             da_name = str(radar_dataset[v].name).replace('reflectivity', 'rain_rate')
             radar_dataset[newname] = radar_dataset[v].rename(da_name)
@@ -437,6 +453,7 @@ def read_zip(path: pathlib.Path,
     return radar_dataset
 
 
+##
 def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                          coarsen: typing.Optional[typing.Dict[str, int]] = None,
                          coarsen_method: type_cm = 'mean',
@@ -444,6 +461,7 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                          coarsen_cv_max: typing.Optional[float] = None,
                          region: typing.Optional[typing.Dict[str, slice]] = None,
                          to_rain: type_rain_conv = None,
+                         subsample: typing.Optional[pd.Timedelta] = None
                          ) -> xarray.Dataset:
     # read in first file to get helpful co-ord info. The more we read the slower we go.
     drop_vars_first = ['error', 'reflectivity']  # variables not to read for meta info
@@ -457,9 +475,10 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                       dbz_ref_limits=dbz_ref_limits,
                       coarsen_cv_max=coarsen_cv_max,
                       region=region,
+                      subsample=subsample,
                       drop_variables=drop_vars, concat_dim='valid_time', parallel=True,
                       combine='nested',
-                      chunks=dict(valid_time=6), engine='netcdf4',to_rain=to_rain)
+                      chunks=dict(valid_time=6), engine='netcdf4', to_rain=to_rain)
         ds.append(dd)
     my_logger.info(f'Read in {len(ds)} files {ausLib.memory_use()}')
     ds = xarray.concat(ds, dim='valid_time').rename(valid_time='time').sortby('time')
@@ -480,8 +499,6 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
     return ds
 
 
-
-
 ##
 if __name__ == "__main__":
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
@@ -492,7 +509,7 @@ if __name__ == "__main__":
     parser.add_argument('--years', nargs='+', type=int, help='List of years to process',
                         default=range(2020, 2023))
     parser.add_argument('--months', nargs='+', type=int, help='list of months to process', default=range(1, 13))
-    parser.add_argument('outdir', type=pathlib.Path,help='output directory. Must be provided')
+    parser.add_argument('outdir', type=pathlib.Path, help='output directory. Must be provided')
     parser.add_argument('--glob', help='Pattern for globbing zip files',
                         default='[0-9][0-9].gndrefl.zip')
     parser.add_argument('--resample', nargs='+',
@@ -501,7 +518,8 @@ if __name__ == "__main__":
     parser.add_argument('--coarsen_method', help='method to use for coarsening', default='mean',
                         choices=['mean', 'median'])
     parser.add_argument('--dbz_range', nargs=2, type=float, default=[15., 55.],
-                        help='range for dbz ref. Values below are set to 0 when converting DBZ to linear units; above to missing')
+                        help='range for dbz ref. '
+                             'Values below are set to 0 when converting DBZ to linear units; above to missing')
     parser.add_argument('--cv_max', type=float, help='Maximum coefficient of variability for coarsened data',
                         default=None)
     parser.add_argument('--write_full', action='store_true',
@@ -516,10 +534,12 @@ if __name__ == "__main__":
                         help="""CSV file with coordinates (Longitude & Latitude) to extract data for.
                         CSV file should be readable with usLib.read_gsdr_csv.
                         Data will be put in outdir/site_coord/filename""")
-    parser.add_argument('--to_rain',type=float, nargs=2, help='Convert Reflectivity to rain using R=c[0]Z^c[1]')
+    parser.add_argument('--subsample', type=pd.Timedelta,
+                        help='Timedelta to sub-sample to -- should be parsed by pd.Timedelta')
+    parser.add_argument('--to_rain', type=float, nargs=2, help='Convert Reflectivity to rain using R=c[0]Z^c[1]')
     ausLib.add_std_arguments(parser)
     args = parser.parse_args()
-    my_logger  = ausLib.process_std_arguments(args) # deal with the std arguments
+    my_logger = ausLib.process_std_arguments(args)  # deal with the std arguments
 
     time_unit = 'minutes since 1970-01-01'  # units for time in output files
 
@@ -528,7 +548,7 @@ if __name__ == "__main__":
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()],
-                       site=args.site,dbz_range=args.dbz_range,min_fract_avg=args.min_fract_avg)
+                       site=args.site, dbz_range=args.dbz_range, min_fract_avg=args.min_fract_avg)
     if args.to_rain is not None:
         extra_attrs.update(to_rain=args.to_rain)
     if args.coarsen is not None:
@@ -548,16 +568,17 @@ if __name__ == "__main__":
     outdir_full = None
     out_coord_dir = None
     if args.write_full:
-        outdir_full = outdir.parent/(outdir.name+'_full')
+        outdir_full = outdir.parent / (outdir.name + '_full')
         outdir_full.mkdir(parents=True, exist_ok=True)
         my_logger.info(f'Full data will be written to {outdir_full}')
     coord_df = None
-    if args.extract_coords_csv: # data going out
+    if args.extract_coords_csv:  # data going out
         coord_df = ausLib.read_gsdr_csv(args.extract_coords_csv)
-        out_coord_dir = outdir.parent/(outdir.name+'_coord')
+        out_coord_dir = outdir.parent / (outdir.name + '_coord')
         out_coord_dir.mkdir(parents=True, exist_ok=True)
         my_logger.info(f'Extracted coord data will be written to {out_coord_dir}')
-    extra_attrs.update(outdir=str(outdir), outdir_full=str(outdir_full),out_coord_dir=str(out_coord_dir),site=args.site)
+    extra_attrs.update(outdir=str(outdir), outdir_full=str(outdir_full), out_coord_dir=str(out_coord_dir),
+                       site=args.site)
     drop_vars_first = ['error', 'reflectivity']  # variables not to read for meta info
     drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']  # variables not to read for data
     if args.coarsen:
@@ -586,17 +607,17 @@ if __name__ == "__main__":
             if (not args.overwrite) and outpath.exists():
                 my_logger.warning(f'{outpath} and no_over_write set. Skipping processing')
                 continue
-            to_rain:type_rain_conv = None
+            to_rain: type_rain_conv = None
             if args.to_rain is not None:
-                to_rain= tuple(args.to_rain) # type checker moaning here.
+                to_rain = tuple(args.to_rain)  # type checker moaning here.
             ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
                                       coarsen=coarsen, region=region,
                                       coarsen_method=args.coarsen_method,
-                                      coarsen_cv_max=args.cv_max,to_rain=to_rain)
+                                      coarsen_cv_max=args.cv_max, to_rain=to_rain)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
-            basename='reflectivity'
+            basename = 'reflectivity'
             if args.to_rain is not None:
-                basename='rain_rate'
+                basename = 'rain_rate'
 
             summary_data = summary_process(ds[basename], mean_resample=args.resample,
                                            threshold=args.threshold,
@@ -613,23 +634,20 @@ if __name__ == "__main__":
                 ValueError(f'small sample resolution {min_res} mins')
             elif min_res > 15:
                 ValueError(f'large sample resolution {min_res} mins')
-            ausLib.write_out(summary_data, time_unit, outpath, extra_attrs)
+            ausLib.write_out(summary_data, outpath, time_unit=time_unit, extra_attrs=extra_attrs)
             my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
             summary_data.to_netcdf(outpath, unlimited_dims='time')
 
             if args.write_full:  # write out the full file.
                 full_file = outdir_full / file
-                ausLib.write_out(ds,time_unit,full_file,extra_attrs)
+                ausLib.write_out(ds, full_file, time_unit=time_unit, extra_attrs=extra_attrs)
                 my_logger.info(f'wrote full data to {full_file} {ausLib.memory_use()}')
 
-            if args.extract_coords_csv: # write out co-ords
+            if args.extract_coords_csv:  # write out co-ords
                 coord_file = out_coord_dir / file
                 radar_proj = ausLib.radar_projection(ds.proj.attrs)
-                coord_da = ausLib.data_array_station_match(ds[basename],radar_proj, coord_df)
-                att = attr_var.drop_vars(['longitude','latitude','y_bounds','x_bounds']).squeeze('time',drop=True)
-                masked_ds = att.merge(coord_da).drop_dims(['x','y']) # drop the time dimension and merge in the coord
-                ausLib.write_out(masked_ds,time_unit,coord_file,extra_attrs)
+                coord_da = ausLib.data_array_station_match(ds[basename], radar_proj, coord_df)
+                att = attr_var.drop_vars(['longitude', 'latitude', 'y_bounds', 'x_bounds']).squeeze('time', drop=True)
+                masked_ds = att.merge(coord_da).drop_dims(['x', 'y'])  # drop the time dimension and merge in the coord
+                ausLib.write_out(masked_ds, coord_file, time_unit=time_unit, extra_attrs=extra_attrs)
                 my_logger.info(f'wrote coord data to {coord_file} {ausLib.memory_use()}')
-
-
-
