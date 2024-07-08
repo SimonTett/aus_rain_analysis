@@ -33,7 +33,7 @@ if __name__ == "__main__":
     if args.outdir is None:
         output_dir = args.input_file.parent / 'fits'
     else:
-        output_dir = args.output_dir
+        output_dir = args.outdir
     my_logger.info(f"Output directory: {output_dir}")
     output_dir.mkdir(exist_ok=True, parents=True)  # create dir f
     output_fit_t = output_dir / "gev_fit_temp.nc"

@@ -1,167 +1,78 @@
 #!/usr/bin/env bash
-# submit scripts to post-process the radar data
-
-base_dir="/scratch/wq02/st7295/radar"
-# Loop through all the positional parameters
+# Post-process the radar data. First argument is the directory of the radar data to process
+# Some other optional args are --region x0 y0 x1 y1 reg_name -- region to extract to and name of region. Coords passed to extract_region.py
+summary_dir=$1 ; shift
+region_name=""
 while (( "$#" )); do
   case "$1" in
-    --input_dir)
-      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
-        extra_args+=" --input_dir ${2}"
-        shift 2
-      else
-        echo "Error: Argument for $1 is missing" >&2
-        exit 1
-      fi
-      ;;
-    --name)
-      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
-         extra_args+=" --name ${2}"
-        shift 2
-      else
-        echo "Error: Argument for $1 is missing" >&2
-        exit 1
-      fi
-      ;;
-    --outdir)
-      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
-        extra_args+=" --outdir ${2}"
-        shift 2
-      else
-        echo "Error: Argument for $1 is missing" >&2
-        exit 1
-      fi
-      ;;
-    --cbb_dir)
-      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
-        extra_args+=" --cbb_dir ${2}"
-        shift 2
-      else
-        echo "Error: Argument for $1 is missing" >&2
-        exit 1
-      fi
-      ;;
-    --years)
-      shift
-      extra_args+=' --years '
-      while (( "$#" )) && [[ $1 != -* ]]; do
-        extra_args+="$1 "
+    --region)
+      if [ -n "$6" ] && [ ${6:0:1} != "-" ]; then
         shift
-      done
-      ;;
-    --season)
-      shift
-      extra_args+=" --season $1"
-      seas_str=$1
-      shift
-      ;;
-    --dask)
-      extra_args+=" --dask"
-      shift
-      ;;
-    -v)
-      extra_args+=" -v"
-      shift
-      ;;
-    --overwrite)
-      extra_args+=" --overwrite"
-      echo "WARNING: **Overwrite is set**. Sleeping 5 seconds to allow for cancel"
-      sleep 5
-      shift
-      ;;
-    --verbose)
-      extra_args+=" --verbose"
-      shift
-      ;;
-    --dryrun)
-      dryrun='True'
-      echo "Dry run only" >&2
-      shift
-      ;;
-    --holdafter)
-      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
-        qsub_args+=" -W depend=afterany:${2}"
-        shift 2
+        region_args="--region $1 $2 $3 $4" ;   shift 4
+        region_name="_"$1 ; shift
       else
         echo "Error: Argument for $1 is missing" >&2
         exit 1
       fi
       ;;
-    --purpose)
-      shift
-      purpose=''
-      while (( "$#" )) && [[ $1 != -* ]]; do # eat all the arg. Purpose doesn't do anything. Needed for history.
-        purpose+="$1 "
-        shift
-      done
-      ;;
-    -*|--*=) # unsupported flags
-      echo "Error: Unsupported flag $1" >&2
-      exit 1
-      ;;
-    *) # preserve positional arguments
-      PARAMS="$PARAMS $1"
+    *)
+      extra_args+=" $1" # just add it onto the args for all processing
       shift
       ;;
   esac
 done
 
-# Set positional arguments in their proper place
-eval set -- "$PARAMS"
-site=$1 ; shift # get site name
-if [[ -z ${site} ]]
-then
-    echo "Error: Site name is required" >&2
-    exit 1
-fi
 
-if [[ -z ${name} ]]
-then
-    name=${site}
+name=$(basename "$summary_dir")
+process_dir=$(realpath ${summary_dir}/../../)"/processed/${name}"
+seas_str='DJF'
+sm_file="${process_dir}/seas_mean_${name}_${seas_str}.nc"
+nomask_file="${process_dir}/seas_mean_${name}_${seas_str}_nomask.nc"
+event_file="${process_dir}/events_seas_mean_${name}_${seas_str}${region_name}.nc"
+gev_dir="${process_dir}/fits${region_name}"
+pbs_log_dir="${process_dir}/pbs_logs"
+run_log_dir="${process_dir}/run_logs"
+time_str=$(date +"%Y%m%d_%H%M%S")
+# run the meaning
+job_name="smn_${name}"
+log_file=process_seas_avg_mask_${name}_${time_str}
+submit_opts=" --json_submit config_files/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
+submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
+submit_opts+=" --submit"
+cmd="process_seas_avg_mask.py  ${summary_dir} ${sm_file} --no_mask_file ${nomask_file} ${submit_opts} ${extra_args}"
+jobid=$($cmd)
+status=$?
+if [[ $status -ne 0 ]]; then
+  echo "Error submitting job $jobid for $cmd" 2>&1
+  exit 1
 fi
-
-memory=15GB
-project=wq02
-walltime='01:00:00'
-ncpus=1
-job_name="pp_${name}_${time_str}"
-log_dir="${base_dir}/log/"
-mkdir -p ${log_dir}
-log_file=${log_dir}/"pp_${name}_${time_str}"
-echo "post-processing log file is: ${log_file}" >> ${history_file}
-cmd="./run_post_process.sh ${site} ${extra_args}" # just pass args through
-gen_script () {
-  # function to generate PBS script for post-processing. This needs access to the internet to download
-  #  acorn data.  So runs on copyq. If the data is already downloaded then it can run on normalbw.
-cat <<EOF
-#PBS -P ${project}
-#PBS -q copyq
-#PBS -l walltime=${walltime}
-#PBS -l storage=gdata/rq0+gdata/hh5+gdata/ua8
-#PBS -l mem=${memory}
-#PBS -l ncpus=${ncpus}
-#PBS -l jobfs=20GB
-#PBS -l wd
-#PBS -m abe
-#PBS -M simon.tett@ed.ac.uk
-#PBS -N ${job_name}
-#PBS -o ${log_file}.out
-#PBS -e ${log_file}.err
-export TMPDIR=\$PBS_JOBFS
-cd /home/561/st7295/aus_rain_analysis || exit # make sure we are in the right directory
-. ./setup.sh # setup software and then run the processing
-echo Cmd is ${cmd}
-result=\$($cmd)
-echo \$result
-EOF
-return 0
-}
-
-if [[ -n "$dryrun" ]]
-then
-    echo "post-processing script is:"
-    gen_script >&2
-else
-  job_name=$(gen_script | qsub ${qsub_args} -) # generate and submit script
-  echo "Submitted post-processing job with name ${job_name} submitted with qsub args ${qsub_args}" >&2
+echo "Submitted job $jobid for $cmd" 2>&1
+# event processing
+job_name="ev_${name}"
+log_file=process_events_${name}_${time_str}
+submit_opts=" --json_submit config_files/process_events.json --log_base ${pbs_log_dir}/${log_file}"
+submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
+submit_opts+=" --submit --holdafter ${jobid}"
+cmd="process_events.py  ${sm_file} ${event_file} ${submit_opts} ${extra_args} ${region_args}"
+jobid_event=$($cmd)
+status=$?
+if [[ $status -ne 0 ]]; then
+  echo "Error submitting job $jobid_event for $cmd" 2>&1
+  exit 1
 fi
+echo "Submitted job $jobid_event for $cmd" 2>&1
+# GEV processing
+job_name="gev_${name}"
+log_file=process_gev_fits_${name}_${time_str}
+submit_opts=" --json_submit config_files/process_gev_fits.json --log_base ${pbs_log_dir}/${log_file}"
+submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
+submit_opts+=" --submit --holdafter ${jobid_event}"
+cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 --bootstrap=100 ${submit_opts} ${extra_args} "
+jobid_gev=$($cmd)
+status=$?
+if [[ $status -ne 0 ]]; then
+  echo "Error submitting job $jobid_gev for $cmd" 2>&1
+  exit 1
+fi
+echo "Submitted job $jobid_gev for $cmd" 2>&1
+
