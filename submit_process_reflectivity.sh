@@ -10,6 +10,7 @@ year_start=1997
 year_end=2022
 extra_args=''
 calibration='melbourne'
+name=''
 site=$1 ; shift
 while (( "$#" )); do
   case "$1" in
@@ -33,6 +34,15 @@ while (( "$#" )); do
         exit 1
       fi
       ;;
+    --name)
+      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+        name=${2}
+        shift 2
+      else
+        echo "Error: Argument for $1 is missing" >&2
+        exit 1
+      fi
+      ;;
     --years)
       if [ -n "$3" ] && [ ${3:0:1} != "-" ]; then
         shift
@@ -40,7 +50,7 @@ while (( "$#" )); do
         year_end=${2}
         shift 2
       else
-        echo "Error: Argument for $1 is missing" >&2
+        echo "Error: Argument for $1 is missing. Provide start and end year" >&2
         exit 1
       fi
 
@@ -56,9 +66,9 @@ done
 
 
 
-if [[ -z "$site" || -z "$calibration" ]]
+if [[ -z "$site" ]]
 then
-    echo "Usage: $0 site calibration [extra_args]"
+    echo "Usage: $0 site  [extra_args]"
     exit 1
 fi
 if [[ -z "$AUSRAIN" ]]
@@ -72,43 +82,51 @@ region="-125 125 125 -125" # region to extract
 coarse=4
 
 extra_args+=" --dask --min_fract_avg 0.75 --threshold 1.0 --extract_coords_csv meta_data/${site}_close.csv"
-extra_args+=" --json_submit_file ${AUSRAIN}/config_files/process_reflectivity.json --submit"
-if [[ $calibration == "melbourne" ]]
-then
+submit_args=" --json_submit_file ${AUSRAIN}/config_files/process_reflectivity.json --submit"
+if [[ $calibration == "melbourne" ]] ; then
     extra_args+=" --to_rain 0.0271 0.650"
-elif [[ $calibration == "Grim" ]]
-then
+elif [[ $calibration == "Grim" ]] ; then
     extra_args+=" --to_rain 0.0224 0.670"
-elif [[ $calibration == "brisbane" ]]
-then
+elif [[ $calibration == "brisbane" ]] ; then
     extra_args+=" --to_rain 0.0256 0.688"
 else
     echo "Unknown calibration $calibration"
     exit 1
 fi
-if [[ -n "$resample" ]]
-then
+calib_name="rain_${calibration}"
+if [[ -n "$resample" ]] ; then
     extra_args+=" --resample ${resample}"
 fi
-if [[ -n "$region" ]]
-then
+if [[ -n "$region" ]] ; then
     extra_args+=" --region ${region}"
 fi
-if [[ -n "$coarse" ]]
-then
+if [[ -n "$coarse" ]] ; then
     extra_args+=" --coarsen ${coarse} ${coarse}"
 fi
-out_name=${site}_rain_${calibration}_${dbz_name}
+if [[ -z ${name} ]] ; then
+    name=${site}
+    if [[ -n ${calib_name} ]] ;  then
+      name+=_${calib_name}
+    fi
+    if [[ -n ${dbz_name} ]] ;  then
+      name+=_${dbz_name}
+    fi
+    if [[ -n ${coarsen_name} ]] ;  then
+      name+=_${coarsen_name}
+    fi
+fi
+
 time_str=$(date +"%Y%m%d_%H%M%S")
 root_dir="/scratch/wq02/st7295/radar/summary"
-out_dir="${root_dir}/${out_name}"
-all_jobs=''
+out_dir="${root_dir}/${name}"
+
 for year in $(seq ${year_start} ${year_end}); do # parallel jobs -- one for each year
-  run_log_file="${out_dir}/run_logs/${out_name}_${year}_${time_str}.log"
-  pbs_log_file="${out_dir}/pbs_logs/${out_name}_${year}_${time_str}"
-  job_name=${site}_${year}_ref_${calibration}_${dbz_name}
-  cmd="process_reflectivity.py ${site} ${root_dir}/$out_name $extra_args --job_name ${job_name} --years ${year} $*"
-  cmd+=" --log_file ${run_log_file} --log_base ${pbs_log_file}"
+  run_log_file="${out_dir}/run_logs/${name}_${year}_${time_str}.log"
+  pbs_log_file="${out_dir}/pbs_logs/${name}_${year}_${time_str}"
+  job_name=${site}_${year}_ref_${name}
+  submit_args+=" --job_name ${job_name}  --log_base ${pbs_log_file}"
+  cmd="process_reflectivity.py ${site} ${root_dir}/$name $extra_args  --years ${year} --log_file ${run_log_file} $*"
+  cmd+=${submit_args}
   job_id=$($cmd)
   stat=$?
   if [[ $stat -ne 0 ]]
@@ -118,10 +136,10 @@ for year in $(seq ${year_start} ${year_end}); do # parallel jobs -- one for each
   else
       echo "Submitted job ${job_name} as ${job_id}" >&2
   fi
-  all_jobs+=":${job_id}"
+  all_jobs+=" ${job_id}"
 done
-all_jobs=${all_jobs:1} # remove the leading colon
+
 echo "Submitted all max jobs. " >&2
-echo ${all_jobs} # return the last jobid. Allows pp to be submitted with a hold on this job.
+echo ${all_jobs} # return list of all jobs submitted.
 
 

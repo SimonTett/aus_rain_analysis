@@ -11,7 +11,6 @@ import pandas as pd
 import multiprocessing
 
 
-raise NotImplementedError('Test sub-sample opt')
 
 ##
 def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
@@ -357,7 +356,7 @@ def read_zip(path: pathlib.Path,
         return None
     # sort variables so all dimensions are monotonically increasing.
     # deal with subsample
-    times = None
+    times = None # so type checker doesn;t complain about possibly unset variables.
     if subsample:  # want to sub-sample the data.
         times = pd.date_range(start=radar_dataset.valid_time.values[0] - subsample,
                               end=radar_dataset.valid_time.values[-1],
@@ -369,7 +368,7 @@ def read_zip(path: pathlib.Path,
             v = v.sortby(d)
         if subsample:
             v = v.reindex(valid_time=times, method='nearest', tolerance=subsample / 2)
-            my_logger.debug(f'sub-sampled variable {var}')
+            my_logger.debug(f'sub-sampled variable {var} to {subsample}')
         result[var] = v
         my_logger.debug(f'Sorted variable {var}')
     radar_dataset = xarray.Dataset(result)
@@ -447,7 +446,7 @@ def read_zip(path: pathlib.Path,
             da_name = str(radar_dataset[v].name).replace('reflectivity', 'rain_rate')
             radar_dataset[newname] = radar_dataset[v].rename(da_name)
             my_logger.debug(f'Renamed {v} to {newname} with name {da_name}')
-        radar_dataset = radar_dataset.drop_vars(vars)
+        radar_dataset = radar_dataset.drop_vars(variables)
 
     radar_dataset = radar_dataset.compute()
     return radar_dataset
@@ -479,6 +478,7 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                       drop_variables=drop_vars, concat_dim='valid_time', parallel=True,
                       combine='nested',
                       chunks=dict(valid_time=6), engine='netcdf4', to_rain=to_rain)
+
         ds.append(dd)
     my_logger.info(f'Read in {len(ds)} files {ausLib.memory_use()}')
     ds = xarray.concat(ds, dim='valid_time').rename(valid_time='time').sortby('time')
@@ -613,7 +613,8 @@ if __name__ == "__main__":
             ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
                                       coarsen=coarsen, region=region,
                                       coarsen_method=args.coarsen_method,
-                                      coarsen_cv_max=args.cv_max, to_rain=to_rain)
+                                      coarsen_cv_max=args.cv_max, to_rain=to_rain,
+                                      subsample=args.subsample)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
             basename = 'reflectivity'
             if args.to_rain is not None:

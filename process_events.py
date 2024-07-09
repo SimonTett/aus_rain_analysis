@@ -139,8 +139,7 @@ if __name__ == '__main__':
                         )
     parser.add_argument('--site', type=str, help='site name for radar data. If not provided taken from input file')
     parser.add_argument('--region', type=float, nargs=4, help='Region: x0, y0, x1, y1. Default is whole dataset')
-    ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Turn of dask as this is rather I/O bound.
-    print(sys.argv)
+    ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Turn of dask as this is rather I/O b
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args) # setup the logging and do std stuff
 

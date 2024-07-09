@@ -1001,8 +1001,7 @@ def gen_pbs_script(cmd_to_run: str,
 #PBS -M {email}
     """
     if len(holdafter) > 0:
-        cmd_str += f'#PBS -W depend=afterok:{" ".join(holdafter)}\n'
-        #qsub_cmd.append(f'-W depend=afterok:{holdafter} ')
+        cmd_str += f'#PBS -W depend=afterok:{":".join(holdafter)}\n'
     cmd_str += fr'''
 export TMPDIR=$PBS_JOBFS
 cd {wd} || exit # make sure we are in the right directory        
@@ -1040,7 +1039,7 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
         # generate the command and qsub_cmd
         sub_args = dict(project=args.project, queue=args.queue, storage=args.storage,
                         time=args.time, cpus=args.cpus, memory=args.memory, job_name=args.job_name,
-                        email=args.email, log_base=args.log_base,holdafter=args.holdafter)
+                        email=args.email, log_base=args.log_base)
         history_file = args.history_file
         if args.json_submit_file:
             with open(args.json_submit_file) as f:
@@ -1084,6 +1083,9 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
                     print(str(datetime.utcnow())+': '+cmd, file=f)
             import subprocess
             result = subprocess.run(qsub_cmd, input=cmd_str, text=True, capture_output=True)
+            if result.returncode != 0:
+                my_logger.warning(f'Error submitting job stdout: {result.stdout}')
+                my_logger.warning(f'Error submitting job stderr: {result.stderr}')
             result.check_returncode()
             my_logger.warning(f'Output from {qsub_cmd} is {result.stdout}')
             if len(result.stderr) > 0:

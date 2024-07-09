@@ -3,6 +3,7 @@
 # Some other optional args are --region x0 y0 x1 y1 reg_name -- region to extract to and name of region. Coords passed to extract_region.py
 summary_dir=$1 ; shift
 region_name=""
+hold_after=""
 while (( "$#" )); do
   case "$1" in
     --region)
@@ -14,6 +15,16 @@ while (( "$#" )); do
         echo "Error: Argument for $1 is missing" >&2
         exit 1
       fi
+      ;;
+    --holdafter) # need to specially handle holdafter -- as gets passed through to the first submission
+      hold_after=$1; shift
+      while (( "$#" )); do
+        if [[ $1 == -* ]]; then
+          break # Exit the loop if another option is encountered
+        fi
+        hold_after+=" $1" # Add the argument to hold_after
+        shift # Move to the next argument
+      done
       ;;
     *)
       extra_args+=" $1" # just add it onto the args for all processing
@@ -36,9 +47,10 @@ time_str=$(date +"%Y%m%d_%H%M%S")
 # run the meaning
 job_name="smn_${name}"
 log_file=process_seas_avg_mask_${name}_${time_str}
-submit_opts=" --json_submit config_files/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
+submit_opts=" --submit"
+submit_opts+=" --json_submit config_files/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
-submit_opts+=" --submit"
+submit_opts+=${hold_after}
 cmd="process_seas_avg_mask.py  ${summary_dir} ${sm_file} --no_mask_file ${nomask_file} ${submit_opts} ${extra_args}"
 jobid=$($cmd)
 status=$?
