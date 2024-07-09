@@ -21,8 +21,8 @@ uncert_sd_scale = scipy.stats.norm().isf(uncert)  # roughly 5-95% range
 quants = [uncert, 0.5, 1 - uncert]
 # mornington looks weird – need to examine it more carefully. Prob look at events. Some oddities in the fit.
 # so filtering out shapes < -10. I think it is problems with the fit.
-end_name_sens = '_rain_melbourne'  # calibration
-end_name = '_rain_brisbane'
+end_name_sens = '_rain_brisbane'  # calibration
+end_name = '_rain_melbourne'
 
 
 def trim(ds: xarray.Dataset) -> xarray.DataArray:
@@ -151,6 +151,7 @@ for site, ax in axs.items():
     gev_be_sens = best_est_sens[site]
     ds_sens = gev_r.xarray_gev_isf(gev_be_sens.Parameters, pv).drop_sel(resample_prd='8h') * resample_hours
     # drop 8h and convert to accum over period.
+
     #lines = ds.plot.line(x='pvalues', ax=ax, add_legend=False,colors=colors)
 
     gev_bs = gev_r.xarray_gev_isf(bootstrap[site].Parameters, pv) * resample_hours
@@ -186,3 +187,46 @@ fig.legend(lines, sd.resample_prd.values, ncol=2, loc=(0.4, 0.9), fontsize='smal
 fig.suptitle('Return values (mm/h)')
 fig.show()
 commonLib.saveFig(fig)
+
+## plot the parameters for the regions.
+fig, axs = ausLib.std_fig_axs(f'GEV_params', sharex=True, sharey=True)
+for site, ax in axs.items():
+    params = best_est[site].Parameters.drop_sel(resample_prd='8h')
+    params_sens = best_est_sens[site].Parameters.drop_sel(resample_prd='8h')
+    params_bs = bootstrap[site].Parameters.drop_sel(resample_prd='8h')
+    uncert_sd = params_bs.std(dim='bootstrap_sample')
+    for p, m, c in zip(['location', 'scale','shape'], ['o', 'h','*'], ['blue', 'red','orange']):
+        mn = params.sel(parameter=p)
+        mn_sens = params_sens.sel(parameter=p)
+        q_bs = params_bs.sel(parameter=p).quantile(quants,'bootstrap_sample')
+        if p == 'shape':
+            mn = -mn
+            mn_sens = -mn_sens
+            q_bs = -q_bs.reindex(quantile=list(reversed(q_bs['quantile'])) ) # get into Cole's convention.
+            a=ax.twinx()
+            a.set_ylabel('Shape',color=c)
+            a.set_ylim(-0.8,0.8)
+            a.axhline(0.0,linestyle='dotted',color=c)
+        else:
+            a=ax
+            a.set_ylabel('Loc/Scale (mm)')
+            mn = mn*resample_hours
+            mn_sens = mn_sens*resample_hours
+            sd = sd*resample_hours
+            a.set_ylim(0,20.)
+        err = np.abs(q_bs.isel(quantile=[0,-1])-q_bs.sel(quantile=0.5))
+        a.errorbar(mn.resample_prd, mn, yerr=err,
+                    linestyle='--', color=c, capsize=5, elinewidth=2,label=p )
+        a.scatter(mn_sens.resample_prd, mn_sens, s=30, color=c, marker='*')
+        a.set_xlabel('Accum Prd')
+        a.label_outer()
+
+
+    ax.set_title(site)
+
+
+fig.suptitle('Gev Params')
+fig.show()
+commonLib.saveFig(fig)
+
+
