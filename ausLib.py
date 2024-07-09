@@ -933,7 +933,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     submit.add_argument('--json_submit_file', type=pathlib.Path,
                         help='JSON file containing default options. These overwritten by command line args')
     submit.add_argument('--setup_script', help='Script to run before running the command', type=pathlib.Path)
-    submit.add_argument('--holdafter', help='Hold job until the held after job has ran.', default='')
+    submit.add_argument('--holdafter', help='Hold job until the held after job(s) have ran.', nargs='+')
     submit.add_argument('--dryrun', help='Dry run only. Nothing will be submitted and script will exit',
                         action='store_true')
     submit.add_argument('--history_file', help='Store command in history file', type=pathlib.Path)
@@ -941,7 +941,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
 
 
 def gen_pbs_script(cmd_to_run: str,
-                   holdafter: str = '',
+                   holdafter: typing.Optional[list[str]] = None,
                    queue: typing.Optional[str] = None,
                    project: typing.Optional[str] = None,
                    storage: typing.Optional[str] = None,
@@ -954,9 +954,12 @@ def gen_pbs_script(cmd_to_run: str,
                    setup_script: typing.Optional[pathlib.Path] = None,
                    ) -> tuple[list[str], str]:
     # generate the qsub command
+    if holdafter is None:
+        holdafter=[] # set it to empty list.
     # check all values are set.
     args = locals()
     none_vars = []
+
 
     for name, value in args.items():
         if value is None:
@@ -998,7 +1001,7 @@ def gen_pbs_script(cmd_to_run: str,
 #PBS -M {email}
     """
     if len(holdafter) > 0:
-        cmd_str += f'#PBS -W depend=afterok:{holdafter}\n'
+        cmd_str += f'#PBS -W depend=afterok:{" ".join(holdafter)}\n'
         #qsub_cmd.append(f'-W depend=afterok:{holdafter} ')
     cmd_str += fr'''
 export TMPDIR=$PBS_JOBFS
@@ -1037,7 +1040,7 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
         # generate the command and qsub_cmd
         sub_args = dict(project=args.project, queue=args.queue, storage=args.storage,
                         time=args.time, cpus=args.cpus, memory=args.memory, job_name=args.job_name,
-                        email=args.email, log_base=args.log_base)
+                        email=args.email, log_base=args.log_base,holdafter=args.holdafter)
         history_file = args.history_file
         if args.json_submit_file:
             with open(args.json_submit_file) as f:

@@ -5,3 +5,4 @@
 3) plot_hr_day.py -- plots the hourly and day of season distribution of maxima.
 4) plot_mathews_building_max_group.py -- plots seasonal max and grouped seasonal max for max rain at Mathews Blding.
 5) plot_Sydney_sens_study.py -- plots  sensitivity studies for Sydney.
+6) plot_long_radar_stns.py -- plots the locations of the long lasting radar stations

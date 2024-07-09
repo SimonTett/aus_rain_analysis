@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # submit scripts to process reflectivity data and then (once all ran) submit post-processing
 # example useage:
-# ./submit_process_reflectivity.sh Melbourne  calibration
+# ./submit_process_reflectivity.sh Melbourne  --calibration melbourne --years 1997 2022
 # to_rain values -- Melbourne calibration: 0.0271 0.650
 #                    Cape Grim calibration: 0.0224 0.670
 #                    Brisbane calibration: 0.0256 0.688
@@ -102,7 +102,7 @@ out_name=${site}_rain_${calibration}_${dbz_name}
 time_str=$(date +"%Y%m%d_%H%M%S")
 root_dir="/scratch/wq02/st7295/radar/summary"
 out_dir="${root_dir}/${out_name}"
-
+all_jobs=''
 for year in $(seq ${year_start} ${year_end}); do # parallel jobs -- one for each year
   run_log_file="${out_dir}/run_logs/${out_name}_${year}_${time_str}.log"
   pbs_log_file="${out_dir}/pbs_logs/${out_name}_${year}_${time_str}"
@@ -118,9 +118,10 @@ for year in $(seq ${year_start} ${year_end}); do # parallel jobs -- one for each
   else
       echo "Submitted job ${job_name} as ${job_id}" >&2
   fi
+  all_jobs+=":${job_id}"
 done
-
+all_jobs=${all_jobs:1} # remove the leading colon
 echo "Submitted all max jobs. " >&2
-echo ${jobid} # return the last jobid. Allows pp to be submitted with a hold on this job.
+echo ${all_jobs} # return the last jobid. Allows pp to be submitted with a hold on this job.
 
 

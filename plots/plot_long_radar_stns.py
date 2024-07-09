@@ -20,7 +20,7 @@ changes = long_radar_data.id.value_counts().rename("Changes")
 lr = lr.join(changes).rename(columns=dict(radar_type='Type',beamwidth='Beamwidth'))
 # plto all radars as tiny dots!
 all_radar = all_radar_data.groupby('id').tail(1)
-sns.scatterplot(data=all_radar, x='site_lon', y='site_lat', ax=ax, sizes=5, legend=False, color='grey')
+sns.scatterplot(data=all_radar, x='site_lon', y='site_lat', ax=ax, sizes=8, marker='*',legend=False, color='grey')
 sns.scatterplot(data=lr, x='site_lon', y='site_lat', hue='Type', style='Beamwidth',
                 ax=ax, sizes=(40, 90), size='Changes', markers=['o', 's', 'h'], legend='full')
 ax.legend(ncol=3,fontsize='small',handletextpad=0.1,handlelength=0.5)
@@ -30,11 +30,22 @@ ax.legend(ncol=3,fontsize='small',handletextpad=0.1,handlelength=0.5)
 dx=125e3
 for name, row in lr.iterrows():
     n = ausLib.site_names[row.id]
-    ax.text(row.site_lon, row.site_lat, n, va='bottom')
+    ax.text(row.site_lon, row.site_lat, n, va='bottom',size='small')
     albers_projection = ccrs.AlbersEqualArea(central_longitude=row.site_lon, central_latitude=row.site_lat)
     rect_patch=matplotlib.patches.Rectangle((-dx,-dx),2*dx,2*dx,linewidth=1,edgecolor='r',facecolor='none',transform=albers_projection)
     ax.add_patch(rect_patch)
 
-ax.set_title("Australian radars.")
+# add on lines for regions
+text_kwargs=dict(va='center',ha='left',color='royalblue',backgroundcolor='lightgrey',fontweight='bold',zorder=-5)
+ax.hlines(-21,137,155,color='k',linestyle='--')
+ax.hlines(-30,137,155,color='k',linestyle='--')
+ax.vlines(147,-45,-21,color='k',linestyle='--')
+ax.vlines(137,-37,-30,color='k',linestyle='--')
+ax.vlines(137,-21,-10.5,color='k',linestyle='--')
+ax.text(139,-19.5,'Tropics',**text_kwargs)
+ax.text(155,-25.25,'QLD',**text_kwargs)
+ax.text(155,-34.25,'NSW',**text_kwargs)
+ax.text(141,-32,'South',**text_kwargs)
+ax.set_title("Australian radars")
 fig.show()
 commonLib.saveFig(fig)
