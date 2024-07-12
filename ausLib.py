@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import itertools
 import json
 import os
 import pathlib
@@ -694,7 +695,7 @@ def read_acorn(
         url = f'http://www.bom.gov.au/climate/change/hqsites/data/temp/t{what}.{site:06d}.daily.csv'
         my_logger.info(f"Retrieving data from {url}")
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
+                'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:77.0) Gecko/20190101 Firefox/77.0'}
         # fake we are interactive...
         # retrieve data writing it to local cache.
         with requests.get(url, headers=headers, stream=True) as r:
@@ -745,14 +746,14 @@ def list_vars(
 
 def gen_radar_projection(longitude: float, latitude: float, parallel_offset: float = 1.5) -> dict:
     proc_attrs = {
-        "grid_mapping_name": "albers_conical_equal_area",
-        "standard_parallel": np.round([latitude - parallel_offset, latitude + parallel_offset], 1),
-        "longitude_of_central_meridian": longitude,
-        "latitude_of_projection_origin": latitude,
-        "false_easting": 0.0,
-        "false_northing": 0.0,
-        "semi_major_axis": 6378137.0,
-        "semi_minor_axis": 6356752.31414
+            "grid_mapping_name"            : "albers_conical_equal_area",
+            "standard_parallel"            : np.round([latitude - parallel_offset, latitude + parallel_offset], 1),
+            "longitude_of_central_meridian": longitude,
+            "latitude_of_projection_origin": latitude,
+            "false_easting"                : 0.0,
+            "false_northing"               : 0.0,
+            "semi_major_axis"              : 6378137.0,
+            "semi_minor_axis"              : 6356752.31414
     }
     return proc_attrs
 
@@ -932,28 +933,31 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     submit.add_argument('--email', help='Email address to send job info to', default='')
     submit.add_argument('--log_base', type=pathlib.Path, help='Base name for q system logs')
     submit.add_argument('--json_submit_file', type=pathlib.Path,
-                        help='JSON file containing default options. These overwritten by command line args')
+                        help='JSON file containing default options. These overwritten by command line args'
+                        )
     submit.add_argument('--setup_script', help='Script to run before running the command', type=pathlib.Path)
     submit.add_argument('--holdafter', help='Hold job until the held after job(s) have ran.', nargs='+')
     submit.add_argument('--dryrun', help='Dry run only. Nothing will be submitted and script will exit',
-                        action='store_true')
+                        action='store_true'
+                        )
     submit.add_argument('--history_file', help='Store command in history file', type=pathlib.Path)
     submit.add_argument('--purpose', nargs='+', help='Purpose of the job. Does nothing but put in log file')
 
 
-def gen_pbs_script(cmd_to_run: str,
-                   holdafter: typing.Optional[list[str]] = None,
-                   queue: typing.Optional[str] = None,
-                   project: typing.Optional[str] = None,
-                   storage: typing.Optional[str] = None,
-                   time: typing.Optional[str] = None,
-                   cpus: int = 1,
-                   memory: typing.Optional[str] = None,
-                   job_name: typing.Optional[str] = None,
-                   email: str = '',
-                   log_base: typing.Optional[pathlib.Path] = None,
-                   setup_script: typing.Optional[pathlib.Path] = None,
-                   ) -> tuple[list[str], str]:
+def gen_pbs_script(
+        cmd_to_run: str,
+        holdafter: typing.Optional[list[str]] = None,
+        queue: typing.Optional[str] = None,
+        project: typing.Optional[str] = None,
+        storage: typing.Optional[str] = None,
+        time: typing.Optional[str] = None,
+        cpus: int = 1,
+        memory: typing.Optional[str] = None,
+        job_name: typing.Optional[str] = None,
+        email: str = '',
+        log_base: typing.Optional[pathlib.Path] = None,
+        setup_script: typing.Optional[pathlib.Path] = None,
+        ) -> tuple[list[str], str]:
     # generate the qsub command
     if holdafter is None:
         holdafter = []  # set it to empty list.
@@ -1039,7 +1043,8 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
         # generate the command and qsub_cmd
         sub_args = dict(project=args.project, queue=args.queue, storage=args.storage,
                         time=args.time, cpus=args.cpus, memory=args.memory, job_name=args.job_name,
-                        email=args.email, log_base=args.log_base)
+                        email=args.email, log_base=args.log_base
+                        )
         history_file = args.history_file
         if args.json_submit_file:
             with open(args.json_submit_file) as f:
@@ -1067,7 +1072,9 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
 
             sub_args.update({k: v for k, v in json_args.items() if (k in sub_args.keys() and
                                                                     (sub_args.get(k) is not None) or (sub_args.get(
-                        k) != ''))})  # update not None/empty
+                        k
+                    ) != ''))}
+                            )  # update not None/empty
 
             if sub_args['cpus'] > 1 and not args.dask:
                 my_logger.warning('Setting cpus to 1 as not using dask. Waiting for 5 seconds.')
@@ -1243,8 +1250,8 @@ def comp_radar_fit(
         rename(dict(quantv='sample')).assign_coords(**coord)
     if use_dask:
         my_logger.debug(f'Chunking data for best est  {memory_use()}')
-        samp_chunk=max(n_samples//10,1)
-        ds = ds.chunk(sample=samp_chunk,resample_prd=1,EventTime=-1)  # parallelize over sample
+        samp_chunk = max(n_samples // 10, 1)
+        ds = ds.chunk(sample=samp_chunk, resample_prd=1, EventTime=-1)  # parallelize over sample
         print(ds.chunksizes)
         #ds = ds.compute()
         my_logger.debug(f'Rechunked data for best est  {memory_use()}')
@@ -1257,7 +1264,8 @@ def comp_radar_fit(
     my_logger.debug('Doing GEV fit')
     fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=True,
                            recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs,
-                           use_dask=use_dask)
+                           use_dask=use_dask
+                           )
     my_logger.debug('Done GEV fit')
 
     if bootstrap_samples > 0:
@@ -1268,15 +1276,17 @@ def comp_radar_fit(
 
         ds_bs = ds.groupby('resample_prd').map(sample_events2,
                                                rng=rng, nsamples=bootstrap_samples,
-                                               dim='EventTime').drop_vars('EventTime')
+                                               dim='EventTime'
+                                               ).drop_vars('EventTime')
         if use_dask:
             # chunking. Assuming running on small number of cores.  Say 10.
             # so we want min number of chucks to give abotu 10.
-            bs_samp=max(bootstrap_samples//10,1)
-            samp_chunk=max(n_samples//10,1)
+            bs_samp = max(bootstrap_samples // 10, 1)
+            samp_chunk = max(n_samples // 10, 1)
             ds_bs = ds_bs.unify_chunks().chunk(
                 sample=samp_chunk, bootstrap_sample=-1,
-                resample_prd=1,index=-1)  # parallelize and needs tuning
+                resample_prd=1, index=-1
+            )  # parallelize and needs tuning
             my_logger.debug(f'Rechunked data for bs calcs {memory_use()}')
 
         cov_rand = None
@@ -1343,3 +1353,25 @@ def std_fig_axs(fig_num, reduce_spline: bool = True, regions: bool = False, **kw
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
     return fig, axes
+
+
+def comp_ratios(gev_parameters: xarray.Dataset, covariance: str | list[str] = 'Tanom') -> xarray.DataArray:
+    """
+    Compute the ratios of the GEV parameters.
+    Args:
+        gev_parameters: dataset of GEV parameters
+        covariance: covariance (s) to use.
+    Returns: xarray data array of the ratios
+    """
+    if isinstance(covariance, str):
+        cov = [covariance]
+    else:
+        cov = covariance
+    da=[]
+    for p,c in itertools.product(['location','scale'],cov):
+        dp = f'D{p}_{c}'
+        ratio = (gev_parameters.sel(parameter=dp)/gev_parameters.sel(parameter=p)).assign_coords(parameter=dp)
+        da.append(ratio)
+    da=xarray.concat(da,dim='parameter')
+    return da
+

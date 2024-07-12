@@ -138,5 +138,15 @@ class test_ausLib(unittest.TestCase):
         for indx,pt in zip(indices,[xind,yind]):
             nptest.assert_array_equal(pt,indx)
 
+    def test_comp_ratios(self):
+        # test comp_ratios works
+        # test data
+        coords={'x':[0,1],'parameter':['location','Dlocation_Tanom','scale','Dscale_Tanom','shape']}
+        params= xarray.DataArray(np.array([[1,2,3,4,5],[4,5,6,7,8]]),dims=coords.keys(),coords=coords)
+        coords2={'x':[0,1],'parameter':['Dlocation_Tanom','Dscale_Tanom']}
+        expected_results=xarray.DataArray(np.array([[2.0,4/3.],[5/4,7/6]]),dims=coords2.keys(),coords=coords2)
+        results = ausLib.comp_ratios(params)
+        self.assertTrue(np.all(results == expected_results))
+
 if __name__ == '__main__':
     unittest.main()

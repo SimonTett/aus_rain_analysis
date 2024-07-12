@@ -1,0 +1,50 @@
+# modules needed for rain analysis.
+# install on UNIX UNSW desktop with:
+#    mamba env create -p venv -f requirements_unsw.yml
+#   # OR update:
+# 2) mamba env update -p venv -f requirements_unsw.yml
+name: mamba_rain_env
+channels:
+    - conda-forge
+    - defaults
+dependencies:
+    - xarray~=2024.1.1
+    - flox~=0.8
+    - scipy~=1.11
+    - pandas~=2.2.0
+    - ipython
+    - cartopy~=0.22
+    - rioxarray~=0.15
+    - statsmodels~=0.13
+    - scitools-iris~=3.3
+    - cftime~=1.6
+    - dask[distributed]~=2023.12
+    - bokeh!=3.0.*,>=2.4.2
+    - fiona~=1.8
+    - shapely~=1.8
+    - requests~=2.28
+    - h5netcdf
+    - seaborn~=0.13
+    - rioxarray~=0.15
+    - openpyxl~=3.0
+    - nc-time-axis~=1.4
+    - timezonefinder~=6.4.1
+    - numba
+    - matplotlib~=3.8.2
+    - ffmpeg
+    - numpy~=1.26.2
+    - pytz~=2024.1
+    - arm_pyart
+    - xradar~=0.5.0
+    - wradlib~=2.0.3
+    - gdal
+    - pyarrow
+    - earthaccess
+    - r-base>=4.0.5
+    - rpy2==3.5.11
+    - r-extRemes
+    - r-viridis
+    - r-fields
+    - r-raster
+    - r-codetools
+    - r-terra=1.7-29 # need to downgrade to work on jasmin
