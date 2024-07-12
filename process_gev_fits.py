@@ -13,8 +13,160 @@ import ausLib
 import argparse
 import dask
 import pandas as pd
-from ausLib import comp_radar_fit
 
+from numpy import random
+
+
+def sample_events2(
+        data_set: xarray.Dataset,
+        rng: np.random.BitGenerator = None,
+        dim: str = 'EventTime',
+
+) -> xarray.Dataset:
+    """
+    Sample events with replacement from a data array
+    Args:
+        data_set: xarray data set
+        nsamples: number of bootstrap samples to take
+        rng: random number generator
+        dim: dimension over which to apply dropna and sampling.
+        dim2: dim over which to randomly sample.
+    Returns: xarray data array
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+        my_logger.debug('RNG initialised')
+    my_logger.log(1, 'Starting sampling')
+    # hard wired but hopefully fast.
+    sel_dim = {d: 0 for d in data_set.dims if d != dim}
+    indx = data_set.max_value.isel(**sel_dim).notnull().compute().squeeze(drop=True)  # Mask is constant.
+    indx = indx.drop_vars(sel_dim.keys(), errors='ignore')
+    ds = data_set.where(indx, drop=True)  # drop the NaNs
+    # npts = indx.sum()
+    # ds = data_set.dropna(dim)
+    my_logger.log(1, 'Dropped NaNs')
+    npts = ds.EventTime.size
+    locs = rng.integers(0, npts, size=(npts))  # single bootstrap samples.
+    # wrap it up in  data array to allow fancy indexing
+    coords = dict(index=np.arange(0, npts))
+    locs = xarray.DataArray(locs, coords=coords)
+    my_logger.log(1, 'Computed indices')
+    ds = ds.isel({dim: locs})  # and sample at dim
+    my_logger.log(1, 'Sampled data')
+    return ds
+
+
+def comp_radar_fit(
+        dataset: xarray.Dataset,
+        cov: typing.Optional[list[str] | str] = None,
+        n_samples: int = 100,
+        bootstrap_samples: int = 0,
+        rng_seed: int = 123456,
+        file: typing.Optional[pathlib.Path] = None,
+        bootstrap_file: typing.Optional[pathlib.Path] = None,
+        recreate_fit: bool = False,
+        name: typing.Optional[str] = None,
+        extra_attrs: typing.Optional[dict] = None,
+        use_dask: bool = False
+) -> tuple[xarray.Dataset, typing.Optional[xarray.Dataset]]:
+    """
+    Compute the GEV fits for radar data. This is a wrapper around the R code to do the fits.
+    It can do various dask things. However, when using dask there is a risk of deadlock.
+    If so. rerun wth more memory.
+    Args:
+
+        dataset: dataset
+        cov: List of covariate names. Extracted from dataset.
+        n_samples: number of samples for random selection
+        bootstrap_samples:  Number of samples for bootstrap calculation. If 0 no bootstrap is done.
+        rng_seed: seed for random number generator
+        file: file for output
+        bootstrap_file: file for bootstrap output
+        recreate_fit: if True recreate the fit
+        name:  name of dataset. _bs will be appended for bootstrap fit
+        extra_attrs: any extra attributes to be added
+        use_dask: If True use dask for the computation.
+
+    Returns:fit
+
+    """
+    # doing this at run time as R is not always available.
+
+    from R_python import gev_r
+    if isinstance(cov, str):
+        cov = [cov]  # convert it to a list.
+    if (file is not None) and file.exists() and (
+            not recreate_fit):  # got a file specified, it exists and we are not recreating fit
+        fit = xarray.load_dataset(file)  # just load the dataset
+        if (bootstrap_file is not None) and bootstrap_file.exists() and (
+                not recreate_fit):  # got a file specified, it exists and we are not recreating fit
+            bs_fit = xarray.load_dataset(bootstrap_file).mean('sample')  # just load the dataset
+            return fit, bs_fit  # can now return the fit and bootstrap fit
+
+    # normal stuff
+    rng = random.default_rng(rng_seed)
+    rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
+    coord = dict(sample=np.arange(0, n_samples))
+    ds = dataset.isel(quantv=rand_index). \
+        rename(dict(quantv='sample')).assign_coords(**coord)
+    if use_dask:
+        my_logger.debug(f'Chunking data for best est  {ausLib.memory_use()}')
+        samp_chunk = max(n_samples // 20, 1)
+        samp_chunk = 4
+        ds = ds.chunk(sample=samp_chunk, resample_prd=-1, EventTime=-1)  # parallelize over sample
+        my_logger.debug(f'Chunk size is: {ds.chunksizes}')
+        my_logger.debug(f'Rechunked data for best est  {ausLib.memory_use()}')
+    cov_rand = None
+    if cov is not None:
+        cov_rand = [ds[c] for c in cov]
+
+    wt = ds.count_cells
+    mx = ds.max_value
+    my_logger.debug('Doing GEV fit')
+    fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=True,
+                           recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs,
+                           use_dask=use_dask)
+    my_logger.debug('Done GEV fit')
+
+    if bootstrap_samples > 0:
+        if bootstrap_file and bootstrap_file.exists() and (not recreate_fit):
+            bs_fit = xarray.load_dataset(bootstrap_file)  # load the file
+            my_logger.debug(f"Loaded Bootstrap fits {ausLib.memory_use()}")
+        else:
+            my_logger.info(f"Calculating bootstrap for {name} {ausLib.memory_use()}")
+            # loop over bootstrap samples and then concat together at the end.
+            # generating all the samples produces a very large mem object and requires data
+            # to be moved around. So don't bother...
+            bs_sample_fits = []  # where the individual samples go.
+            for samp in range(bootstrap_samples):
+                my_logger.debug('Bootstrapping')
+                ds_bs = ds.groupby('resample_prd').map(sample_events2, rng=rng,
+                                                       dim='EventTime'). \
+                    drop_vars('EventTime').assign_coords(bootstrap_sample=samp)
+                my_logger.debug('Done bootstrapping. Extracting covars')
+                cov_rand = None
+                if cov is not None:
+                    cov_rand = [ds_bs[c] for c in cov]
+                my_logger.debug(f'Doing BS GEV fit for sample {samp}')
+                bs_fit = gev_r.xarray_gev(ds_bs.max_value, cov=cov_rand, dim='index', weights=ds_bs.count_cells,
+                                          verbose=True, use_dask=use_dask)
+                bs_sample_fits.append(bs_fit)
+                my_logger.info(f'Done BS fit for sample {samp} {ausLib.memory_use()}')
+            # all done doing the individual fits. Now need to concat them together.
+            bs_fit = xarray.concat(bs_sample_fits, dim='bootstrap_sample')
+
+            if extra_attrs:
+                bs_fit.attrs.update(extra_attrs)
+            if bootstrap_file:
+                bs_fit.to_netcdf(bootstrap_file)
+            bs_fit = bs_fit.mean('sample')
+
+
+
+    else:
+        bs_fit = None
+
+    return fit, bs_fit
 # main code!
 if __name__ == "__main__":
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
@@ -34,6 +186,8 @@ if __name__ == "__main__":
         output_dir = args.input_file.parent / 'fits'
     else:
         output_dir = args.outdir
+    use_dask = args.dask
+    my_logger.debug(f'use_dask is {use_dask}')
     my_logger.info(f"Output directory: {output_dir}")
     output_dir.mkdir(exist_ok=True, parents=True)  # create dir f
     output_fit_t = output_dir / "gev_fit_temp.nc"
@@ -49,7 +203,12 @@ if __name__ == "__main__":
     if all(exist) and (not args.overwrite):
         my_logger.warning(f"All output files {files} exist and overwrite not set. Exiting")
         sys.exit(0)
-    radar_dataset = xarray.load_dataset(args.input_file)  # load the processed radar
+    vars_to_drop = ['xpos', 'ypos', 't', 'fraction', 'sample_resolution', 'height', 'Observed_temperature', 'time']
+    radar_dataset = xarray.open_dataset(args.input_file,chunks=dict(EventTime=-1,resample_prd=1,quantv=-1),cache=True,
+                                        drop_variables=vars_to_drop)  # load the processed radar
+    if not use_dask:
+        my_logger.debug('Loading data')
+        radar_dataset=radar_dataset.load()
     threshold = 0.5  # some max are zero -- presumably no rain then.
     msk = (radar_dataset.max_value > threshold)
     radar_dataset = radar_dataset.where(msk)
@@ -68,7 +227,7 @@ if __name__ == "__main__":
     fit, fit_bs = comp_radar_fit(radar_dataset,
                                  n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
                                  name='fit_nocov', file=output_fit, bootstrap_file=output_fit_bs,
-                                 extra_attrs=extra_attrs, recreate_fit=args.overwrite,
+                               extra_attrs=extra_attrs, recreate_fit=args.overwrite,use_dask=use_dask
                                  )
     my_logger.info(f"Computed no cov fits {ausLib.memory_use()}") # memory use
 
@@ -76,7 +235,7 @@ if __name__ == "__main__":
                                      n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
                                      extra_attrs=extra_attrs, name='fit_temp', file=output_fit_t,
                                      bootstrap_file=output_fit_t_bs,
-                                     recreate_fit=args.overwrite,
+                                     recreate_fit=args.overwrite,use_dask=use_dask
                                      )
     my_logger.info(f"Computed t fits {ausLib.memory_use()}")
 

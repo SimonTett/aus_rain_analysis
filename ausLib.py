@@ -29,12 +29,11 @@ import typing
 import ast  # thanks chaptGPT co-pilot
 import numpy.random as random
 
-
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
                     )
-site_names = dict(zip(site_numbers.values(), site_numbers.keys()))# reverse lookup
+site_names = dict(zip(site_numbers.values(), site_numbers.keys()))  # reverse lookup
 region_names = dict(Tropics=['Cairns', 'Mornington'],
                     QLD=['Gladstone', 'Brisbane', 'Grafton'],
                     NSW=['Newcastle', 'Sydney', 'Canberra'],
@@ -387,6 +386,7 @@ def init_log(
         log: logging.Logger,
         level: str,
         log_file: typing.Optional[typing.Union[pathlib.Path, str]] = None,
+        datefmt: typing.Optional[str] = '%Y-%m-%d %H:%M:%S',
         mode: str = 'a'
 ):
     """
@@ -395,12 +395,13 @@ def init_log(
     :param level: level to be set.
     :param log_file:  if provided pathlib.Path to log to file
     :param mode: mode to open log file with (a  -- append or w -- write)
+    :param datefmt: date format for log.
     :return: nothing -- existing log is modified.
     """
     log.handlers.clear()
     log.setLevel(level)
     formatter = logging.Formatter('%(asctime)s %(levelname)s:  %(message)s',
-                                  datefmt='%Y-%m-%d %H:%M:%S'
+                                  datefmt=datefmt
                                   )
     ch = logging.StreamHandler(sys.stderr)
     ch.setFormatter(formatter)
@@ -937,7 +938,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     submit.add_argument('--dryrun', help='Dry run only. Nothing will be submitted and script will exit',
                         action='store_true')
     submit.add_argument('--history_file', help='Store command in history file', type=pathlib.Path)
-    submit.add_argument('--purpose', nargs='+',help='Purpose of the job. Does nothing but put in log file')
+    submit.add_argument('--purpose', nargs='+', help='Purpose of the job. Does nothing but put in log file')
 
 
 def gen_pbs_script(cmd_to_run: str,
@@ -955,11 +956,10 @@ def gen_pbs_script(cmd_to_run: str,
                    ) -> tuple[list[str], str]:
     # generate the qsub command
     if holdafter is None:
-        holdafter=[] # set it to empty list.
+        holdafter = []  # set it to empty list.
     # check all values are set.
     args = locals()
     none_vars = []
-
 
     for name, value in args.items():
         if value is None:
@@ -1051,7 +1051,7 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
                     del json_args[k]
                     my_logger.debug(f'removed {k} from json file')
             # convert things that should be paths from strings to paths
-            keys = ['setup_script', 'log_base','history_file']  # things that should be converted to paths
+            keys = ['setup_script', 'log_base', 'history_file']  # things that should be converted to paths
             for k in keys:
                 try:
                     json_args[k] = pathlib.Path(json_args[k])
@@ -1059,14 +1059,15 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
                     pass
             # deal with history
             try:
-                history_file=json_args.pop('history_file')
+                history_file = json_args.pop('history_file')
             except KeyError:
-                pass # no history file
+                pass  # no history file
 
             my_logger.debug(f'Updating {json_args} with sub_args')
 
-            sub_args.update({k: v for k, v in json_args.items() if ( k in sub_args.keys() and
-                    (sub_args.get(k) is not None) or (sub_args.get(k) != ''))})  # update not None/empty
+            sub_args.update({k: v for k, v in json_args.items() if (k in sub_args.keys() and
+                                                                    (sub_args.get(k) is not None) or (sub_args.get(
+                        k) != ''))})  # update not None/empty
 
             if sub_args['cpus'] > 1 and not args.dask:
                 my_logger.warning('Setting cpus to 1 as not using dask. Waiting for 5 seconds.')
@@ -1078,9 +1079,9 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
             my_logger.info('Running qsub: ' + ' '.join(qsub_cmd))
             # if we have a history file append to it.
             if history_file is not None:
-                history_file.parent.mkdir(exist_ok=True, parents=True) # make directory if needed
+                history_file.parent.mkdir(exist_ok=True, parents=True)  # make directory if needed
                 with open(history_file, 'a') as f:
-                    print(str(datetime.utcnow())+': '+cmd, file=f)
+                    print(str(datetime.utcnow()) + ': ' + cmd, file=f)
             import subprocess
             result = subprocess.run(qsub_cmd, input=cmd_str, text=True, capture_output=True)
             if result.returncode != 0:
@@ -1199,7 +1200,8 @@ def comp_radar_fit(
         bootstrap_file: typing.Optional[pathlib.Path] = None,
         recreate_fit: bool = False,
         name: typing.Optional[str] = None,
-        extra_attrs: typing.Optional[dict] = None
+        extra_attrs: typing.Optional[dict] = None,
+        use_dask: bool = False
 ) -> tuple[xarray.Dataset, typing.Optional[xarray.Dataset]]:
     """
     Compute the GEV fits for radar data. This is a wrapper around the R code to do the fits.
@@ -1215,6 +1217,7 @@ def comp_radar_fit(
         recreate_fit: if True recreate the fit
         name:  name of dataset. _bs will be appended for bootstrap fit
         extra_attrs: any extra attributes to be added
+        use_dask: If True use dask for the computation.
 
     Returns:fit
 
@@ -1228,51 +1231,67 @@ def comp_radar_fit(
             not recreate_fit):  # got a file specified, it exists and we are not recreating fit
         fit = xarray.load_dataset(file)  # just load the dataset
         if (bootstrap_file is not None) and bootstrap_file.exists() and (
-            not recreate_fit):  # got a file specified, it exists and we are not recreating fit
+                not recreate_fit):  # got a file specified, it exists and we are not recreating fit
             bs_fit = xarray.load_dataset(bootstrap_file).mean('sample')  # just load the dataset
-            return fit,bs_fit # can now return the fit and bootstrap fit
+            return fit, bs_fit  # can now return the fit and bootstrap fit
 
     # normal stuff
     rng = random.default_rng(rng_seed)
     rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
     coord = dict(sample=np.arange(0, n_samples))
-    ds = dataset.drop_vars('Observed_temperature',errors='ignore').isel(quantv=rand_index). \
+    ds = dataset.drop_vars('Observed_temperature', errors='ignore').isel(quantv=rand_index). \
         rename(dict(quantv='sample')).assign_coords(**coord)
+    if use_dask:
+        my_logger.debug(f'Chunking data for best est  {memory_use()}')
+        samp_chunk=max(n_samples//10,1)
+        ds = ds.chunk(sample=samp_chunk,resample_prd=1,EventTime=-1)  # parallelize over sample
+        print(ds.chunksizes)
+        #ds = ds.compute()
+        my_logger.debug(f'Rechunked data for best est  {memory_use()}')
     cov_rand = None
     if cov is not None:
         cov_rand = [ds[c] for c in cov]
 
     wt = ds.count_cells
     mx = ds.max_value
-
+    my_logger.debug('Doing GEV fit')
     fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=True,
-                           recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs
-                           )
-    try:
-        fit['Observed_temperature']=dataset['Observed_temperature']
-    except KeyError:
-        pass
+                           recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs,
+                           use_dask=use_dask)
+    my_logger.debug('Done GEV fit')
+
     if bootstrap_samples > 0:
         my_logger.info(f"Calculating bootstrap for {name} {memory_use()}")
+        # loop over bootstrap samples and then concat together at the end.
+        # generating all the samples produces a very large mem object and requires data
+        # to be moved around. So don't bother...
 
         ds_bs = ds.groupby('resample_prd').map(sample_events2,
                                                rng=rng, nsamples=bootstrap_samples,
-                                               dim='EventTime')
-
-        my_logger.debug(f"Generated Bootstrap samples {memory_use()}")
+                                               dim='EventTime').drop_vars('EventTime')
+        if use_dask:
+            # chunking. Assuming running on small number of cores.  Say 10.
+            # so we want min number of chucks to give abotu 10.
+            bs_samp=max(bootstrap_samples//10,1)
+            samp_chunk=max(n_samples//10,1)
+            ds_bs = ds_bs.unify_chunks().chunk(
+                sample=samp_chunk, bootstrap_sample=-1,
+                resample_prd=1,index=-1)  # parallelize and needs tuning
+            my_logger.debug(f'Rechunked data for bs calcs {memory_use()}')
 
         cov_rand = None
         if cov is not None:
             cov_rand = [ds_bs[c] for c in cov]
-
+        my_logger.debug('Doing BS GEV fit')
         bs_fit = gev_r.xarray_gev(ds_bs.max_value, cov=cov_rand, dim='index', weights=ds_bs.count_cells, verbose=True,
                                   recreate_fit=recreate_fit, file=bootstrap_file, name=name + '_bs',
-                                  extra_attrs=extra_attrs,
-
+                                  extra_attrs=extra_attrs, use_dask=use_dask
                                   ).mean('sample')
+        my_logger.debug(f"Computed Bootstrap fits {memory_use()}")
 
     else:
         bs_fit = None
+
     return fit, bs_fit
 
 

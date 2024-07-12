@@ -13,7 +13,7 @@ rioxarray~=0.15
 statsmodels~=0.13
 scitools-iris~=3.3
 cftime~=1.6
-dask[distributed]~=2023.12
+dask[distributed] # ~=2023.12
 bokeh!=3.0.*,>=2.4.2
 fiona~=1.8
 shapely~=1.8
