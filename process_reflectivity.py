@@ -59,7 +59,8 @@ def summary_process(data_array: xarray.DataArray,
                     time_dim: str = 'time',
                     threshold: typing.Optional[float] = None,
                     base_name: typing.Optional[str] = None,
-                    min_fract_avg: float = 1.0) -> typing.Optional[xarray.Dataset]:
+                    min_fract_avg: float = 1.0,
+                    subsample:typing.Optional[pd.Timedelta] = None) -> typing.Optional[xarray.Dataset]:
     f"""
     Process data_array for max (and mean & time of max).
 
@@ -72,6 +73,7 @@ def summary_process(data_array: xarray.DataArray,
         min_fract_avg: minimum fraction of data that must be available for a time period. 
           If less than this then the time period is dropped.
         If not provided All _thresh vars will be empty
+        subsample: if set then resample the data to this period. If None then no resampling is done.
 
 
     Returns:dataset containing summary values. These are:
@@ -84,11 +86,24 @@ def summary_process(data_array: xarray.DataArray,
             f'count_raw_{base_name}: number of raw values in time period.
             f'count_{base_name}': count of resampled samples  
             f'count_max_{base_name}': max number of samples in resample. 
+            :param subsample: 
 
 
     """
 
-    time_bounds = [data_array.time.min().values, data_array.time.max().values]
+    time_bounds = [data_array[time_dim].min().values, data_array[time_dim].max().values]
+    # if subsampling gen times
+    if subsample:  # want to sub-sample the data.
+        my_logger.info(f'Resampling to {subsample} time_bounds:{time_bounds} len: {len(data_array[time_dim])}')
+        times = pd.date_range(start=time_bounds[0], end=time_bounds[1],
+                              freq=subsample, inclusive='both') # times wanted
+        data_array = data_array.reindex({time_dim:times}, method='nearest', tolerance=subsample / 2)
+    # remove slices where ALL data is missing
+    L= data_array.isnull().all(['x','y']) # All values missing mask in time.
+    data_array = data_array.where(~L, drop=True)
+    # and update the time_bounds
+    time_bounds = [data_array[time_dim].min().values, data_array[time_dim].max().values]
+
     time_bounds = xarray.DataArray(time_bounds, dims='bounds').rename('time_bounds')
     time_str = f"{time_bounds.values[0]} - {time_bounds.values[1]}"
     if mean_resample is None:
@@ -293,7 +308,7 @@ type_cm = typing.Literal['mean', 'median']
 type_rain_conv = typing.Optional[typing.Tuple[float, float]]  # for converting to rain
 
 
-def read_zip(path: pathlib.Path,
+def read_zip(path: pathlib.Path|str,
              concat_dim: str = 'valid_time',
              coarsen: typing.Optional[typing.Dict[str, int]] = None,
              coarsen_method: type_cm = 'mean',
@@ -304,7 +319,6 @@ def read_zip(path: pathlib.Path,
              first_file: bool = False,
              region: typing.Optional[typing.Dict[str, slice]] = None,
              to_rain: type_rain_conv = None,
-             subsample: typing.Optional[pd.Timedelta] = None,
              **load_kwargs
              ) -> typing.Optional[xarray.Dataset]:
     """
@@ -326,11 +340,12 @@ def read_zip(path: pathlib.Path,
     :param bounds_vars:  tuple of variables that are bounds
     :param region -- region to select from.
     :param to_rain -- if set convert reflectivty to rain using these co-efficients. Happens after dbz_ref_limits used.
-    :param subsample -- if set then subsample the data to this period. If None then no subsampling is done.
     :param load_kwargs: kwargs for loading in read_radar_zipfile
 
     :return:
     """
+    if isinstance(path,str):
+        path= pathlib.Path(path) # convert to a path
 
     if not path.exists():
         raise ValueError(f"{path} does nto exist")
@@ -355,20 +370,16 @@ def read_zip(path: pathlib.Path,
         my_logger.warning(f'No data for {path}')
         return None
     # sort variables so all dimensions are monotonically increasing.
-    # deal with subsample
-    times = None # so type checker doesn;t complain about possibly unset variables.
-    if subsample:  # want to sub-sample the data.
-        times = pd.date_range(start=radar_dataset.valid_time.values[0] - subsample,
-                              end=radar_dataset.valid_time.values[-1],
-                              freq=subsample, inclusive='right')
+
     result = dict()
     for var in radar_dataset.data_vars:
         v = radar_dataset[var]
         for d in list(v.dims):
-            v = v.sortby(d)
-        if subsample:
-            v = v.reindex(valid_time=times, method='nearest', tolerance=subsample / 2)
-            my_logger.debug(f'sub-sampled variable {var} to {subsample}')
+            nd = v[d].size
+            v = v.sortby(d).drop_duplicates(d) # sort and remove duplicates for this dim.
+            if v[d].size != nd:
+                my_logger.warning(f'Removed duplicates for {var} on {d} from {path}')
+
         result[var] = v
         my_logger.debug(f'Sorted variable {var}')
     radar_dataset = xarray.Dataset(result)
@@ -460,7 +471,6 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                          coarsen_cv_max: typing.Optional[float] = None,
                          region: typing.Optional[typing.Dict[str, slice]] = None,
                          to_rain: type_rain_conv = None,
-                         subsample: typing.Optional[pd.Timedelta] = None
                          ) -> xarray.Dataset:
     # read in first file to get helpful co-ord info. The more we read the slower we go.
     drop_vars_first = ['error', 'reflectivity']  # variables not to read for meta info
@@ -474,7 +484,6 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                       dbz_ref_limits=dbz_ref_limits,
                       coarsen_cv_max=coarsen_cv_max,
                       region=region,
-                      subsample=subsample,
                       drop_variables=drop_vars, concat_dim='valid_time', parallel=True,
                       combine='nested',
                       chunks=dict(valid_time=6), engine='netcdf4', to_rain=to_rain)
@@ -613,8 +622,7 @@ if __name__ == "__main__":
             ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
                                       coarsen=coarsen, region=region,
                                       coarsen_method=args.coarsen_method,
-                                      coarsen_cv_max=args.cv_max, to_rain=to_rain,
-                                      subsample=args.subsample)
+                                      coarsen_cv_max=args.cv_max, to_rain=to_rain)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
             basename = 'reflectivity'
             if args.to_rain is not None:
@@ -623,7 +631,8 @@ if __name__ == "__main__":
             summary_data = summary_process(ds[basename], mean_resample=args.resample,
                                            threshold=args.threshold,
                                            base_name=basename,
-                                           min_fract_avg=args.min_fract_avg)
+                                           min_fract_avg=args.min_fract_avg,
+                                           subsample=args.subsample)
             my_logger.info(f"computed month of summary data {memory_use()}")
             attr_var = ds.drop_vars([basename, f'{basename}_speckle', 'error'],
                                     errors='ignore').mean('time', keep_attrs=True)

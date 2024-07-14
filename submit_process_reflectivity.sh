@@ -81,8 +81,8 @@ resample='30min 1h 2h 4h 8h'
 region="-125 125 125 -125" # region to extract
 coarse=4
 
-extra_args+=" --dask --min_fract_avg 0.75 --threshold 1.0 --extract_coords_csv meta_data/${site}_close.csv"
-submit_args=" --json_submit_file ${AUSRAIN}/config_files/process_reflectivity.json --submit"
+extra_args+=" --dask --min_fract_avg 0.75 --threshold 1.0 --extract_coords_csv ${AUSRAIN}/meta_data/${site}_close.csv"
+base_submit_args=" --json_submit_file ${AUSRAIN}/config_files/process_reflectivity.json --submit"
 if [[ $calibration == "melbourne" ]] ; then
     extra_args+=" --to_rain 0.0271 0.650"
 elif [[ $calibration == "Grim" ]] ; then
@@ -123,7 +123,8 @@ out_dir="${root_dir}/${name}"
 for year in $(seq ${year_start} ${year_end}); do # parallel jobs -- one for each year
   run_log_file="${out_dir}/run_logs/${name}_${year}_${time_str}.log"
   pbs_log_file="${out_dir}/pbs_logs/${name}_${year}_${time_str}"
-  job_name=${site}_${year}_ref_${name}
+  job_name=ref_${year}_${name}
+  submit_args="${base_submit_args}" # copy base submit args
   submit_args+=" --job_name ${job_name}  --log_base ${pbs_log_file}"
   cmd="process_reflectivity.py ${site} ${root_dir}/$name $extra_args  --years ${year} --log_file ${run_log_file} $*"
   cmd+=${submit_args}

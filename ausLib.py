@@ -1101,7 +1101,7 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
             print(result.stdout)  # so can get the job id.
         else:
             print("fake_job.999999")
-        my_logger.debug('Exiting')
+        my_logger.debug('Submitted so exiting')
         sys.exit(0)
 
     try:

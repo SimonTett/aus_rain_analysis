@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Post-process the radar data. First argument is the directory of the radar data to process
 # Some other optional args are --region x0 y0 x1 y1 reg_name -- region to extract to and name of region. Coords passed to extract_region.py
+# --holdafter -- run first post-processing script after the job(s) have completed.
 summary_dir=$1 ; shift
 region_name=""
 hold_after=""
@@ -51,21 +52,21 @@ submit_opts=" --submit"
 submit_opts+=" --json_submit config_files/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
 submit_opts+=${hold_after}
-cmd="process_seas_avg_mask.py  ${summary_dir} ${sm_file} --no_mask_file ${nomask_file} ${submit_opts} ${extra_args}"
-jobid=$($cmd)
+cmd="process_seas_avg_mask.py  ${summary_dir} ${sm_file} --no_mask_file ${nomask_file} ${extra_args} ${submit_opts} "
+jobid_mean=$($cmd)
 status=$?
 if [[ $status -ne 0 ]]; then
-  echo "Error submitting job $jobid for $cmd" 2>&1
+  echo "Error submitting job $jobid_mean for $cmd" 2>&1
   exit 1
 fi
-echo "Submitted job $jobid for $cmd" 2>&1
+echo "Submitted job $jobid_mean for $cmd" 2>&1
 # event processing
 job_name="ev_${name}"
 log_file=process_events_${name}_${time_str}
 submit_opts=" --json_submit config_files/process_events.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
-submit_opts+=" --submit --holdafter ${jobid}"
-cmd="process_events.py  ${sm_file} ${event_file} ${submit_opts} ${extra_args} ${region_args}"
+submit_opts+=" --submit --holdafter ${jobid_mean}"
+cmd="process_events.py  ${sm_file} ${event_file}  ${extra_args} ${region_args} ${submit_opts}"
 jobid_event=$($cmd)
 status=$?
 if [[ $status -ne 0 ]]; then
@@ -79,7 +80,7 @@ log_file=process_gev_fits_${name}_${time_str}
 submit_opts=" --json_submit config_files/process_gev_fits.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
 submit_opts+=" --submit --holdafter ${jobid_event}"
-cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 --bootstrap=100 ${submit_opts} ${extra_args} "
+cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 --bootstrap=100 ${extra_args} ${submit_opts} "
 jobid_gev=$($cmd)
 status=$?
 if [[ $status -ne 0 ]]; then
@@ -87,4 +88,5 @@ if [[ $status -ne 0 ]]; then
   exit 1
 fi
 echo "Submitted job $jobid_gev for $cmd" 2>&1
+echo "${jobid_mean}" "${jobid_event}" "${jobid_gev}" # return list of all jobs submitted.
 
