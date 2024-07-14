@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # Compute the GEV fits -- uncertainties via sampling across events.
+import logging
 import multiprocessing
 import pathlib
 import sys
@@ -15,7 +16,7 @@ import dask
 import pandas as pd
 
 from numpy import random
-
+my_logger=logging.Logger('gev_fits')
 
 def sample_events2(
         data_set: xarray.Dataset,

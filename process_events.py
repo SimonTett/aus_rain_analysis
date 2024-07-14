@@ -78,8 +78,19 @@ def comp_events(
         grp: xarray.DataArray,
         topog: typing.Optional[xarray.DataArray] = None,
         extras: typing.Optional[typing.List[xarray.DataArray]] = None,
-        source: str = 'CPM'
+        source: str = 'RADAR'
 ):
+    """
+    Compute the events from the max_values, max_times and groupings.
+    :param max_values: The max values to be grouped into events
+    :param max_times:  The times of the max values
+    :param grp:  Grouping -- used to define events
+    :param topog: Topography data
+    :param extras: Any extras to be wrapped into the dataset. The **nearest** times in this dataset
+        will be used to match the event times.
+    :param source: Source -- used to determine the co-coords to use
+    :return: dataset of event data.
+    """
     if extras is None:
         extras = []
     dd_lst = []
@@ -142,7 +153,7 @@ if __name__ == '__main__':
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Turn of dask as this is rather I/O b
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args) # setup the logging and do std stuff
-
+    raise NotImplementedError("Check times are OK for ObsT")
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
@@ -186,6 +197,9 @@ if __name__ == '__main__':
     extra_attrs.update(station_id=station_id)
     # get the temperature data for the site.
     obs_temperature = ausLib.read_acorn(station_id, what='mean').resample('QS-DEC').mean()
+    # get times to middle of season.
+    offset = (obs_temperature.index.diff() / 2.).fillna(pd.Timedelta(45, 'D'))
+    obs_temperature.index = obs_temperature.index + offset
     attrs=obs_temperature.attrs.copy()
     obs_temperature = obs_temperature.to_xarray().rename('ObsT').rename(dict(date='time')).assign_attrs(attrs)
 

@@ -102,16 +102,21 @@ fig.show()
 commonLib.saveFig(fig)
 
 # lets do some sens studies
-from process_gev_fits import *
-radar_dataset=xarray.load_dataset(ausLib.data_dir/'processed/Sydney_rain_melbourne/events_Sydney_rain_melbourne_DJF.nc')
-radar_dataset=radar_dataset.sel(resample_prd=['30min','1h','2h'])
-# convert radar_dataset to accumulations.
+def proc_events(file,threshold=0.5):
+    radar_dataset = xarray.load_dataset(file,drop_variables=['xpos', 'ypos', ,
+                                                             'fraction', 'sample_resolution',
+                                                             'height','Observed_temperature','time'])
+    radar_dataset = radar_dataset.sel(resample_prd=['30min', '1h', '2h'])
+    # convert radar_dataset to accumulations.
 
-threshold = 0.5  # some max are zero -- presumably no rain then.
-msk = (radar_dataset.max_value > threshold)
-radar_msk = radar_dataset.where(msk)
-mn_temp = radar_msk.ObsT.mean(['quantv','EventTime'])
-radar_msk['Tanom'] = radar_msk.ObsT - mn_temp  #
+    msk = (radar_dataset.max_value > threshold)
+    radar_msk = radar_dataset.where(msk)
+    mn_temp = radar_msk.ObsT.mean(['quantv', 'EventTime'])
+    radar_msk['Tanom'] = radar_msk.ObsT - mn_temp  #
+    return radar_msk
+
+from process_gev_fits import comp_radar_fit
+
 fit_t, fit_t_bs = comp_radar_fit(radar_msk, cov=['Tanom'])
 print('fit ratios ',ausLib.comp_ratios(fit_t.Parameters.mean('sample')).to_dataframe().unstack().round(2))
 # drop post 2020 data

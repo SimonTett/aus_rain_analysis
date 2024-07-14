@@ -119,7 +119,7 @@ if __name__ == '__main__':
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Very I/O code so avoid dask
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # setup the logging
-
+    raise NotImplementedError('Check have no data for 1st of March and procesing looks OK!')
     out_radar = args.output
     if out_radar.exists() and (not args.overwrite):
         my_logger.warning(f"Output file {out_radar} exists and overwrite not set. Exiting")
@@ -193,18 +193,19 @@ if __name__ == '__main__':
     # seasonally group
     radar = radar.resample(time='QS-DEC').map(group_data_set, group_dim='time').compute().load()
     max_samples_resamp = max_samples_resamp.resample(time='QS-DEC').sum().load()  # samples/season
-    max_samples = max_samples.resample(time='QS-DEC').sum().load()  # max no of samples/season
-
+    max_samples = max_samples.resample(time='QS-DEC').sum().load()  # max no of samples/seasons
     # and select where have 3 months in the dataset.
     if (radar.input_count > 3).any():  # sense check
         ValueError(f"Have {radar.input_count} cases with > 3 months of data")
     L = (radar.input_count == 3).load()
+    max_samples=max_samples.where(L,drop=True)
+    radar = radar.where(L,drop=True)
     # and where have at least 70% underlying samples.
     samples = radar['count_raw_' + variable_name]
     fraction = samples / max_samples
     # add in fraction_resample to the radar  dataset.
     radar['fraction'] = fraction
-    L = L & (fraction >= 0.7)
+    L = fraction >= 0.7
     radar = radar.where(L, drop=True).load()
     max_samples_resamp = max_samples_resamp.where(L, drop=True).load()
     max_samples = max_samples.where(L, drop=True).load()
