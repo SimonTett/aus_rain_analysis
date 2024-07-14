@@ -119,7 +119,7 @@ if __name__ == '__main__':
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Very I/O code so avoid dask
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # setup the logging
-    raise NotImplementedError('Check have no data for 1st of March and procesing looks OK!')
+    raise NotImplementedError('Check processing looks OK!')
     out_radar = args.output
     if out_radar.exists() and (not args.overwrite):
         my_logger.warning(f"Output file {out_radar} exists and overwrite not set. Exiting")

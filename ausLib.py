@@ -84,7 +84,7 @@ def extract_rgn(radar_ds: xarray.Dataset) -> typing.Dict[str, slice]:
     """
     # extract the region used from the meta-data though need to reverse  y
     rgn = [v for v in radar_ds.attrs['program_args'] if v.startswith('region:')][0]
-    rgn = np.array(ast.literal_eval(rgn.split(':')[1]))  # thanks chatgpt fot this
+    rgn = np.array(ast.literal_eval(rgn.split(':')[1].strip()))  # thanks chatgpt fot this
     # convert to m from km
     rgn *= 1000.
     rgn = dict(x=slice(*rgn[0:2]), y=slice(*rgn[-1:-3:-1]))  # need to reverse the y index.

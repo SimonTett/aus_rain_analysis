@@ -40,91 +40,122 @@ def quants_locn(
         x_coord: str = 'grid_longitude',
         y_coord: str = 'grid_latitude'
 ) -> xarray.Dataset:
-    """ compute quantiles and locations"""
-    if quantiles is None:
-        quantiles = np.linspace(0.0, 1.0, 6)
-
-    data_array = data_set.maxV  # maximum values
-    time_array = data_set.maxT  # time when max occurs
-    quant = data_array.quantile(quantiles, dim=dimension).rename(quantile="quantv")
-    order_values = data_array.values.argsort()
-    oindices = ((data_array.size - 1) * quantiles).astype('int64')
-    indices = order_values[oindices]  # actual indices to the data where the quantiles are roughly
-    indices = xarray.DataArray(indices, coords=dict(quantv=quantiles))  # and give them co-ords
-    y = data_array[y_coord].broadcast_like(data_array)[indices]
-    x = data_array[x_coord].broadcast_like(data_array)[indices]
-    time = time_array[indices]
-    result = xarray.Dataset(dict(xpos=x, ypos=y, t=time, quant=quant))
+    """ compute quantiles and locations
+    :param data_set: The data set to compute the quantiles and locations for.
+    :param dimension: The dimension to compute the quantiles over.
+    :param quantiles: The quantiles to compute.
+    :param x_coord: The x co-ordinate name
+    :param y_coord: The y co-ordinate name
+    Returns a dataset with the quantile values of  MaxV and x, y & time values of those quantiles.
+    """
+    data_array = data_set.max_value  # maximum values
+    time_array = data_set.max_time  # time when max occurs
+    quant = data_array.quantile(quantiles, dim=dimension).rename(quantile="quantv").rename('max_value')
+    order_values = data_array.values.argsort() # indices that sort the data
+    oindices = ((data_array.size - 1) * quantiles).astype('int64') # actual indices for the rough quantile
+    indices = order_values[oindices]  # actual indices in the data for the rough quantiles
+    indices = xarray.DataArray(indices, coords=dict(quantv=quantiles))  # and give them co-ords so fancy indexing works
+    y = data_array[y_coord].broadcast_like(data_array)[indices] # get x-coord
+    x = data_array[x_coord].broadcast_like(data_array)[indices] # get y-coord
+    time = time_array[indices] # get time-coord
+    result = xarray.Dataset(dict(xpos=x, ypos=y, t=time, max_value=quant)) # group up into to a data array
     # drop unneeded coords
     coords_to_drop = [c for c in result.coords if c not in result.dims]
     result = result.drop_vars(coords_to_drop)
     return result
 
 
-def event_stats(max_value: xarray.DataArray, max_time: xarray.DataArray, group, source: str = "CPM"):
+def event_stats(data_set:xarray.Dataset, group:xarray.DataArray,
+                quantiles:typing.Optional[np.ndarray]=None,
+                source: str = "RADAR"):
+    """
+    Compute the event statistics for the max_value and max_time data.
+    Args:
+        max_value : The maximum values
+        max_time : The time of the max value
+        group : The grouping for the events
+        source : The source -- used to determine the names of the horizontal co-ordinates.
+
+    Returns:
+
+    """
+    if quantiles is None:
+        quantiles = np.linspace(0, 1, 21)
     x_coord, y_coord = source_coords(source)
-    ds = xarray.Dataset(dict(maxV=max_value, maxT=max_time))
-    grper = ds.groupby(group)
-    quantiles = np.linspace(0, 1, 21)
-    dataSet = grper.map(quants_locn, quantiles=quantiles, x_coord=x_coord, y_coord=y_coord).rename(quant='max_value')
-    count = grper.count().maxV.rename("# Cells")
-    dataSet['count_cells'] = count
+    expected_event_count = data_set['max_value'].notnull().sum().astype('int64')
+    grper = data_set.groupby(group)
+    #quantiles = np.linspace(0, 1, 21)
+    dataSet = grper.map(quants_locn, quantiles=quantiles, x_coord=x_coord, y_coord=y_coord)
+    # group by the grouping and then apply quants_locn to each group.
+    dataSet['count_cells'] = grper.count()['max_value'].astype('int64')
+    dataSet = dataSet.rename(group='EventTime').dropna('EventTime') # drop the nans.
+    # at this point we have the events. Check that the total cell_count is as expected
+    assert (dataSet['count_cells'].sum() == expected_event_count)
+    # set the eventTimes sensibly.
+    event_time_values = np.arange(0, len(dataSet.EventTime))
+    dataSet = dataSet.assign_coords( EventTime=event_time_values)
     return dataSet
 
+def process_event_prd(data_set: xarray.Dataset, resample_prd:str,
+                      grp: xarray.DataArray,
+                      topog:typing.Optional[xarray.DataArray] = None,
+                      extras:typing.Optional[list[xarray.DataArray]] = None,
+                      source: str = 'RADAR'):
 
-def comp_events(
-        max_values: xarray.DataArray,
-        max_times: xarray.DataArray,
-        grp: xarray.DataArray,
+    if extras is None:
+        extras=[]
+    ds = data_set.sel(resample_prd=resample_prd)
+    dd = event_stats(ds,
+                     grp.sel(resample_prd=resample_prd).fillna(0.0), source=source
+                     ).sel(EventTime=slice(1, None))
+    dd = dd.assign_coords(resample_prd=resample_prd)
+    my_logger.debug('Computed event stats')
+    # deal with the extras!
+    sel = dict(time=dd.t.astype('datetime64[M]'),method='nearest')
+    for da in extras:
+        da['time'] = da.copy().time.astype('datetime64[M]') # quantize to month
+        my_logger.debug(f'Quantizing {da.name} to month')
+        try:
+            da_extreme_times = da.sel(resample_prd=resample_prd).squeeze(drop=True).sel(**sel)
+        except KeyError:
+            da_extreme_times = da.sel(**sel)  # .rename(dict(time='EventTime'))
+
+        dd = dd.merge(da_extreme_times.drop_vars('time'))
+        my_logger.debug(f'Added {da_extreme_times.name} in')
+    # add in hts
+    if topog is not None:
+        coords = source_coords(source)
+        sel = dict(zip(coords, [dd.xpos, dd.ypos]))
+        ht = topog.sel(**sel)
+        my_logger.debug('Included ht')
+        # drop unneeded coords
+        coords_to_drop = [c for c in ht.coords if c not in ht.dims]
+        ht = ht.drop_vars(coords_to_drop)
+        dd['height'] = ht
+
+    return dd
+def comp_events(data_set: xarray.Dataset,
         topog: typing.Optional[xarray.DataArray] = None,
         extras: typing.Optional[typing.List[xarray.DataArray]] = None,
         source: str = 'RADAR'
 ):
     """
-    Compute the events from the max_values, max_times and groupings.
-    :param max_values: The max values to be grouped into events
-    :param max_times:  The times of the max values
+    Compute the events from a dataset
+    :param data_set -- must contain max_values and max_times. max_values are grouped into events. max_times used to provide times
     :param grp:  Grouping -- used to define events
     :param topog: Topography data
-    :param extras: Any extras to be wrapped into the dataset. The **nearest** times in this dataset
+    :param extras: Any extras to be wrapped into the dataset. The **nearest** times (in months) in this dataset
         will be used to match the event times.
     :param source: Source -- used to determine the co-coords to use
     :return: dataset of event data.
     """
-    if extras is None:
-        extras = []
-    dd_lst = []
-    for roll in max_values['resample_prd'].values:
-        mx = max_values.sel(resample_prd=roll)
-        expected_event_count = mx.notnull().sum().astype('int64')
-        dd = event_stats(mx,
-                         max_times.sel(resample_prd=roll),
-                         grp.sel(resample_prd=roll).fillna(0.0), source=source
-                         ).sel(EventTime=slice(1, None))
-        # at this point we have the events. Check that the total cell_count is as expected
-        assert (int(dd.count_cells.sum('EventTime').values) == expected_event_count)
-        event_time_values = np.arange(0, len(dd.EventTime))
-        dd = dd.assign_coords(resample_prd=roll, EventTime=event_time_values)
-        my_logger.debug('Computed event stats')
-        # deal with the extras!
-        for da in extras:
-            try:
-                da_extreme_times = da.sel(resample_prd=roll).squeeze(drop=True).sel(time=dd.t, method='nearest')
-            except KeyError:
-                da_extreme_times = da.sel(time=dd.t, method='nearest')  #.rename(dict(time='EventTime'))
 
-            dd = dd.merge(da_extreme_times.drop_vars('time'))
-            my_logger.debug(f'Added {da_extreme_times.name} in')
-        # add in hts
-        if topog is not None:
-            coords = source_coords(source)
-            sel = dict(zip(coords, [dd.xpos, dd.ypos]))
-            ht = topog.sel(**sel)
-            my_logger.debug('Included ht')
-            # drop unneeded coords
-            coords_to_drop = [c for c in ht.coords if c not in ht.dims]
-            ht = ht.drop_vars(coords_to_drop)
-            dd['height'] = ht
+    dd_lst = []
+    # this might be replaced by
+    # data_set.groupby(radar_events.resample_prd).apply(fn)
+    for roll in data_set['resample_prd'].values:
+        dd=process_event_prd(data_set.drop_vars('group'), roll, data_set['group'],
+                             extras=extras,topog=topog, source=source)
         dd_lst.append(dd)
         my_logger.info(f"Processed resample_prd: {roll}")
 
@@ -153,7 +184,7 @@ if __name__ == '__main__':
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Turn of dask as this is rather I/O b
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args) # setup the logging and do std stuff
-    raise NotImplementedError("Check times are OK for ObsT")
+
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
@@ -216,14 +247,19 @@ if __name__ == '__main__':
     # important to select to region before coarsening for consistency with radar data processing.
     topog = CBB_DEM.elevation.max('prechange_start').coarsen(x=4, y=4, boundary='trim').mean()
     if regn is not None:# select to the region requested here.
-        topog = topog.sel(**regn)
+        topog = topog.sel(**regn).squeeze(drop=True).load()
     # and extract the radar data
     mx = radar[f'max_{variable}']
     mxTime = radar[f'time_max_{variable}']
+    # Time is end of period -- adjust to middle of period by subtracting 1/2 the resample_prd
+    offset = xarray.apply_ufunc(lambda ta: [pd.Timedelta(str(v)) / 2 for v in ta], mxTime.resample_prd)
+    mxTime = mxTime - offset
     # utc hour of 14:00 corresponds to roughly 00 in Eastern Australia.
     ref_time = '1970-01-01T14:00'
     grp = np.floor(((mxTime - np.datetime64(ref_time)) / np.timedelta64(1, 'D'))).rename('EventTime').compute()
-    radar_events = comp_events(mx, mxTime, grp, source='RADAR', topog=topog,
+    # FIXME -- havin problems wih xx-12-01T00:30 which is likely nearer to SON mid than DJF mid.
+    ds=xarray.Dataset(dict(max_value=mx,max_time=mxTime,group=grp))
+    radar_events = comp_events(ds, source='RADAR', topog=topog,
                                extras=[obs_temperature, radar.fraction,
                                        (radar.sample_resolution.dt.seconds / 60.).rename('sample_resolution')]
                                )
