@@ -12,6 +12,7 @@ from R_python import gev_r
 
 my_logger = ausLib.setup_log(1)
 seas_files = list((ausLib.data_dir / 'processed').glob('Sydney_rain*/seas_mean*_Sydney_rain_*_DJF.nc'))
+seas_files = [f for f in seas_files if not ('check'  in str(f) or 'old' in str(f))]
 seas_mean = {}
 seas_gev_fit = dict()
 gev_t_fit = dict()
@@ -104,7 +105,7 @@ commonLib.saveFig(fig)
 def proc_events(file,threshold=0.5):
     drop_vars=['xpos', 'ypos','fraction', 'sample_resolution', 'height','Observed_temperature','time']
     radar_dataset = xarray.load_dataset(file, drop_variables=drop_vars)
-    radar_dataset = radar_dataset.sel(resample_prd=['30min', '1h', '2h'])
+    radar_dataset = radar_dataset.sel(resample_prd=['30min', '1h', '2h','4h'])
     # convert radar_dataset to accumulations.
 
     msk = (radar_dataset.max_value > threshold)

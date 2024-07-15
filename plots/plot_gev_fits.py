@@ -62,18 +62,19 @@ for site in ausLib.site_numbers.keys():
     # compute the fractional location and shape changes + uncerts.
 
     ds = dict()
-    for p in ['location', 'scale']:
-        dp = f'D{p}_Tanom'
-        dfract_bs = bs_t.Parameters.sel(parameter=dp) / bs_t.Parameters.sel(parameter=p)
-        ds[p + '_std'] = dfract_bs.std(dim='bootstrap_sample')
-        ds[p] = be_t.Parameters.sel(parameter=dp) / be_t.Parameters.sel(parameter=p)
-        # sens cases
-        ds[p + '_sens'] = be_t_sens.Parameters.sel(parameter=dp) / be_t_sens.Parameters.sel(parameter=p)
+
     ds['delta_AIC'] = (be_t.AIC - be.AIC)
     ds['delta_AIC_std'] = (bs_t.AIC - bs.AIC).std(dim='bootstrap_sample')
     ds['pImp'] = (bs_t.AIC < bs.AIC).sum(dim='bootstrap_sample') / bs.AIC.count('bootstrap_sample')
     ds['p'] = np.exp((be_t.AIC - be.AIC) / 2)
     ds = xarray.Dataset(ds)
+    be_ratio = ausLib.comp_ratios(be_t.Parameters)
+    be_ratio = be_ratio.assign_coords(parameter=[k.replace('_Tanom','') for k in be_ratio.parameter.values]).rename('be_ratio')
+    ds['be_ratio'] = be_ratio
+    bs_ratio = ausLib.comp_ratios(bs_t.Parameters).std('bootstrap_sample')
+    # now to rename
+    bs_ratio = bs_ratio.assign_coords(parameter=[k.replace('_Tanom','') for k in bs_ratio.parameter.values]).rename('bs_uncert')
+    ds['bs_ratio_std']=bs_ratio
     gev[site] = ds
 
     my_logger.info(f'Processed {site}')
@@ -89,12 +90,10 @@ for rng, sites in ausLib.region_names.items():
             continue
         site_ds += [gev[site].expand_dims(site=[site])]
     site_ds = xarray.concat(site_ds, dim='site')
-    ds = dict()
-    for v in ['location', 'scale']:
-        wt = 1.0 / (site_ds[v + '_std'] ** 2)
-        ds[v] = site_ds[v].weighted(wt).mean(dim='site')
-        ds[v + '_std'] = np.sqrt(1.0 / (wt.sum(dim='site')))
-        ds[v+'_sens'] = site_ds[v+'_sens'].weighted(wt).mean(dim='site')
+
+    ds = dict(be_ratio= site_ds.be_ratio.mean(dim='site'),
+                        bs_ratio_std = (site_ds.bs_ratio_std**2).mean(dim='site')/site_ds.bs_ratio_std.count(dim='site'))
+
     gev[rng] = xarray.Dataset(ds)
 my_logger.info('Processed regions')
 
