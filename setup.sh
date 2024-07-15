@@ -18,7 +18,7 @@ source $AUSRAIN/venv/bin/activate
 module use /g/data/hh5/public/modules/
 module load dask-optimiser
 # paths and stuff
-export PYTHONPATH=$PYTHONPATH:~/common_lib:$AUSRRAIN
+export PYTHONPATH=$PYTHONPATH:~/common_lib:$AUSRAIN
 export PATH=$AUSRAIN:$AUSRAIN/process_submit:$PATH
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/apps/R/4.2.2/lib64/R/lib/ # so rpy2 works
 # give some info to user.

@@ -1,0 +1,11 @@
+{
+  "comment": "Configuration for process_extract_metadata.py",
+  "memory": "20GB",
+  "time": "02:00:00",
+  "cpus": 1,
+  "queue": "normalbw",
+  "project": "wq02",
+  "storage": "gdata/rq0+gdata/hh5+gdata/ua8",
+  "setup_script": "/home/561/st7295/aus_rain_analysis/setup.sh",
+  "history_file": "/home/561/st7295/aus_rain_analysis/histories/process_extract_metadata.txt"
+}
