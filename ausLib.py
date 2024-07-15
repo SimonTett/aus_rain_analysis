@@ -557,6 +557,7 @@ def read_radar_zipfile(
         concat_dim: str = 'valid_time',
         first_file: bool = False,
         region: typing.Optional[typing.Dict[str, slice]] = None,
+        file_pattern: str = '*.nc',
         **load_kwargs
 ) -> typing.Optional[xarray.Dataset]:
     """
@@ -567,6 +568,7 @@ def read_radar_zipfile(
         :param bounds_vars: tuple of variables that are bounds
       :param first_file: If True only read in the first file
       :param region -- region to extract data from
+      :param file_pattern: pattern to match files default is *.nc
     :param **load_kwargs: kwargs to be passed to xarray.open_mfdataset
     Returns: xarray dataset or None if nothing successfully read.
 
@@ -576,7 +578,7 @@ def read_radar_zipfile(
     with tempfile.TemporaryDirectory() as tdir:
         # times on linux workstation
         zipfile.ZipFile(path).extractall(tdir)  # extract to temp dir 0.16 seconds
-        files = list(pathlib.Path(tdir).glob('*.nc'))  #  0.0 seconds
+        files = list(pathlib.Path(tdir).glob(file_pattern))  #  0.0 seconds
         if first_file:
             files = files[0:1]
         if load_kwargs.get('combine') == 'nested':

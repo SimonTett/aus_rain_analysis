@@ -1,10 +1,7 @@
 # little code to test parts of process_reflectivity
-import typing
-import multiprocessing
 
-from process_reflectivity import *
+from process_submit.process_reflectivity import *
 import ausLib
-import logging
 
 if __name__ == "__main__":
     my_logger = ausLib.my_logger
