@@ -2,7 +2,6 @@
 # Calibration -- melbourne and brisabne + melbourne calibration with larger dbz range.
 
 import ausLib
-import pathlib
 import xarray
 import matplotlib.pyplot as plt
 import scipy.stats
@@ -103,9 +102,8 @@ commonLib.saveFig(fig)
 
 # lets do some sens studies
 def proc_events(file,threshold=0.5):
-    radar_dataset = xarray.load_dataset(file,drop_variables=['xpos', 'ypos', ,
-                                                             'fraction', 'sample_resolution',
-                                                             'height','Observed_temperature','time'])
+    drop_vars=['xpos', 'ypos','fraction', 'sample_resolution', 'height','Observed_temperature','time']
+    radar_dataset = xarray.load_dataset(file, drop_variables=drop_vars)
     radar_dataset = radar_dataset.sel(resample_prd=['30min', '1h', '2h'])
     # convert radar_dataset to accumulations.
 
@@ -115,43 +113,29 @@ def proc_events(file,threshold=0.5):
     radar_msk['Tanom'] = radar_msk.ObsT - mn_temp  #
     return radar_msk
 
-from process_gev_fits import comp_radar_fit
-
+from process_submit.process_gev_fits import comp_radar_fit
+radar_msk = proc_events(ausLib.data_dir / 'processed' / 'Sydney_rain_melbourne' /
+                        'events_seas_mean_Sydney_rain_melbourne_DJF.nc')
 fit_t, fit_t_bs = comp_radar_fit(radar_msk, cov=['Tanom'])
 print('fit ratios ',ausLib.comp_ratios(fit_t.Parameters.mean('sample')).to_dataframe().unstack().round(2))
 # drop post 2020 data
-msk = (radar_msk.t.dt.year < 2020) & (radar_dataset.max_value > threshold)
-radar_msk = radar_dataset.where(msk)
-mn_temp = radar_msk.ObsT.mean(['quantv','EventTime'])
-radar_msk['Tanom'] = radar_msk.ObsT - mn_temp  #
-fit_t, fit_t_bs = comp_radar_fit(radar_msk, cov=['Tanom'])
+msk = (radar_msk.t.dt.year < 2020)
+
+fit_t, fit_t_bs = comp_radar_fit(radar_msk.where(msk), cov=['Tanom'])
 print('fit ratios 2020-',ausLib.comp_ratios(fit_t.Parameters.mean('sample')).to_dataframe().unstack().round(2))
 # and only post 2010
-msk = (radar_msk.t.dt.year >= 2010) & (radar_dataset.max_value > threshold)
-radar_msk = radar_dataset.where(msk)
-mn_temp = radar_msk.ObsT.mean(['quantv','EventTime'])
-radar_msk['Tanom'] = radar_msk.ObsT - mn_temp  #
-fit_t, fit_t_bs = comp_radar_fit(radar_msk, cov=['Tanom'])
+msk = (radar_msk.t.dt.year >= 2010)
+fit_t, fit_t_bs = comp_radar_fit(radar_msk.where(msk), cov=['Tanom'])
 print('fit ratios 2010+',ausLib.comp_ratios(fit_t.Parameters.mean('sample')).to_dataframe().unstack().round(2))
 # larger threshhold
-msk = (radar_dataset.max_value > 2)
-radar_msk = radar_dataset.where(msk)
-mn_temp = radar_msk.ObsT.mean(['quantv','EventTime'])
-radar_msk['Tanom'] = radar_msk.ObsT - mn_temp  #
-fit_t, fit_t_bs = comp_radar_fit(radar_msk, cov=['Tanom'])
+msk = (radar_msk.max_value > 2)
+fit_t, fit_t_bs = comp_radar_fit(radar_msk.where(msk), cov=['Tanom'])
 print('fit ratios threshold = 2 ',ausLib.comp_ratios(fit_t.Parameters.mean('sample')).to_dataframe().unstack().round(2))
 # drop roughly 1/2 the data
-msk = (radar_dataset.max_value > threshold) & (radar_dataset.EventTime%2 == 0)
-radar_msk = radar_dataset.where(msk)
-mn_temp = radar_msk.ObsT.mean(['quantv','EventTime'])
-radar_msk['Tanom'] = radar_msk.ObsT - mn_temp  #
-fit_t, fit_t_bs = comp_radar_fit(radar_msk, cov=['Tanom'])
+msk = (radar_msk.EventTime%2 == 0)
+fit_t, fit_t_bs = comp_radar_fit(radar_msk.where(msk), cov=['Tanom'])
 print('fit ratios 1/2 the data ',ausLib.comp_ratios(fit_t.Parameters.mean('sample')).to_dataframe().unstack().round(2))
 # remove temps near the zero anomaly.
-msk = (radar_dataset.max_value > threshold)
-radar_msk = radar_dataset.where(msk)
-mn_temp = radar_msk.ObsT.mean(['quantv','EventTime'])
-radar_msk['Tanom'] = radar_msk.ObsT - mn_temp  #
-radar_msk = radar_msk.where(np.abs(radar_msk.Tanom) > 0.5) # filter out temps near zero
-fit_t, fit_t_bs = comp_radar_fit(radar_msk, cov=['Tanom'])
+msk = (np.abs(radar_msk.Tanom) > 0.5)
+fit_t, fit_t_bs = comp_radar_fit(radar_msk.where(msk), cov=['Tanom'])
 print('fit ratios |Anom T|>0.5 ',ausLib.comp_ratios(fit_t.Parameters.mean('sample')).to_dataframe().unstack().round(2))
