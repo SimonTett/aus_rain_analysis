@@ -656,8 +656,8 @@ def site_info(site_no: int) -> pd.DataFrame:
         site_no: site to get info on
     Returns: pandas series with information on site.
     """
-    from importlib.resources import files
-    file = files('meta_data') / 'long_radar_stns.csv'
+
+    file = module_path/'meta_data' / 'long_radar_stns.csv'
     df = read_radar_file(file)
     L = df.id == site_no
     meta = df[L]

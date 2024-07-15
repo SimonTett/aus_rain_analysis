@@ -49,8 +49,10 @@ for site, ax in axs.items():
     ax.text(0.1,0.8,f'Peak:{mode:2d}:00' ,transform=ax.transAxes,va='bottom',ha='left')
     ax.label_outer()
     ax2=ax.twiny()
-    ax2.set_xlabel('Day of Year',color='green')
-    bins, edges, patches = day_of_season[site].to_xarray().plot.hist(bins=np.arange(0,100,10), density=True, ax=ax2, histtype='step',
+    ax2.set_xlabel('Day of Season',color='green')
+    #ax2.set_ylim(0,0.2)
+    bins, edges, patches = day_of_season[site].to_xarray().plot.hist(bins=np.arange(0,91,15),
+                                                                     density=True, ax=ax2, histtype='step',
                                                     linewidth=2,color='green')
     ax2.set_title('')
     ax2.label_outer()
