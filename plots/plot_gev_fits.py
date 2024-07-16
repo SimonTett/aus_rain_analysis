@@ -30,7 +30,7 @@ def trim(ds: xarray.Dataset) -> xarray.DataArray:
 
 
 def read_data(file: pathlib.Path) -> xarray.DataArray:
-    ds = xarray.load_dataset(file)
+    ds = xarray.load_dataset(file).reindex(resample_prd=['30min','1h','2h','4h','8h'])
     L = ds.Parameters.sel(parameter='scale') > -10
     L = L & (ds.Parameters.sel(parameter='location') > 0)
     if L.sum() < L.count():
@@ -62,18 +62,23 @@ for site in ausLib.site_numbers.keys():
     # compute the fractional location and shape changes + uncerts.
 
     ds = dict()
-    for p in ['location', 'scale']:
-        dp = f'D{p}_Tanom'
-        dfract_bs = bs_t.Parameters.sel(parameter=dp) / bs_t.Parameters.sel(parameter=p)
-        ds[p + '_std'] = dfract_bs.std(dim='bootstrap_sample')
-        ds[p] = be_t.Parameters.sel(parameter=dp) / be_t.Parameters.sel(parameter=p)
-        # sens cases
-        ds[p + '_sens'] = be_t_sens.Parameters.sel(parameter=dp) / be_t_sens.Parameters.sel(parameter=p)
+
     ds['delta_AIC'] = (be_t.AIC - be.AIC)
     ds['delta_AIC_std'] = (bs_t.AIC - bs.AIC).std(dim='bootstrap_sample')
     ds['pImp'] = (bs_t.AIC < bs.AIC).sum(dim='bootstrap_sample') / bs.AIC.count('bootstrap_sample')
     ds['p'] = np.exp((be_t.AIC - be.AIC) / 2)
     ds = xarray.Dataset(ds)
+    be_ratio = ausLib.comp_ratios(be_t.Parameters)
+    be_ratio = be_ratio.assign_coords(parameter=[k.replace('_Tanom','') for k in be_ratio.parameter.values]).rename('be_ratio')
+    ds['be_ratio'] = be_ratio
+    be_ratio_sens=ausLib.comp_ratios(be_t_sens.Parameters)
+    be_ratio_sens = be_ratio_sens.assign_coords(parameter=[k.replace('_Tanom','') for k in be_ratio_sens.parameter.values]).rename('be_ratio_sens')
+    ds['be_ratio_sens'] = be_ratio_sens
+    bs_ratio = ausLib.comp_ratios(bs_t.Parameters)#.std('bootstrap_sample')
+    # now to rename
+    bs_ratio = bs_ratio.assign_coords(parameter=[k.replace('_Tanom','') for k in bs_ratio.parameter.values]).rename('bs_uncert')
+    ds['bs_ratio']=bs_ratio
+    ds['bs_ratio_std'] = bs_ratio.std('bootstrap_sample')
     gev[site] = ds
 
     my_logger.info(f'Processed {site}')
@@ -89,12 +94,12 @@ for rng, sites in ausLib.region_names.items():
             continue
         site_ds += [gev[site].expand_dims(site=[site])]
     site_ds = xarray.concat(site_ds, dim='site')
-    ds = dict()
-    for v in ['location', 'scale']:
-        wt = 1.0 / (site_ds[v + '_std'] ** 2)
-        ds[v] = site_ds[v].weighted(wt).mean(dim='site')
-        ds[v + '_std'] = np.sqrt(1.0 / (wt.sum(dim='site')))
-        ds[v+'_sens'] = site_ds[v+'_sens'].weighted(wt).mean(dim='site')
+    bs_mean = site_ds.bs_ratio.mean(dim='site')
+    be_mean_sens = site_ds.be_ratio_sens.mean(dim='site')
+    ds = dict(be_ratio= site_ds.be_ratio.mean(dim='site'), be_ratio_sens=be_mean_sens,
+              bs_ratio=bs_mean,bs_ratio_std=bs_mean.std('bootstrap_sample'))
+
+
     gev[rng] = xarray.Dataset(ds)
 my_logger.info('Processed regions')
 
@@ -112,10 +117,10 @@ for site, ax in axes.items():
         ms = np.where(pbetter > 0.9, 20, 0)
     except AttributeError:
         ms = 20
-    for p, m, c in zip(['location', 'scale'], ['o', 'h'], ['blue', 'red']):
-        mn = gev[site][p].drop_sel(resample_prd='8h') * 100
-        mn_sens = gev[site][p + '_sens'].drop_sel(resample_prd='8h') * 100
-        sd = gev[site][p + '_std'].drop_sel(resample_prd='8h') * 100
+    for p, m, c in zip(['Dlocation', 'Dscale'], ['o', 'h'], ['blue', 'red']):
+        mn = gev[site].be_ratio.sel(parameter=p).drop_sel(resample_prd='8h') * 100
+        mn_sens = gev[site].be_ratio_sens.sel(parameter=p).drop_sel(resample_prd='8h') * 100
+        sd = gev[site].bs_ratio_std.sel(parameter=p).drop_sel(resample_prd='8h') * 100
 
         ax.errorbar(mn.resample_prd, mn, yerr=uncert_sd_scale * sd, label=p, linestyle='--', color=c, capsize=5, elinewidth=2)
         ax.scatter(mn.resample_prd, mn, s=ms, color=c, marker=m)
