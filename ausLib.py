@@ -1346,7 +1346,7 @@ def std_fig_axs(fig_num, reduce_spline: bool = True, regions: bool = False, **kw
 
     if regions:
         mosaic = [row + [rname] for row, rname in zip(mosaic, region_names.keys())]
-    args = dict(num=fig_num, clear=True, figsize=(6, 9), layout='constrained',
+    args = dict(num=fig_num, clear=True, figsize=(7, 9), layout='constrained',
                 empty_sentinel='BLANK', )  # default args,
     args.update(**kwargs)  # update with any passed in args
     fig, axes = plt.subplot_mosaic(mosaic, **args)

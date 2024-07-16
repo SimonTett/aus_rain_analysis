@@ -46,6 +46,9 @@ ax.text(139,-19.5,'Tropics',**text_kwargs)
 ax.text(155,-25.25,'QLD',**text_kwargs)
 ax.text(155,-34.25,'NSW',**text_kwargs)
 ax.text(141,-32,'South',**text_kwargs)
-ax.set_title("Australian radars")
+# add 35S line in blue -- shows the southern limit of TRMM  nadir views
+# Once understand how TRMM being used can show southern limit of data..
+ax.axhline(-35.0,color='blue',linestyle='--')
+ax.set_title("Australian Radars")
 fig.show()
 commonLib.saveFig(fig)
