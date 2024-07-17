@@ -35,7 +35,8 @@ site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
                     )
 site_names = dict(zip(site_numbers.values(), site_numbers.keys()))  # reverse lookup
-region_names = dict(Tropics=['Cairns', 'Mornington'],
+region_names = dict(#Tropics=['Cairns', 'Mornington'],
+                    BLANK=['Mornington','Cairns'], # tropics is blank coz Mornington is poor.
                     QLD=['Gladstone', 'Brisbane', 'Grafton'],
                     NSW=['Newcastle', 'Sydney', 'Canberra'],
                     South=['Melbourne', 'Wtakone', 'Adelaide']
@@ -1346,6 +1347,7 @@ def std_fig_axs(fig_num, reduce_spline: bool = True, regions: bool = False, **kw
 
     if regions:
         mosaic = [row + [rname] for row, rname in zip(mosaic, region_names.keys())]
+
     args = dict(num=fig_num, clear=True, figsize=(7, 9), layout='constrained',
                 empty_sentinel='BLANK', )  # default args,
     args.update(**kwargs)  # update with any passed in args

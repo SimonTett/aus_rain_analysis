@@ -96,6 +96,9 @@ if __name__ == '__main__':
                 my_logger.warning(f'No data for {site}')
                 continue
             site_ds += [gev[site].expand_dims(site=[site])]
+        if len(site_ds) == 0:
+            my_logger.warning(f'No data for {reg_name}')
+            continue
         site_ds = xarray.concat(site_ds, dim='site').mean(dim='site')
         gev[reg_name] = xarray.Dataset(site_ds)
     my_logger.info('Processed regions')
@@ -132,7 +135,7 @@ if __name__ == '__main__':
             ax.axhline(v, linestyle='--', color='black')
             ax.set_ylim(-30, 50)
         ax.set_ylabel('%/K')
-        ax.set_xlabel('Accumulation Period')
+        ax.set_xlabel('Accum Prd')
         # work out colour for site
         color = 'black'
         rp = '1h'
