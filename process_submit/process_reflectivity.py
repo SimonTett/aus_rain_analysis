@@ -60,6 +60,7 @@ def summary_process(data_array: xarray.DataArray,
                     threshold: typing.Optional[float] = None,
                     base_name: typing.Optional[str] = None,
                     min_fract_avg: float = 1.0,
+                    max_sample_resolution: typing.Optional[pd.Timedelta] = None,
                     subsample:typing.Optional[pd.Timedelta] = None) -> typing.Optional[xarray.Dataset]:
     f"""
     Process data_array for max (and mean & time of max).
@@ -74,6 +75,9 @@ def summary_process(data_array: xarray.DataArray,
           If less than this then the time period is dropped.
         If not provided All _thresh vars will be empty
         subsample: if set then resample the data to this period. If None then no resampling is done.
+        max_sample_resolution: maximum sample resolution. 
+          If set and the sample resolution is greater than max_sample_resolution 
+          then sample_resolution will be set to this value.
 
 
     Returns:dataset containing summary values. These are:
@@ -142,7 +146,11 @@ def summary_process(data_array: xarray.DataArray,
     # add in time resolution and complain (but continue) if have values diff from median
     td = data_array.time.diff(time_dim)
     time_resoln = td.median().values
+    if (max_sample_resolution is not None) and (time_resoln > max_sample_resolution):
+        my_logger.warning(f"Sample resolution {time_resoln} > {max_sample_resolution}. Setting to {max_sample_resolution}")
+        time_resoln = max_sample_resolution
     result['sample_resolution'] = time_resoln
+
     L = (td != time_resoln)
     if L.any():
         scale = np.timedelta64(1, 'm')
@@ -546,6 +554,7 @@ if __name__ == "__main__":
     parser.add_argument('--subsample', type=pd.Timedelta,
                         help='Timedelta to sub-sample to -- should be parsed by pd.Timedelta')
     parser.add_argument('--to_rain', type=float, nargs=2, help='Convert Reflectivity to rain using R=c[0]Z^c[1]')
+    parser.add_argument('--max_sample_resolution', type=pd.Timedelta,help='Maximum sample resolution.')
     ausLib.add_std_arguments(parser)
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # deal with the std arguments
@@ -632,7 +641,8 @@ if __name__ == "__main__":
                                            threshold=args.threshold,
                                            base_name=basename,
                                            min_fract_avg=args.min_fract_avg,
-                                           subsample=args.subsample)
+                                           subsample=args.subsample,
+                                           max_sample_resolution=args.max_sample_resolution)
             my_logger.info(f"computed month of summary data {memory_use()}")
             attr_var = ds.drop_vars([basename, f'{basename}_speckle', 'error'],
                                     errors='ignore').mean('time', keep_attrs=True)
