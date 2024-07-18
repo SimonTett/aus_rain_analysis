@@ -11,7 +11,6 @@ import pandas as pd
 import multiprocessing
 
 
-
 ##
 def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
              non_time_variables: typing.Union[typing.List[str], str],
@@ -61,7 +60,7 @@ def summary_process(data_array: xarray.DataArray,
                     base_name: typing.Optional[str] = None,
                     min_fract_avg: float = 1.0,
                     max_sample_resolution: typing.Optional[pd.Timedelta] = None,
-                    subsample:typing.Optional[pd.Timedelta] = None) -> typing.Optional[xarray.Dataset]:
+                    subsample: typing.Optional[pd.Timedelta] = None) -> typing.Optional[xarray.Dataset]:
     f"""
     Process data_array for max (and mean & time of max).
 
@@ -100,10 +99,10 @@ def summary_process(data_array: xarray.DataArray,
     if subsample:  # want to sub-sample the data.
         my_logger.info(f'Resampling to {subsample} time_bounds:{time_bounds} len: {len(data_array[time_dim])}')
         times = pd.date_range(start=time_bounds[0], end=time_bounds[1],
-                              freq=subsample, inclusive='both') # times wanted
-        data_array = data_array.reindex({time_dim:times}, method='nearest', tolerance=subsample / 2)
+                              freq=subsample, inclusive='both')  # times wanted
+        data_array = data_array.reindex({time_dim: times}, method='nearest', tolerance=subsample / 2)
     # remove slices where ALL data is missing
-    L= data_array.isnull().all(['x','y']) # All values missing mask in time.
+    L = data_array.isnull().all(['x', 'y'])  # All values missing mask in time.
     data_array = data_array.where(~L, drop=True)
     # and update the time_bounds
     time_bounds = [data_array[time_dim].min().values, data_array[time_dim].max().values]
@@ -147,14 +146,15 @@ def summary_process(data_array: xarray.DataArray,
     td = data_array.time.diff(time_dim)
     time_resoln = td.median().values
     if (max_sample_resolution is not None) and (time_resoln > max_sample_resolution):
-        my_logger.warning(f"Sample resolution {time_resoln} > {max_sample_resolution}. Setting to {max_sample_resolution}")
+        my_logger.warning(
+            f"Sample resolution {time_resoln} > {max_sample_resolution}. Setting to {max_sample_resolution}")
         time_resoln = max_sample_resolution
     result['sample_resolution'] = time_resoln
 
     L = (td != time_resoln)
     if L.any():
         scale = np.timedelta64(1, 'm')
-        res = time_resoln/scale
+        res = time_resoln / scale
         bad_td = td.where(L, drop=True) / scale
         my_logger.warning(
             f"Time resolution not consistent -- median {res} mins. {len(bad_td)} bad values {np.unique(bad_td.values)}")
@@ -316,7 +316,7 @@ type_cm = typing.Literal['mean', 'median']
 type_rain_conv = typing.Optional[typing.Tuple[float, float]]  # for converting to rain
 
 
-def read_zip(path: pathlib.Path|str,
+def read_zip(path: pathlib.Path | str,
              concat_dim: str = 'valid_time',
              coarsen: typing.Optional[typing.Dict[str, int]] = None,
              coarsen_method: type_cm = 'mean',
@@ -327,6 +327,7 @@ def read_zip(path: pathlib.Path|str,
              first_file: bool = False,
              region: typing.Optional[typing.Dict[str, slice]] = None,
              to_rain: type_rain_conv = None,
+             calibration:typing.Optional[pd.DataFrame] = None,
              **load_kwargs
              ) -> typing.Optional[xarray.Dataset]:
     """
@@ -348,15 +349,16 @@ def read_zip(path: pathlib.Path|str,
     :param bounds_vars:  tuple of variables that are bounds
     :param region -- region to select from.
     :param to_rain -- if set convert reflectivty to rain using these co-efficients. Happens after dbz_ref_limits used.
+    :param calibration -- if not none then apply calibration to data prior to any other changes,
     :param load_kwargs: kwargs for loading in read_radar_zipfile
 
     :return:
     """
-    if isinstance(path,str):
-        path= pathlib.Path(path) # convert to a path
+    if isinstance(path, str):
+        path = pathlib.Path(path)  # convert to a path
 
     if not path.exists():
-        raise ValueError(f"{path} does nto exist")
+        raise ValueError(f"{path} does not exist")
     radar_dataset = ausLib.read_radar_zipfile(path, first_file=first_file,
                                               concat_dim=concat_dim, region=region,
                                               **load_kwargs)
@@ -384,12 +386,12 @@ def read_zip(path: pathlib.Path|str,
         v = radar_dataset[var]
         for d in list(v.dims):
             nd = v[d].size
-            v = v.sortby(d).drop_duplicates(d) # sort and remove duplicates for this dim.
+            v = v.sortby(d).drop_duplicates(d)  # sort and remove duplicates for this dim.
             if v[d].size != nd:
                 my_logger.warning(f'Removed duplicates for {var} on {d} from {path}')
 
         result[var] = v
-        my_logger.debug(f'Sorted variable {var}')
+        my_logger.debug(f'Sorted variable {var} dims')
     radar_dataset = xarray.Dataset(result)
 
     # do some specials for reflectivity
@@ -407,7 +409,14 @@ def read_zip(path: pathlib.Path|str,
             mv = mv.sum(vars_non_time)
             mv = mv.assign_attrs(units='', extra='Count of missing values')
             radar_dataset[miss_var] = mv
-
+            # apply calibration adjustment if provided.
+            if calibration is not None:
+                for indx, row in calibration.iterrows():
+                    L = (radar_dataset[concat_dim] <= row['max_time'] )& (radar_dataset[concat_dim] >= row['min_time'])
+                    radar_dataset[L][v] = radar_dataset[L][v] - row['calibration_offset']
+                    my_logger.debug(f'Applied calibration {row} to {L.sum()} times in {v}')
+                    radar_dataset[v].attrs['calibration_offset'] = row['calibration_offset']
+                    raise NotImplementedError('Calibration not yet tested')
             # set values below threshold to 0 and above to missing for reflectivity
             L0 = None
             if (dbz_ref_limits is not None) and (units == 'dbz') and (std_name == 'equivalent_reflectivity_factor'):
@@ -479,10 +488,25 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                          coarsen_cv_max: typing.Optional[float] = None,
                          region: typing.Optional[typing.Dict[str, slice]] = None,
                          to_rain: type_rain_conv = None,
+                         calibration: typing.Optional[pd.DataFrame] = None,
                          ) -> xarray.Dataset:
+    """
+
+    :param zip_files:
+    :param coarsen:
+    :param coarsen_method:
+    :param dbz_ref_limits:
+    :param coarsen_cv_max:
+    :param region:
+    :param to_rain:
+    :param calibration:
+    :return:
+    """
     # read in first file to get helpful co-ord info. The more we read the slower we go.
-    drop_vars_first = ['error', 'reflectivity']  # variables not to read for meta info
-    drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj']  # variables not to read for data
+    drop_vars_first = ['error', 'reflectivity', 'doppler_velocity',
+                       'count_rain_rate_missing']  # variables not to read for meta info
+    drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj', 'doppler_velocity',
+                 'count_rain_rate_missing']  # variables not to read for data
     fld_info = read_zip(zip_files[0], drop_variables=drop_vars_first, coarsen=coarsen,
                         first_file=True, parallel=True, region=region)
 
@@ -494,7 +518,8 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                       region=region,
                       drop_variables=drop_vars, concat_dim='valid_time', parallel=True,
                       combine='nested',
-                      chunks=dict(valid_time=6), engine='netcdf4', to_rain=to_rain)
+                      chunks=dict(valid_time=6), engine='netcdf4', to_rain=to_rain,
+                      calibration=calibration)
 
         ds.append(dd)
     my_logger.info(f'Read in {len(ds)} files {ausLib.memory_use()}')
@@ -554,7 +579,10 @@ if __name__ == "__main__":
     parser.add_argument('--subsample', type=pd.Timedelta,
                         help='Timedelta to sub-sample to -- should be parsed by pd.Timedelta')
     parser.add_argument('--to_rain', type=float, nargs=2, help='Convert Reflectivity to rain using R=c[0]Z^c[1]')
-    parser.add_argument('--max_sample_resolution', type=pd.Timedelta,help='Maximum sample resolution.')
+    parser.add_argument('--max_sample_resolution', type=pd.Timedelta, help='Maximum sample resolution.')
+    parser.add_argument('--use_rainfields3', action='store_true',
+                        help='Use rainfields3 data rather than hist. Will need calibration values '
+                             'from meta-data')
     ausLib.add_std_arguments(parser)
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # deal with the std arguments
@@ -574,11 +602,14 @@ if __name__ == "__main__":
 
     site_number = f'{site_numbers[args.site]:d}'
     indir = pathlib.Path('/g/data/rq0/hist_gndrefl') / site_number
+    if args.use_rainfields3:
+        indir = pathlib.Path('/g/data/rq0/rainfields3') / site_number
     my_logger.info(f'Input directory is {indir}')
-    my_logger.info(f'resample periods are: {args.resample}')
+
     if not indir.exists():
         my_logger.warning('Input directory {indir} does not exist')
         raise FileNotFoundError(f'Input directory {indir} does not exist')
+    my_logger.info(f'resample periods are: {args.resample}')
     outdir = pathlib.Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     my_logger.info(f'Output directory is {outdir}')
@@ -608,22 +639,33 @@ if __name__ == "__main__":
         my_logger.info(f'Region is {region}')
     else:
         region = None
+    calib = None
+    if args.use_rainfields3:
+        my_logger.info('Loading rainfields3 bias adjustment')
+        raise NotImplementedError('Need to add in calibration values for rainfields3')
     for year in args.years:
         my_logger.info(f'Processing year {year}')
         for month in args.months:
             pattern = f'{site_number}_{year:04d}{month:02d}' + args.glob
-            data_dir = indir / f'{year:04d}'
+            if args.use_rainfields3:
+                file = f'rainfields3_gndrefl_{year:04d}_{month:02d}'
+                data_dir = indir / f'{year:04d}' / 'gndrefl'
+                raise NotImplementedError('Need to add in calibration values for rainfields3')
+            else:
+                file = f'hist_gndrefl_{year:04d}_{month:02d}'
+                data_dir = indir / f'{year:04d}'
+
             zip_files = sorted(data_dir.glob(pattern))
             if len(zip_files) == 0:
-                my_logger.info(f'No files found for  pattern {pattern} in {data_dir} {ausLib.memory_use()}')
+                my_logger.info(f'No files found for   {data_dir}/{pattern} in {data_dir} {ausLib.memory_use()}')
                 continue
-            my_logger.info(f'Found {len(zip_files)} files for pattern {pattern} {ausLib.memory_use()} ')
-            file = f'hist_gndrefl_{year:04d}_{month:02d}.nc'
+            my_logger.info(f'Found {len(zip_files)} files for {data_dir}{pattern} {ausLib.memory_use()} ')
             if args.to_rain:
-                file = f'hist_gndrefl_{year:04d}_{month:02d}_rain.nc'
+                file += '_rain'
+            file += '.nc'
             outpath = outdir / file
             if (not args.overwrite) and outpath.exists():
-                my_logger.warning(f'{outpath} and no_over_write set. Skipping processing')
+                my_logger.warning(f'{outpath} exists  skipping processing. Use --overwrite')
                 continue
             to_rain: type_rain_conv = None
             if args.to_rain is not None:
@@ -631,7 +673,8 @@ if __name__ == "__main__":
             ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
                                       coarsen=coarsen, region=region,
                                       coarsen_method=args.coarsen_method,
-                                      coarsen_cv_max=args.cv_max, to_rain=to_rain)
+                                      coarsen_cv_max=args.cv_max, to_rain=to_rain,
+                                      calibration=calib)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
             basename = 'reflectivity'
             if args.to_rain is not None:
