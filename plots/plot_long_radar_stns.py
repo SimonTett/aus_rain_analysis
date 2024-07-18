@@ -9,7 +9,7 @@ import commonLib
 
 long_radar_data = ausLib.read_radar_file("meta_data/long_radar_stns.csv")
 all_radar_data = ausLib.read_radar_file("meta_data/radar_site_list.csv")
-fig = plt.figure(num="long_radar_aus", figsize=(8, 5), clear=True, layout='constrained')
+fig = plt.figure(num="long_radar_stns", figsize=(8, 5), clear=True, layout='constrained')
 ax = fig.add_subplot(111, projection=ccrs.PlateCarree())
 ax.set_extent([110, 160, -45, -10])
 ax.coastlines()

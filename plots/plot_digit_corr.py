@@ -67,3 +67,4 @@ for site, ax in axes.items():
 fig.suptitle(f'Correction and Digitisation')
 fig.show()
 commonLib.saveFig(fig)
+commonLib.saveFig(fig,transpose=True)

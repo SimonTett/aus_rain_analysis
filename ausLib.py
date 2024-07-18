@@ -35,8 +35,12 @@ site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
                     )
 site_names = dict(zip(site_numbers.values(), site_numbers.keys()))  # reverse lookup
+all_sites=list(site_numbers.keys())
+# Mornington is poor so removing it. Melbourne and West Takone not well bias corrected.
+for site in ['Mornington','Melbourne','Wtakone']:
+    all_sites.remove(site)
 region_names = dict(#Tropics=['Cairns', 'Mornington'],
-                    BLANK=['Mornington','Cairns'], # tropics is blank coz Mornington is poor.
+                    EAus=all_sites, # t
                     QLD=['Gladstone', 'Brisbane', 'Grafton'],
                     NSW=['Newcastle', 'Sydney', 'Canberra'],
                     South=['Melbourne', 'Wtakone', 'Adelaide']

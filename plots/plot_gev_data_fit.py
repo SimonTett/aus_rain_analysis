@@ -42,7 +42,7 @@ fig,axs = ausLib.std_fig_axs('gev_data_fit',sharex=True,sharey=True)
 
 for site,ax in axs.items():
     for prd,col in zip(['30min','1h','2h','4h'],['r','g','b','brown']):
-        data = norm_data[site].selFalse(resample_prd=prd).isel(quantv=slice(1,-1)).stack(idx=['quantv','EventTime']).dropna('idx')
+        data = norm_data[site].sel(resample_prd=prd).isel(quantv=slice(1,-1)).stack(idx=['quantv','EventTime']).dropna('idx')
         gev= scipy.stats.genextreme( c=shape[site].sel(resample_prd=prd))
         osm, osr = scipy.stats.probplot(data,dist=gev,fit=False)
         ax.scatter(osm,osr,marker='.',s=1,color=col,label=prd)
@@ -80,3 +80,4 @@ legend=fig.legend(handles, labels, loc=(0.4, 0.9), fontsize='small')
 
 fig.show()
 commonLib.saveFig(fig)
+commonLib.saveFig(fig,transpose=True)

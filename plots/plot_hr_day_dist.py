@@ -80,5 +80,6 @@ for site, ax in axs.items():
 fig.suptitle('Day Hour/Season Day')
 fig.show()
 commonLib.saveFig(fig)
+commonLib.saveFig(fig,transpose=True)
 
 

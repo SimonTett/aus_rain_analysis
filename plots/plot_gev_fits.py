@@ -154,6 +154,7 @@ if __name__ == '__main__':
     fig.suptitle('Fractional changes in GEV location and scale parameters.')
     fig.show()
     commonLib.saveFig(fig)
+    commonLib.saveFig(fig,transpose=True)
 
     ## plot the parameters for the radar stations.
     ds = gev['Melbourne'].be_t
@@ -200,3 +201,4 @@ if __name__ == '__main__':
     fig.suptitle('GEV Parameters')
     fig.show()
     commonLib.saveFig(fig)
+    commonLib.saveFig(fig,transpose=True)

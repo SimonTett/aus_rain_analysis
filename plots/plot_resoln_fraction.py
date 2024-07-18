@@ -49,8 +49,8 @@ for site, ax in axes.items():
     fraction = datasets_resoln_fraction[site].fraction.load()
     fraction.plot(ax=ax2,drawstyle='steps-pre',marker='+',linestyle='None',ms=3,color='purple')
     ax2.set_ylabel('Fraction',color='purple',size='small')
-    ax2.set_yticks(ticks)
     ticks=[0.75,0.8,0.85,0.9,0.95,1.0]
+    ax2.set_yticks(ticks)
     ax2.set_yticklabels([str(tick) for tick in ticks], size='small', color='purple')
     ax2.set_title('')
     ax2.label_outer()
@@ -59,3 +59,4 @@ for site, ax in axes.items():
 fig.suptitle(f'Sampling resolution')
 fig.show()
 commonLib.saveFig(fig)
+commonLib.saveFig(fig,transpose=True)
