@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+!/usr/bin/env bash
 # This script is used to generate events data from the radar monthly processed files.
 # it generates beam blockage factors and DEM then seasonal avergaes the data for DJF before finally computing the events
 #conda activate /home/z3542688/analysis/aus_rain_analysis/mamba_rain_env

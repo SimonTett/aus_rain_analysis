@@ -66,7 +66,7 @@ for site, ax in axes.items():
     y = 0.75 * lim[1] + 0.25 * lim[0]
     for name, r in records.iterrows():
         x = np.datetime64(r['postchange_start'])
-        axes[site].axvline(x, color='red', linestyle='--')
+        axes[site].axvline(x, color='k', linestyle='--')
         axes[site].text(x, y, r.radar_type, ha='left', va='center', fontsize='x-small', rotation=90)
     # add second axis for temperature
     ax2 = ax.twinx()

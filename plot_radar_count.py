@@ -1,1 +1,0 @@
-# plot count of non-zero/non-missing data for 2019
