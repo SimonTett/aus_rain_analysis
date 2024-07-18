@@ -413,10 +413,11 @@ def read_zip(path: pathlib.Path | str,
             if calibration is not None:
                 for indx, row in calibration.iterrows():
                     L = (radar_dataset[concat_dim] <= row['max_time'] )& (radar_dataset[concat_dim] >= row['min_time'])
-                    radar_dataset[L][v] = radar_dataset[L][v] - row['calibration_offset']
-                    my_logger.debug(f'Applied calibration {row} to {L.sum()} times in {v}')
-                    radar_dataset[v].attrs['calibration_offset'] = row['calibration_offset']
-                    raise NotImplementedError('Calibration not yet tested')
+                    if L.any():
+                        radar_dataset[L][v] = radar_dataset[L][v] - row['calibration_offset']
+                        my_logger.debug(f'Applied calibration {row} to {L.sum()} times in {v}')
+                        radar_dataset[v].attrs['calibration_offset'] = row['calibration_offset']
+                raise NotImplementedError('Calibration not yet tested')
             # set values below threshold to 0 and above to missing for reflectivity
             L0 = None
             if (dbz_ref_limits is not None) and (units == 'dbz') and (std_name == 'equivalent_reflectivity_factor'):
