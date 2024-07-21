@@ -1383,3 +1383,22 @@ def comp_ratios(gev_parameters: xarray.Dataset, covariance: str | list[str] = 'T
     da=xarray.concat(da,dim='parameter')
     return da
 
+def plot_radar_change(ax:matplotlib.pyplot.axes,radar_site:pd.DataFrame):
+    """
+    Plot the change times on an existing axis
+    Args:
+        ax: axis on which to plot
+        radar_site: dataframe of radar site information. Each row corresponds to change at site
+
+    Returns:
+
+    """
+
+    lim = np.array(ax.get_ylim())
+    y = 0.75 * lim[1] + 0.25 * lim[0]
+    for name, r in radar_site.iterrows():
+        x = np.datetime64(r['postchange_start'])
+        ax.axvline(x, color='k', linestyle='--')
+        ax.text(x, y, r.radar_type, ha='left', va='center', fontsize='x-small', rotation=90)
+
+
