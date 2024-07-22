@@ -61,6 +61,7 @@ if hostname.startswith('gadi'):  # aus super-computer
     radar_dir = pathlib.Path("/g/data/rq0/level_2/")
     data_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
     hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/")
+    agcd_rain_dir = pathlib.Path("/g/data/zv2/agcd/v2-0-2/precip/total/r001/01month/") # where the AGCD data lives
 elif hostname.startswith('ccrc'):  # CCRC desktop
     data_dir = pathlib.Path("/home/z3542688/OneDrive/data/aus_radar_analysis/radar")
     common_data = pathlib.Path("/home/z3542688/OneDrive/data/common_data")

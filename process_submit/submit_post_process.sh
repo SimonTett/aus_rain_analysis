@@ -72,7 +72,7 @@ if [[ -z "${region_name}" ]]; then
   submit_opts+=" --json_submit ${AUSRAIN}/config_files/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
   submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
   submit_opts+=${hold_after}
-  cmd="process_seas_avg_mask.py  ${summary_dir} ${sm_file} --no_mask_file ${nomask_file} ${extra_args} ${submit_opts} "
+  cmd="process_seas_avg_mask.py  ${summary_dir} --output ${sm_file} --no_mask_file ${nomask_file} ${extra_args} ${submit_opts} "
   jobid_mean=$($cmd)
   status=$?
   if [[ $status -ne 0 ]]; then

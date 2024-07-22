@@ -110,7 +110,7 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
     parser = argparse.ArgumentParser(description="Compute Masked seasonal mean data for processed radar data")
     parser.add_argument('input_dir',  type=pathlib.Path, help='Input dir for radar data')
-    parser.add_argument('output', type=pathlib.Path, help='name of output file')
+    parser.add_argument('--output', type=pathlib.Path, help='name of output file')
     parser.add_argument('--site', type=str, help='Site name -- overrides meta data in input files')
     parser.add_argument('--cbb_dem_files', type=pathlib.Path, help='Names of CCB/DEM files', nargs='+')
     parser.add_argument('--season', type=str, help='Season to use. One of DJF etc or monthly.', default='DJF',
@@ -120,8 +120,17 @@ if __name__ == '__main__':
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Very I/O code so avoid dask
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # setup the logging
+    if args.output is None:
+        full_path = args.input_dir.resolve().parts
+        out_radar = pathlib.Path(*full_path[:-2]) / 'processed' / full_path[-1]
+        if args.season == 'monthly':
+            out_radar = out_radar/f'monthly_mean_{args.input_dir.name}.nc'
+        else:
+            out_radar = out_radar/f'seas_mean_{args.input_dir.name}_{args.season}.nc'
 
-    out_radar = args.output
+        my_logger.debug(f'Set out_radar to {out_radar}')
+    else:
+        out_radar = args.output
     if out_radar.exists() and (not args.overwrite):
         my_logger.warning(f"Output file {out_radar} exists and overwrite not set. Exiting")
         sys.exit(0)
