@@ -13,10 +13,13 @@ import commonLib
 calib = 'melbourne'
 
 my_logger = ausLib.setup_log(1)
-
-# read_plot_mean_monthly_rain = False # uncomment to force re-read of data
+sydney_sens_studies = ['Sydney_rain_brisbane','Sydney_rain_melbourne',
+                 'Sydney_rain_melbourne_10min','Sydney_rain_melbourne_5_65']
+#read_plot_mean_monthly_rain = False # uncomment to force re-read of data
 if not ('read_plot_mean_monthly_rain' in locals() and read_plot_mean_monthly_rain):
-    obs_files = sorted(ausLib.agcd_rain_dir.glob('*.nc'))
+    r=75e3
+    rgn =  dict(x=slice(-r,r),y=slice(-r,r))
+    obs_files = sorted(ausLib.agcd_rain_dir.glob('*.nc')) # region to extract
     ds_obs = xarray.open_mfdataset(obs_files).sel(time=slice('1997', None))
     total_rain = dict()
     gauge_total = dict()
@@ -32,13 +35,27 @@ if not ('read_plot_mean_monthly_rain' in locals() and read_plot_mean_monthly_rai
             raise FileNotFoundError(f'No file {file}')
 
         ds = xarray.open_dataset(file)
-        mean_rain = ds.mean_raw_rain_rate.sel(x=slice(-5e3,5e3),y=slice(-5e3,5e3)).mean(['x','y']).load()
+        mean_rain = ds.mean_raw_rain_rate.sel(**rgn).mean(['x','y']).load()
         total_rain[site] = mean_rain*mean_rain.time.dt.days_in_month*24
         #site_info[site] = ausLib.site_info(ausLib.site_numbers[site])
         gauge_total[site] = ds_obs.precip.sel(lon=site_rec.site_lon,lat=site_rec.site_lat,method='nearest').load()
         my_logger.info(f'Loaded data for {site}')
+    # read in the Sydney sens studies.
+    for file in sydney_sens_studies:
+        direct = ausLib.data_dir / f'processed/{file}'
+        filep = direct/f'monthly_mean_{file}.nc'
+        if not filep.exists():
+            raise FileNotFoundError(f'No file {filep}')
+        ds = xarray.open_dataset(filep)
+
+        mean_rain = ds.mean_raw_rain_rate.sel(**rgn).mean(['x','y']).load()
+        total_rain[file] = mean_rain*mean_rain.time.dt.days_in_month*24
+
+        my_logger.info(f'Loaded data for {file}')
     read_plot_mean_monthly_rain = True # have read in data. Don't want to do it again!
     my_logger.info('Loaded all data')
+else:
+    my_logger.info('Data already loaded')
 
 
 
@@ -73,5 +90,30 @@ fig_dir = pathlib.Path('extra_figs')
 for f in [fig,fig2]:
     commonLib.saveFig(f,savedir=fig_dir)
     commonLib.saveFig(f,savedir=fig_dir,transpose=True)
+
+# now to plot the Sydney sensitivity studies
+fig,(ax,ax_ratio) = plt.subplots(1,2,figsize=(8,6),num='sydney_ss_mean_monthly_rain',
+                       sharex=True,clear=True,layout='constrained')
+gauge=gauge_total['Sydney'].rolling(time=12,center=True).mean()
+for file,col in zip(sydney_sens_studies,['red','blue','green','brown']):
+    rm=total_rain[file].rolling(time=12,center=True).mean()
+    rm.plot(ax=ax,drawstyle='steps-mid',color=col,label=file)
+    ratio = rm/gauge.interp_like(rm)
+    ratio.plot(ax=ax_ratio,drawstyle='steps-mid',color=col,label=file)
+gauge.plot(ax=ax,label='AGCD gauge',drawstyle='steps-mid',color='purple',alpha=0.5)
+ax.set_ylabel('Total  (mm)',size='small')
+ax.set_title('Sydney total rainfall')
+ax_ratio.set_title('Radar/Gauge Sydney')
+for a in [ax,ax_ratio]:
+    a.set_xlabel('Time')
+    a.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
+    ausLib.plot_radar_change(a,site_info['Sydney'])
+
+ax.legend()
+fig.show()
+commonLib.saveFig(fig,savedir=fig_dir)
+
+
+
 
 

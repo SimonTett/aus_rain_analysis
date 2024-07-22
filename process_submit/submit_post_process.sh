@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Post-process the radar data. First argument is the directory of the radar data to process
-# Some other optional args are --region x0 y0 x1 y1 reg_name -- region to extract to and name of region.
-# If this is provided then code does nto subit job to do seasonal meaning/masking as assumes this has already been done.
-#  The output events and gev fits are created in a new directory based on the regional name.
+# Some other optional args are:
+# --region x0 y0 x1 y1 reg_name -- region to extract to and name of region.
+#     If this is provided then code does not sumbit job to do seasonal meaning/masking
+#        as assumes this has already been done.
+#     The output events and gev fits are created in a new directory based on reg_name.
 # --holdafter jobs -- run first post-processing script after the job(s) have completed.
+#
 # Need to have run setup.sh before running this script.
 if [[ -z $AUSRAIN ]]; then
   echo "Error: Must define AUSRAIN first. Have you done . setup.sh ??" >&2
