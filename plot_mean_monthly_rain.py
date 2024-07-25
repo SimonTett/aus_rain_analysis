@@ -12,21 +12,8 @@ import commonLib
 import cartopy
 import cartopy.geodesic
 
-def obs_precip_radius(obs_precip:xarray.DataArray,lon:float,lat:float,
-                      radius:np.ndarray) -> xarray.DataArray:
-    pts = np.meshgrid(obs_precip.lon, obs_precip.lat)
-    pts = np.vstack([pts[0].flatten(), pts[1].flatten()]).T
-    earth_geo = cartopy.geodesic.Geodesic()
-    dist = earth_geo.inverse([lon, lat], pts)
-    coords = [obs_precip.lon, obs_precip.lat]
-    rad = xarray.DataArray(dist[:, 0].reshape(len(coords[0]), len(coords[1])) / 1e3,
-                           coords=coords)
-    result = obs_precip.groupby_bins(rad, radius).mean()
-    return result
-# use as follows:
-# dd=ds_obs.precip.sel(lon=slice(site_rec.site_lon-2,site_rec.sat_lon+2),
-#   lat=site_rec.site_lat,method='nearest').load()
-# p_r = obs_precip_radius(dd,site_rec.site_lon,site_rec.site_lat,np.arange(0,200,50))
+
+
 
 
 calib = 'melbourne'
@@ -38,7 +25,7 @@ sydney_sens_studies = ['Sydney_rain_brisbane','Sydney_rain_melbourne',
 if not ('read_plot_mean_monthly_rain' in locals() and read_plot_mean_monthly_rain):
     r=75e3
     rgn =  dict(x=slice(-r,r),y=slice(-r,r))
-    obs_files = sorted(ausLib.agcd_rain_dir.glob('*.nc')) # region to extract
+    obs_files = sorted(ausLib.agcd_rain_dir.glob('*.nc'))
     ds_obs = xarray.open_mfdataset(obs_files).sel(time=slice('1997', None))
     total_rain = dict()
     gauge_total = dict()
