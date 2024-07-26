@@ -1400,6 +1400,7 @@ def plot_radar_change(ax:matplotlib.pyplot.axes,radar_site:pd.DataFrame):
     for name, r in radar_site.iterrows():
         x = np.datetime64(r['postchange_start'])
         ax.axvline(x, color='k', linestyle='--')
-        ax.text(x, y, r.radar_type, ha='left', va='center', fontsize='x-small', rotation=90)
+        ax.text(x, 0.7, r.radar_type, transform=ax.get_xaxis_transform(),
+                ha='left', va='center', fontsize='x-small', rotation=90)
 
 

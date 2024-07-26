@@ -11,6 +11,7 @@ import numpy as np
 import commonLib
 import cartopy
 import cartopy.geodesic
+import cartopy.crs as ccrs
 
 
 
@@ -44,7 +45,14 @@ if not ('read_plot_mean_monthly_rain' in locals() and read_plot_mean_monthly_rai
         mean_rain = ds.mean_raw_rain_rate.sel(**rgn).mean(['x','y']).load()
         total_rain[site] = mean_rain*mean_rain.time.dt.days_in_month*24
         #site_info[site] = ausLib.site_info(ausLib.site_numbers[site])
-        gauge_total[site] = ds_obs.precip.sel(lon=site_rec.site_lon,lat=site_rec.site_lat,method='nearest').load()
+        # wprk out region for gauge -- convert from m to long/l
+        radar_proj = ausLib.radar_projection(ds.proj.attrs)
+        trans_coords = ccrs.PlateCarree().transform_points(radar_proj,
+                                                           x=np.array([-75e3,75e3]), y=np.array([-75e3,75e3]))
+        lon_slice = slice(trans_coords[0,0],trans_coords[1,0])
+        lat_slice = slice(trans_coords[0,1],trans_coords[1,1])
+
+        gauge_total[site] = ds_obs.precip.sel(lon=lon_slice,lat=lat_slice).mean(['lon','lat']).load()
         my_logger.info(f'Loaded data for {site}')
     # read in the Sydney sens studies.
     for file in sydney_sens_studies:
@@ -67,29 +75,40 @@ else:
 
 
 ## now to plot data
-fig,axs = ausLib.std_fig_axs('monthly_mean_rain',sharex=True,clear=True)
-fig2,axs2 = ausLib.std_fig_axs('monthly_mean_rain_ratio',sharex=True,clear=True)
+fig,axs = ausLib.std_fig_axs('monthly_mean_rain',sharex=True,sharey=True,clear=True)
+fig2,axs2 = ausLib.std_fig_axs('monthly_mean_rain_ratio',sharex=True,sharey=True,clear=True)
+roll_window =12
+roll_window_ratio = 3
 for site,ax in axs.items():
     #total_rain[site].plot(ax=ax,drawstyle='steps-mid',color='k')
     #gauge_total[site].plot(ax=ax,drawstyle='steps-mid',color='purple',alpha=0.5)
-    total_rain[site].rolling(time=12,center=True).mean().plot(ax=ax,drawstyle='steps-mid',color='k')
-    gauge_total[site].rolling(time=12,center=True).mean().plot(ax=ax,drawstyle='steps-mid',color='purple',alpha=0.5)
+    total_rain[site].resample(time='QS-DEC').sum().plot(ax=ax,drawstyle='steps-post',color='blue')
+    gauge_total[site].resample(time='QS-DEC').sum().plot(ax=ax,drawstyle='steps-post',color='purple')
     ax.set_ylabel('Total  (mm)',size='small')
-    ausLib.plot_radar_change(ax,site_info[site])
+
     ax.set_title(site)
     ax.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
+    ax.set_ylim(10, None)
+
     # plot ratio
     ax2 = axs2[site]
-    gt  = gauge_total[site].rolling(time=12,center=True).mean()
-    rt = total_rain[site].rolling(time=12,center=True).mean()
+    gt  = gauge_total[site].rolling(time=roll_window_ratio,center=True).mean()
+    rt = total_rain[site].rolling(time=roll_window_ratio,center=True).mean()
     gt = gt.interp_like(rt)
     ratio = rt/gt
-    ratio.plot(ax=ax2,drawstyle='steps-mid',color='k')
-    ausLib.plot_radar_change(ax2,site_info[site])
+    ratio.plot(ax=ax2,drawstyle='steps-post',color='blue')
+
     ax2.set_title(f'Radar/Gauge {site}',size='small')
     ax2.set_ylabel('Ratio',size='small')
     ax2.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
+    ax2.axhline(1.0,linestyle='dashed',color='k')
+    ax2.set_ylim(0.05,None)
+    for a in [ax,ax2]:
+        a.set_yscale('log')
+        ausLib.plot_radar_change(a, site_info[site])
 
+fig.suptitle('Seasonal mean rainfall')
+fig2.suptitle('3-month rolling Radar/Gauge')
 fig.show()
 fig2.show()
 fig_dir = pathlib.Path('extra_figs')
@@ -100,19 +119,26 @@ for f in [fig,fig2]:
 # now to plot the Sydney sensitivity studies
 fig,(ax,ax_ratio) = plt.subplots(1,2,figsize=(8,6),num='sydney_ss_mean_monthly_rain',
                        sharex=True,clear=True,layout='constrained')
-gauge=gauge_total['Sydney'].rolling(time=12,center=True).mean()
+gauge=gauge_total['Sydney'].resample(time='QS-DEC').sum()
+gauge_rolling = gauge.rolling(time=roll_window_ratio,center=True).mean()
 for file,col in zip(sydney_sens_studies,['red','blue','green','brown']):
-    rm=total_rain[file].rolling(time=12,center=True).mean()
-    rm.plot(ax=ax,drawstyle='steps-mid',color=col,label=file)
+    rm=total_rain[file].resample(time='QS-DEC').sum()
+    rm.plot(ax=ax,drawstyle='steps-post',
+            color=col,label=file.replace('Sydney_rain_',''))
+    rm = total_rain[file].rolling(time=roll_window_ratio,center=True).mean()
     ratio = rm/gauge.interp_like(rm)
-    ratio.plot(ax=ax_ratio,drawstyle='steps-mid',color=col,label=file)
-gauge.plot(ax=ax,label='AGCD gauge',drawstyle='steps-mid',color='purple',alpha=0.5)
+    ratio.plot(ax=ax_ratio,drawstyle='steps-post',color=col,label=file)
+gauge.plot(ax=ax,label='AGCD gauge',drawstyle='steps-mid',color='purple')
 ax.set_ylabel('Total  (mm)',size='small')
 ax.set_title('Sydney total rainfall')
+ax.set_ylim(10, 1000)
 ax_ratio.set_title('Radar/Gauge Sydney')
+ax_ratio.axhline(1.0, linestyle='dashed', color='k')
+ax_ratio.set_ylim(0.05, 10)
 for a in [ax,ax_ratio]:
     a.set_xlabel('Time')
     a.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
+    a.set_yscale('log')
     ausLib.plot_radar_change(a,site_info['Sydney'])
 
 ax.legend()
