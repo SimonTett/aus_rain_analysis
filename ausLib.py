@@ -1384,13 +1384,14 @@ def comp_ratios(gev_parameters: xarray.Dataset, covariance: str | list[str] = 'T
     da=xarray.concat(da,dim='parameter')
     return da
 
-def plot_radar_change(ax:matplotlib.pyplot.axes,radar_site:pd.DataFrame):
+def plot_radar_change(ax:matplotlib.pyplot.axes,radar_site:pd.DataFrame,
+                      trmm:bool = False) -> None:
     """
     Plot the change times on an existing axis
     Args:
         ax: axis on which to plot
         radar_site: dataframe of radar site information. Each row corresponds to change at site
-
+        trmm: If set True plot TRMM availability + orbit boost. GPM also plotted.
     Returns:
 
     """
@@ -1402,5 +1403,9 @@ def plot_radar_change(ax:matplotlib.pyplot.axes,radar_site:pd.DataFrame):
         ax.axvline(x, color='k', linestyle='--')
         ax.text(x, 0.7, r.radar_type, transform=ax.get_xaxis_transform(),
                 ha='left', va='center', fontsize='x-small', rotation=90)
-
+    if trmm: # plot TRMM range
+        for d in ['1997-11-27','2001-06-08','2014-07-15']:
+            ax.axvline(np.datetime64(d),color='green',linewidth=1.5,linestyle='--')
+        d='2014-03-10' # guess for when  first data from GPMM is
+        ax.axvline(np.datetime64(d),color='green',linewidth=1.5,linestyle='dashdot')
 

@@ -105,7 +105,7 @@ for site,ax in axs.items():
     ax2.set_ylim(0.05,None)
     for a in [ax,ax2]:
         a.set_yscale('log')
-        ausLib.plot_radar_change(a, site_info[site])
+        ausLib.plot_radar_change(a, site_info[site],trmm=True)
 
 fig.suptitle('Seasonal mean rainfall')
 fig2.suptitle('3-month rolling Radar/Gauge')
@@ -139,7 +139,8 @@ for a in [ax,ax_ratio]:
     a.set_xlabel('Time')
     a.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
     a.set_yscale('log')
-    ausLib.plot_radar_change(a,site_info['Sydney'])
+    ausLib.plot_radar_change(a,site_info['Sydney'],trmm=True)
+    a.label_outer()
 
 ax.legend()
 fig.show()
