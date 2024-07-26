@@ -42,18 +42,24 @@ if not ('read_plot_mean_monthly_rain' in locals() and read_plot_mean_monthly_rai
             raise FileNotFoundError(f'No file {file}')
 
         ds = xarray.open_dataset(file)
-        mean_rain = ds.mean_raw_rain_rate.sel(**rgn).mean(['x','y']).load()
-        total_rain[site] = mean_rain*mean_rain.time.dt.days_in_month*24
+        mean_rain = ds.mean_raw_rain_rate.sel(**rgn)
+        total_rain[site] = (mean_rain.mean(['x','y'])*mean_rain.time.dt.days_in_month*24).load()
         #site_info[site] = ausLib.site_info(ausLib.site_numbers[site])
-        # wprk out region for gauge -- convert from m to long/l
+        # work  out region for gauge -- convert from m to long/l
         radar_proj = ausLib.radar_projection(ds.proj.attrs)
         trans_coords = ccrs.PlateCarree().transform_points(radar_proj,
                                                            x=np.array([-75e3,75e3]), y=np.array([-75e3,75e3]))
+        # get in the gauge data then inteprolate to radar grid and mask by radar data
         lon_slice = slice(trans_coords[0,0],trans_coords[1,0])
         lat_slice = slice(trans_coords[0,1],trans_coords[1,1])
-
-        gauge_total[site] = ds_obs.precip.sel(lon=lon_slice,lat=lat_slice).mean(['lon','lat']).load()
+        gauge = ds_obs.precip.sel(lon=lon_slice,lat=lat_slice)
+        longitude = mean_rain.longitude.isel(time=0).squeeze(drop=True)
+        latitude= mean_rain.latitude.isel(time=0).squeeze(drop=True)
+        time = mean_rain.time
+        gauge = gauge.interp(lon=longitude, lat=latitude,time=time).where(mean_rain.notnull())
+        gauge_total[site] = gauge.mean(['x','y']).load()
         my_logger.info(f'Loaded data for {site}')
+
     # read in the Sydney sens studies.
     for file in sydney_sens_studies:
         direct = ausLib.data_dir / f'processed/{file}'
@@ -140,7 +146,7 @@ for a in [ax,ax_ratio]:
     a.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
     a.set_yscale('log')
     ausLib.plot_radar_change(a,site_info['Sydney'],trmm=True)
-    a.label_outer()
+
 
 ax.legend()
 fig.show()

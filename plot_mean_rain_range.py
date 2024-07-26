@@ -9,6 +9,7 @@ import commonLib
 import pathlib
 import cartopy
 import cartopy.geodesic
+import cartopy.crs as ccrs
 def obs_precip_radius(obs_precip:xarray.DataArray,
                       lon:typing.Optional[float]=None,
                       lat:typing.Optional[float]=None,
@@ -64,12 +65,19 @@ if not ('read_mean_rain_range' in locals() and read_mean_rain_range):
         range = np.sqrt(mn_rain.x ** 2 + mn_rain.y ** 2) / 1000.
         mean_radar_rain[site] = mn_rain.groupby_bins(range, radius_bins).mean().load()
         mean_radar_rain_sens[site] = mn_rain_sens.groupby_bins(range, radius_bins).mean().load()
-        obs_rgn = dict(lon=slice(site_info.site_lon - 2, site_info.site_lon + 2),
-                       lat = slice(site_info.site_lat-2,site_info.site_lat+2))
-        mean_gauge_rain[site] = obs_precip_radius(ds_gauge.precip.sel(**obs_rgn),
-                                                    lon=site_info.site_lon,
-                                                    lat=site_info.site_lat,
-                                                    radius=radius_bins).load()
+        # get inthe gauge data
+        radar_proj = ausLib.radar_projection(ds_rad.proj.attrs)
+        trans_coords = ccrs.PlateCarree().transform_points(radar_proj,
+                                                           x=np.array([-125e3, 125e3]), y=np.array([-125e3, 125e3]))
+        # get in the gauge data then inteprolate to radar grid and mask by radar data
+        lon_slice = slice(trans_coords[0, 0], trans_coords[1, 0])
+        lat_slice = slice(trans_coords[0, 1], trans_coords[1, 1])
+        obs_rgn = dict(lon=lon_slice,  lat = lat_slice)
+        longitude = mn_rain.longitude.isel(time=0).squeeze(drop=True)
+        latitude = mn_rain.latitude.isel(time=0).squeeze(drop=True)
+        time = mn_rain.time
+        gauge = ds_gauge.precip.sel(**obs_rgn).interp(lon=longitude, lat=latitude, time=time).where(mn_rain.notnull())
+        mean_gauge_rain[site] = gauge.groupby_bins(range, radius_bins).mean().load()
         my_logger.info(f'Loaded data for {site}')
     read_mean_rain_range  = True
     my_logger.info('Loaded all data')
