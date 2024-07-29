@@ -86,8 +86,19 @@ else:
 
 fig, axes = ausLib.std_fig_axs(f'corr_rain', sharey=True, sharex=True)
 for site, ax in axes.items():
-    ax.scatter(implied_correction[site], correction[site].interp(time=implied_correction[site].time), s=2,color='blue')
-    ax.scatter(implied_correction_sens[site], correction[site].interp(time=implied_correction_sens[site].time), s=2,color='red')
+    corr = correction[site].interp(time=implied_correction[site].time)
+    ax.scatter(implied_correction[site], corr, s=2,color='blue')
+    # add on a regression line
+    from scipy import stats
+    slope, intercept, r_value, p_value, std_err = stats.linregress(implied_correction[site], corr)
+    #ax.plot(x, y, color='red')
+    ax.axline((0, intercept), slope=slope, color='blue')
+    ax.text(0.97, 0.05, f'y={intercept:3.2f}+{slope:3.2}x', transform=ax.transAxes, ha='right', va='bottom',color='blue',size='small')
+    ax.scatter(implied_correction_sens[site], corr, s=2,color='red')
+    slope, intercept, r_value, p_value, std_err = stats.linregress(implied_correction_sens[site], corr)
+    ax.axline((0, intercept), slope=slope, color='red')
+    ax.text(0.97, 0.15, f'y={intercept:3.2f}+{slope:3.2}x', transform=ax.transAxes, ha='right', va='bottom',
+            color='red', size='small')
     ax.set_xlabel('Implied Corr (dBZ)')
     ax.set_xlim(-20, None)
     ax.set_ylabel('Actual Corr (dBZ)')
