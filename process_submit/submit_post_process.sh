@@ -93,7 +93,7 @@ submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} 
 submit_opts+=" ${hold_after} "
 cmd="process_events.py  ${sm_file} ${event_file}  ${extra_args} ${region_args} ${submit_opts}"
 jobid_event=$($cmd)
-hold_after=" --holdafter ${jobid_event}" # hold after evbent processing
+hold_after=" --holdafter ${jobid_event}" # hold after event processing
 status=$?
 if [[ $status -ne 0 ]]; then
   echo "Error submitting job $jobid_event for $cmd" 2>&1

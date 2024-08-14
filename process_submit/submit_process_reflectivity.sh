@@ -55,6 +55,10 @@ while (( "$#" )); do
       fi
 
       ;;
+    --return_dir)
+      shift
+      return_dir=True
+      ;;
     *)
       extra_args+=" $1"
       shift
@@ -141,6 +145,12 @@ for year in $(seq ${year_start} ${year_end}); do # parallel jobs -- one for each
 done
 
 echo "Submitted all max jobs. " >&2
-echo ${all_jobs} # return list of all jobs submitted.
+if [[ -n "$return_dir" ]] ; then
+    result="${out_dir}"
+else
+  result=""
+fi
+result+=" ${all_jobs}"
+echo $result # return list of all jobs submitted.
 
 
