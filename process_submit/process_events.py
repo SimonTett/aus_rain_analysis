@@ -144,7 +144,7 @@ def comp_events(data_set: xarray.Dataset, group_fn: typing.Optional[typing.Calla
             da[time_coord] = da.copy()[time_coord].astype(time_quantisation)  # quantize t
             my_logger.debug(f'Quantizing {da.name} to month')
             # extracting values and then mask and drop time coord
-            da_extreme_times = da.squeeze(drop=True).sel(**sel).where(msk).drop_vars(time_coord)
+            da_extreme_times = da.sel(**sel).squeeze(drop=True).where(msk).drop_vars(time_coord)
             event_ds = event_ds.merge(da_extreme_times)
             my_logger.debug(f'Added {da_extreme_times.name} in')
     # add in hts
