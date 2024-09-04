@@ -38,14 +38,11 @@ def sample_events2(
         rng = np.random.default_rng()
         my_logger.debug('RNG initialised')
     my_logger.log(1, 'Starting sampling')
-    # extract initial if it exists. All very hacky..
-    #initial_params = data_set.get('initial')
-    ds = data_set.drop_vars(['initial','parameter'], errors='ignore')
     # hard wired but hopefully fast.
-    sel_dim = {d: 0 for d in ds.dims if d != dim}
-    indx = ds.max_value.isel(**sel_dim).notnull().compute().squeeze(drop=True)  # Mask is constant.
+    sel_dim = {d: 0 for d in data_set.dims if d != dim}
+    indx = data_set.max_value.isel(**sel_dim).notnull().compute().squeeze(drop=True)  # Mask is constant.
     indx = indx.drop_vars(sel_dim.keys(), errors='ignore')
-    ds = ds.where(indx, drop=True)  # drop the NaNs
+    ds = data_set.where(indx, drop=True)  # drop the NaNs
     # npts = indx.sum()
     # ds = data_set.dropna(dim)
     my_logger.log(1, 'Dropped NaNs')
@@ -56,9 +53,6 @@ def sample_events2(
     locs = xarray.DataArray(locs, coords=coords)
     my_logger.log(1, 'Computed indices')
     ds = ds.isel({dim: locs})  # and sample at dim
-    # stick initial back in..
-    #if initial_params is not None:
-    #    ds['initial'] = initial_params
     my_logger.log(1, 'Sampled data')
     return ds
 
@@ -113,12 +107,11 @@ def comp_radar_fit(
             return fit, bs_fit  # can now return the fit and bootstrap fit
 
     # normal stuff
-    #FIXME: Need to do each resample_prd separately dropping missing data when we do so.
-    # Why? Because each resample_prd has different missing data.
     rng = random.default_rng(rng_seed)
     rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
     coord = dict(sample=np.arange(0, n_samples))
-    ds = dataset.isel(quantv=rand_index). \
+    # randomly select from quantiles for each event -- they all exist (or not)
+    ds = dataset.isel(quantv=rand_index).\
         rename(dict(quantv='sample')).assign_coords(**coord)
     if use_dask:
         my_logger.debug(f'Chunking data for best est  {ausLib.memory_use()}')
@@ -151,7 +144,6 @@ def comp_radar_fit(
             bs_sample_fits = []  # where the individual samples go.
             init_params = fit.median('sample').Parameters
             # get the initial parameters. Speeds up the fit by about 10-20% and hopefully reduces odds of bad fits...
-            #init_params=None
             for samp in range(bootstrap_samples):
                 my_logger.debug('Bootstrapping')
                 ds_bs = ds.groupby('resample_prd',squeeze=False).map(sample_events2, rng=rng,
