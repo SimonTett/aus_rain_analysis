@@ -25,7 +25,7 @@ def sample_events2(
 
 ) -> xarray.Dataset:
     """
-    Sample events with replacement from a data array
+    Sample events with replacement from a data array. Not very generic...
     Args:
         data_set: xarray data set
         nsamples: number of bootstrap samples to take
@@ -38,11 +38,14 @@ def sample_events2(
         rng = np.random.default_rng()
         my_logger.debug('RNG initialised')
     my_logger.log(1, 'Starting sampling')
+    # extract initial if it exists. All very hacky..
+    #initial_params = data_set.get('initial')
+    ds = data_set.drop_vars(['initial','parameter'], errors='ignore')
     # hard wired but hopefully fast.
-    sel_dim = {d: 0 for d in data_set.dims if d != dim}
-    indx = data_set.max_value.isel(**sel_dim).notnull().compute().squeeze(drop=True)  # Mask is constant.
+    sel_dim = {d: 0 for d in ds.dims if d != dim}
+    indx = ds.max_value.isel(**sel_dim).notnull().compute().squeeze(drop=True)  # Mask is constant.
     indx = indx.drop_vars(sel_dim.keys(), errors='ignore')
-    ds = data_set.where(indx, drop=True)  # drop the NaNs
+    ds = ds.where(indx, drop=True)  # drop the NaNs
     # npts = indx.sum()
     # ds = data_set.dropna(dim)
     my_logger.log(1, 'Dropped NaNs')
@@ -53,13 +56,16 @@ def sample_events2(
     locs = xarray.DataArray(locs, coords=coords)
     my_logger.log(1, 'Computed indices')
     ds = ds.isel({dim: locs})  # and sample at dim
+    # stick initial back in..
+    #if initial_params is not None:
+    #    ds['initial'] = initial_params
     my_logger.log(1, 'Sampled data')
     return ds
 
 
 def comp_radar_fit(
         dataset: xarray.Dataset,
-        cov: typing.Optional[list[str] | str] = None,
+        cov: typing.Optional[typing.Union[list[str] , str]] = None,
         n_samples: int = 100,
         bootstrap_samples: int = 0,
         rng_seed: int = 123456,
@@ -68,7 +74,8 @@ def comp_radar_fit(
         recreate_fit: bool = False,
         name: typing.Optional[str] = None,
         extra_attrs: typing.Optional[dict] = None,
-        use_dask: bool = False
+        use_dask: bool = False,
+        verbose: bool = False
 ) -> tuple[xarray.Dataset, typing.Optional[xarray.Dataset]]:
     """
     Compute the GEV fits for radar data. This is a wrapper around the R code to do the fits.
@@ -87,6 +94,7 @@ def comp_radar_fit(
         name:  name of dataset. _bs will be appended for bootstrap fit
         extra_attrs: any extra attributes to be added
         use_dask: If True use dask for the computation.
+        verbose: Passed through to R code. Will be veryyy verbose.
 
     Returns:fit
 
@@ -105,6 +113,8 @@ def comp_radar_fit(
             return fit, bs_fit  # can now return the fit and bootstrap fit
 
     # normal stuff
+    #FIXME: Need to do each resample_prd separately dropping missing data when we do so.
+    # Why? Because each resample_prd has different missing data.
     rng = random.default_rng(rng_seed)
     rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
     coord = dict(sample=np.arange(0, n_samples))
@@ -124,7 +134,7 @@ def comp_radar_fit(
     wt = ds.count_cells
     mx = ds.max_value
     my_logger.debug('Doing GEV fit')
-    fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=True,
+    fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=verbose,
                            recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs,
                            use_dask=use_dask)
     my_logger.debug('Done GEV fit')
@@ -139,9 +149,12 @@ def comp_radar_fit(
             # generating all the samples produces a very large mem object and requires data
             # to be moved around. So don't bother...
             bs_sample_fits = []  # where the individual samples go.
+            init_params = fit.median('sample').Parameters
+            # get the initial parameters. Speeds up the fit by about 10-20% and hopefully reduces odds of bad fits...
+            #init_params=None
             for samp in range(bootstrap_samples):
                 my_logger.debug('Bootstrapping')
-                ds_bs = ds.groupby('resample_prd').map(sample_events2, rng=rng,
+                ds_bs = ds.groupby('resample_prd',squeeze=False).map(sample_events2, rng=rng,
                                                        dim='EventTime'). \
                     drop_vars('EventTime').assign_coords(bootstrap_sample=samp)
                 my_logger.debug('Done bootstrapping. Extracting covars')
@@ -150,7 +163,7 @@ def comp_radar_fit(
                     cov_rand = [ds_bs[c] for c in cov]
                 my_logger.debug(f'Doing BS GEV fit for sample {samp}')
                 bs_fit = gev_r.xarray_gev(ds_bs.max_value, cov=cov_rand, dim='index', weights=ds_bs.count_cells,
-                                          verbose=True, use_dask=use_dask)
+                                          verbose=verbose, use_dask=use_dask,initial=init_params)
                 bs_sample_fits.append(bs_fit)
                 my_logger.info(f'Done BS fit for sample {samp} {ausLib.memory_use()}')
             # all done doing the individual fits. Now need to concat them together.
@@ -238,7 +251,7 @@ if __name__ == "__main__":
                                      bootstrap_file=output_fit_t_bs,
                                      recreate_fit=args.overwrite,use_dask=use_dask
                                      )
-    my_logger.info(f"Computed t fits {ausLib.memory_use()}")
+    my_logger.info(f"Computed time fits {ausLib.memory_use()}")
 
     #
     def comp_dist(ds, samples=100):
@@ -264,7 +277,7 @@ if __name__ == "__main__":
         cov_mean = fit_t.Cov.mean('sample')
         p_mean = fit_t.Parameters.mean('sample')
         ds_cov = xarray.Dataset(dict(cov=cov_mean, mean=p_mean))
-        samp_params = ds_cov.groupby('resample_prd').map(comp_dist,samples=args.nsamples).\
+        samp_params = ds_cov.groupby('resample_prd',squeeze=False).map(comp_dist,samples=args.nsamples).\
             sel(resample_prd=ds_cov.resample_prd)
 
         for p in ['location', 'scale']:

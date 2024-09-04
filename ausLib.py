@@ -30,6 +30,7 @@ import typing
 import ast  # thanks chaptGPT co-pilot
 import numpy.random as random
 
+my_logger = logging.getLogger(__name__)  # for logging
 # dict of site names and numbers.
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
@@ -68,12 +69,13 @@ elif hostname.startswith('ccrc'):  # CCRC desktop
 elif hostname == 'geos-w-048':  # my laptop
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
+    my_logger.warning("agcd_rain_dir not defined. ")
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
 module_path = pathlib.Path(__file__).parent  # path to this module
 
-my_logger = logging.getLogger(__name__)  # for logging
+
 # dict to control logging
 
 
@@ -736,7 +738,7 @@ def list_vars(
         show_dims: If True print out dimensions
         show_attrs: If True print out attributes
         fract_nan: If True show fraction of nan values
-        Returns: list of variables with prefix
+    Returns: list of variables with prefix
     """
     vars = [str(v) for v in data_set.data_vars if prefix in str(v)]
     for v in vars:
