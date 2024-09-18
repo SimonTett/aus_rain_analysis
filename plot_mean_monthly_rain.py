@@ -39,7 +39,8 @@ if not ('read_plot_mean_monthly_rain' in locals() and read_plot_mean_monthly_rai
         direct = ausLib.data_dir / f'processed/{site}_rain_{calib}'
         file = direct/f'monthly_mean_{site}_rain_{calib}.nc'
         if not file.exists():
-            raise FileNotFoundError(f'No file {file}')
+            my_logger.warning(f'No file {file}')
+            continue
 
         ds = xarray.open_dataset(file)
         mean_rain = ds.mean_raw_rain_rate.sel(**rgn)
@@ -62,6 +63,7 @@ if not ('read_plot_mean_monthly_rain' in locals() and read_plot_mean_monthly_rai
 
     # read in the Sydney sens studies.
     for file in sydney_sens_studies:
+        continue # skipp processing sysdney sens data
         direct = ausLib.data_dir / f'processed/{file}'
         filep = direct/f'monthly_mean_{file}.nc'
         if not filep.exists():
@@ -81,11 +83,19 @@ else:
 
 
 ## now to plot data
-fig,axs = ausLib.std_fig_axs('monthly_mean_rain',sharex=True,sharey=True,clear=True)
-fig2,axs2 = ausLib.std_fig_axs('monthly_mean_rain_ratio',sharex=True,sharey=True,clear=True)
+fig,axs = ausLib.std_fig_axs('monthly_mean_rain_fix',sharex=True,sharey=True,clear=True)
+fig2,axs2 = ausLib.std_fig_axs('monthly_mean_rain_ratio_fix',sharex=True,sharey=True,clear=True)
 roll_window =12
 roll_window_ratio = 3
 for site,ax in axs.items():
+    ax.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
+    ax.set_ylim(10, None)
+    ax2 = axs2[site]
+    ax2.set_ylabel('Ratio',size='small')
+    ax2.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
+    if site not in total_rain:
+        my_logger.warning(f'No data for {site}')
+        continue
     #total_rain[site].plot(ax=ax,drawstyle='steps-mid',color='k')
     #gauge_total[site].plot(ax=ax,drawstyle='steps-mid',color='purple',alpha=0.5)
     total_rain[site].resample(time='QS-DEC').sum().plot(ax=ax,drawstyle='steps-post',color='blue')
@@ -93,24 +103,27 @@ for site,ax in axs.items():
     ax.set_ylabel('Total  (mm)',size='small')
 
     ax.set_title(site)
-    ax.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
-    ax.set_ylim(10, None)
+
+
 
     # plot ratio
-    ax2 = axs2[site]
+
     gt  = gauge_total[site].rolling(time=roll_window_ratio,center=True).mean()
     rt = total_rain[site].rolling(time=roll_window_ratio,center=True).mean()
     gt = gt.interp_like(rt)
-    ratio = rt/gt
+    ratio = rt/gt.where(gt > 30)
     ratio.plot(ax=ax2,drawstyle='steps-post',color='blue')
 
     ax2.set_title(f'Radar/Gauge {site}',size='small')
-    ax2.set_ylabel('Ratio',size='small')
-    ax2.tick_params(axis='x', labelsize='small',rotation=45) # set small font!
+
     ax2.axhline(1.0,linestyle='dashed',color='k')
-    ax2.set_ylim(0.05,None)
+    ax2.set_ylim(0.2,5)
     for a in [ax,ax2]:
         a.set_yscale('log')
+        from matplotlib.ticker import LogLocator, ScalarFormatter
+        a.yaxis.set_major_locator(LogLocator(base=10.0, subs=[1.0, 2.0, 5.0]))
+        a.yaxis.set_major_formatter(ScalarFormatter())
+        a.tick_params(axis='y', labelsize='small', rotation=45)
         ausLib.plot_radar_change(a, site_info[site],trmm=True)
 
 fig.suptitle('Seasonal mean rainfall')
@@ -118,9 +131,11 @@ fig2.suptitle('3-month rolling Radar/Gauge')
 fig.show()
 fig2.show()
 fig_dir = pathlib.Path('extra_figs')
+fig_type = ['png','pdf']
 for f in [fig,fig2]:
-    commonLib.saveFig(f,savedir=fig_dir)
-    commonLib.saveFig(f,savedir=fig_dir,transpose=True)
+    commonLib.saveFig(f,savedir=fig_dir,figtype=fig_type)
+    commonLib.saveFig(f,savedir=fig_dir,transpose=True,figtype=fig_type)
+
 
 # now to plot the Sydney sensitivity studies
 fig,(ax,ax_ratio) = plt.subplots(1,2,figsize=(8,6),num='sydney_ss_mean_monthly_rain',
