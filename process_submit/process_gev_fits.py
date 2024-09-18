@@ -193,6 +193,9 @@ if __name__ == "__main__":
     else:
         output_dir = args.outdir
     use_dask = args.dask
+    if use_dask:
+        raise NotImplementedError("dask  and rpy2 do not work well together")
+
     my_logger.debug(f'use_dask is {use_dask}')
     my_logger.info(f"Output directory: {output_dir}")
     output_dir.mkdir(exist_ok=True, parents=True)  # create dir f
