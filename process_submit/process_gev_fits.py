@@ -184,6 +184,8 @@ if __name__ == "__main__":
                         )
     parser.add_argument('--nsamples', type=int, help='Number of samples to use', default=100)
     parser.add_argument('--bootstrap_samples', type=int, help='Number of event bootstraps to use', default=0)
+    parser.add_argument('--time_range', type=pd.Timestamp, nargs='+',
+                        help='Time range to use for fits. Provide 1 or 2 arguments', default=None)
 
     ausLib.add_std_arguments(parser)  # add on the std args
     args = parser.parse_args()
@@ -195,6 +197,18 @@ if __name__ == "__main__":
     use_dask = args.dask
     if use_dask:
         raise NotImplementedError("dask  and rpy2 do not work well together")
+    # check times are 1 or 2 element. If 1 element then assume it is the start time.
+    time_range = None
+    if args.time_range is not None:
+        if len(args.time_range) == 1:
+            time_range = (args.time_range[0],None)
+            out_post = args.time_range[0].strftime('_%Y%m%d')
+        elif len(args.time_range) == 2:
+            time_range = tuple(args.time_range)
+            out_post = args.time_range[0].strftime('_%Y%m%d')
+        else:
+            parser.print_help()
+            raise ValueError("Time range must be 1 or 2 elements")
 
     my_logger.debug(f'use_dask is {use_dask}')
     my_logger.info(f"Output directory: {output_dir}")
@@ -204,17 +218,34 @@ if __name__ == "__main__":
     output_summary = output_dir / "gev_summary.txt"
     output_fit_t_bs = output_dir / "gev_fit_temp_bs.nc"
     output_fit_bs = output_dir / "gev_fit_bs.nc"
+    # deal with time_range argument. That modifies the output files.
+
+
     files = [output_fit, output_fit_t, output_summary]
     if args.bootstrap_samples > 0:
         my_logger.info(f"Bootstrapping")
         files.extend([output_fit_t_bs, output_fit_bs])
+    # Modify the output files if time_range is set.
+    if time_range is not None:
+        files = [f.with_name(f"{f.stem}{out_post}{f.suffix}") for f in files]
+        output_fit, output_fit_t, output_summary= tuple(files[0:3])
+        if args.bootstrap_samples > 0:
+            output_fit_t_bs, output_fit_bs = tuple(files[3:5])
     exist = [file.exists() for file in files]
     if all(exist) and (not args.overwrite):
         my_logger.warning(f"All output files {files} exist and overwrite not set. Exiting")
         sys.exit(0)
-    vars_to_drop = ['xpos', 'ypos', 't', 'fraction', 'sample_resolution', 'height', 'Observed_temperature', 'time']
+    vars_to_drop = ['xpos', 'ypos', 'fraction', 'sample_resolution', 'height', 'Observed_temperature']#, 'time','t']
     radar_dataset = xarray.open_dataset(args.input_file,chunks=dict(EventTime=-1,resample_prd=1,quantv=-1),cache=True,
                                         drop_variables=vars_to_drop)  # load the processed radar
+    if time_range is not None:
+        L=(radar_dataset.t >= time_range[0] )
+        if time_range[1] is not None:
+            L = L & (radar_dataset.t <= time_range[0])
+        L = L.compute()
+        radar_dataset = radar_dataset.where(L,drop=True)
+
+
     if not use_dask:
         my_logger.debug('Loading data')
         radar_dataset=radar_dataset.load()
@@ -230,6 +261,8 @@ if __name__ == "__main__":
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()]
                        )
     extra_attrs.update(mean_temp=mn_temp)
+    if time_range is not None:
+        extra_attrs.update(time_range=[str(t) for t in time_range])
 
     my_logger.info(f"Computing fits")
 
