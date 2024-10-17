@@ -3,15 +3,13 @@
 xarray~=2024.3.0
 scipy~=1.11
 pandas~=2.2.0
-#numpy~=1.21
-#rpy2~=3.5.15 # fails to build
-#matplotlib~=3.6
+ipython
 cartopy~=0.22
 cftime~=1.6
 dask[distributed]~=2024.4.2
 #zlib~=1.2
 requests~=2.28
-# R -- can't instll R stuff with pip :-( 
+# R -- can't install R stuff with pip :-(
 #r-extRemes
 #r-viridis
 #r-fields
@@ -28,4 +26,5 @@ wradlib~=2.0.3
 #gdal # can't install gdal with pip
 earthaccess~=0.9.0
 rpy2~=3.5.11
+flox
 
