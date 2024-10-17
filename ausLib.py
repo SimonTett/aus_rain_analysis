@@ -1043,6 +1043,8 @@ def process_std_arguments(args: argparse.Namespace,
     #raise NotImplementedError('Needs some testing!')
     if default is None:
         default = {}
+    # specials for default
+    log_file = default.pop('log_file')
     my_logger = setup_log(args.verbose, args.log_file)
     # log the args
     for name, value in vars(args).items():
@@ -1050,17 +1052,22 @@ def process_std_arguments(args: argparse.Namespace,
     # deal with submission.
     if args.submit:
         my_logger.debug('Submitting job')
+
+
+
         # remove some specific things which get done as part of submission
         # currently submit (don't want it to submit again), dryrun (don't want to dryrun !) and
         # setup_script (as that gets done as part of the submission)
 
         cmd = [c for c in sys.argv if not (c.startswith('--submit') or c.startswith('--dryrun'))]
         # remove setup_script
-
         # Find the position of the string that starts with '--setup_script'
         position = next((i for i, s in enumerate(cmd) if s.startswith('--setup_script')), None)
         if position is not None:
             cmd = cmd[:position] + cmd[position + 2:]  # remove the setup_script and its argument
+        # add in log_file if not in args
+        if args.log_file is None and log_file is not None:
+            cmd = cmd + ['--log_file', str(log_file)]
         cmd = ' '.join(cmd)  # remake the cmd.
         my_logger.info('Cmd is: ' + cmd)
 

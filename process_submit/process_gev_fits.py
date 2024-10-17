@@ -193,15 +193,16 @@ if __name__ == "__main__":
     else:
         output_dir = args.outdir
     ## defaults for submission.
-    pbs_log_dir = ausLib.data_dir/'processed/pbs_logs'
-    run_log_dir = ausLib.data_dir/'processed/run_logs'
+    pbs_log_dir = output_dir/'pbs_logs'
+    run_log_dir = output_dir/'run_logs'
     log_file = 'gev_fits'+pd.Timestamp.utcnow().strftime('%Y_%m_%d_%H%M%S')
     log_base_default = pbs_log_dir /log_file
     log_file_default =  run_log_dir/f'{log_file}.log'
-    job_name_default=f'gev_{args.input_file.stem[0:10]}'
+    job_name_default=f'gev_{output_dir.stem[0:10]}'
     json_file_default = ausLib.module_path/'config_files/process_gev_fits.json'
-    default = dict(log_base=log_base_default,
-                   job_name=job_name_default,
+    default = dict(log_base=log_base_default, #where pbs logs (stdout & stderr)
+                   log_file=log_file_default, # log while run is going
+                   job_name=job_name_default, # default name of job
                    json_submit_file=json_file_default)
     my_logger = ausLib.process_std_arguments(args,default=default)  # setup the std stuff
 
