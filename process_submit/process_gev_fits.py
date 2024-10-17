@@ -255,6 +255,8 @@ if __name__ == "__main__":
             L = L & (radar_dataset.t <= time_range[0])
         L = L.compute()
         radar_dataset = radar_dataset.where(L,drop=True)
+    # remove nuisance variables
+    radar_dataset = radar_dataset.drop_vars(['time','t'], errors='ignore') # TODO fix hardwiring so that this is not needed.
 
 
     if not use_dask:
