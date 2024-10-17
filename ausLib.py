@@ -66,7 +66,7 @@ if hostname.startswith('gadi'):  # aus super-computer
 elif hostname.startswith('ccrc'):  # CCRC desktop
     data_dir = pathlib.Path("/home/z3542688/OneDrive/data/aus_radar_analysis/radar")
     common_data = pathlib.Path("/home/z3542688/OneDrive/data/common_data")
-elif hostname == 'geos-w-048':  # my laptop
+elif hostname.lower().startswith('geos'):  # School of geosciences managed laptop/desktop
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
     my_logger.warning("agcd_rain_dir not defined. ")
@@ -896,7 +896,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     --log_file -- have a log file.
     --overwrite -- overwrite files.
     And  arguments for submitting jobs to a queue system.
-    --submit -- submit to queue system
+    --submit -- submit to the queue system
     --queue -- queue to submit to
     --project -- project to submit to
     --storage -- storage options
@@ -936,10 +936,10 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     submit.add_argument('--queue', help='Queue to submit to')
     submit.add_argument('--project', help='Project to submit to')
     submit.add_argument('--storage', help='Storage options')
-    submit.add_argument('--time', help='Time to run for', default='1:00:00')
-    submit.add_argument('--cpus', type=int, help='Number of nodes', default=1)
-    submit.add_argument('--memory', help='Memory to use', default='4G')
-    submit.add_argument('--job_name', help='Job name')
+    submit.add_argument('--time', help='Time to run for', default='')
+    submit.add_argument('--cpus', type=int, help='Number of nodes')
+    submit.add_argument('--memory', help='Memory to use', default='')
+    submit.add_argument('--job_name', help='Job name',default='')
     submit.add_argument('--email', help='Email address to send job info to', default='')
     submit.add_argument('--log_base', type=pathlib.Path, help='Base name for q system logs')
     submit.add_argument('--json_submit_file', type=pathlib.Path,
@@ -1029,16 +1029,20 @@ echo $result
     return qsub_cmd, cmd_str
 
 
-def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
+def process_std_arguments(args: argparse.Namespace,
+                          default:typing.Optional[dict] = None) -> logging.Logger:
     """
     Process standard arguments. See add_std_arguments for setup.
     Args:
         args: arguments to be processed.
           Deals with verbose, log_file and dask and submission options
+        default: default values for the submission options. Will be used if not set in args or json_submit_file
 
     Returns: logger
     """
     #raise NotImplementedError('Needs some testing!')
+    if default is None:
+        default = {}
     my_logger = setup_log(args.verbose, args.log_file)
     # log the args
     for name, value in vars(args).items():
@@ -1046,18 +1050,35 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
     # deal with submission.
     if args.submit:
         my_logger.debug('Submitting job')
+        # remove some specific things which get done as part of submission
+        # currently submit (don't want it to submit again), dryrun (don't want to dryrun !) and
+        # setup_script (as that gets done as part of the submission)
+
         cmd = [c for c in sys.argv if not (c.startswith('--submit') or c.startswith('--dryrun'))]
+        # remove setup_script
+
+        # Find the position of the string that starts with '--setup_script'
+        position = next((i for i, s in enumerate(cmd) if s.startswith('--setup_script')), None)
+        if position is not None:
+            cmd = cmd[:position] + cmd[position + 2:]  # remove the setup_script and its argument
         cmd = ' '.join(cmd)  # remake the cmd.
         my_logger.info('Cmd is: ' + cmd)
 
         # generate the command and qsub_cmd
+
         sub_args = dict(project=args.project, queue=args.queue, storage=args.storage,
                         time=args.time, cpus=args.cpus, memory=args.memory, job_name=args.job_name,
-                        email=args.email, log_base=args.log_base
+                        email=args.email, log_base=args.log_base,setup_script=args.setup_script,
                         )
+
+
         history_file = args.history_file
-        if args.json_submit_file:
-            with open(args.json_submit_file) as f:
+        # deal with json_submit_file
+        json_submit_file = args.json_submit_file
+        if json_submit_file is None:
+            json_submit_file=default.get('json_submit_file')
+        if json_submit_file:
+            with open(json_submit_file) as f:
                 json_args = json.load(f)
             # remove anything with a comment in it.
             keys = list(json_args.keys())  # need to get out keys as removing them
@@ -1080,17 +1101,30 @@ def process_std_arguments(args: argparse.Namespace) -> logging.Logger:
 
             my_logger.debug(f'Updating {json_args} with sub_args')
 
-            sub_args.update({k: v for k, v in json_args.items() if (k in sub_args.keys() and
-                                                                    (sub_args.get(k) is not None) or (sub_args.get(
-                        k
-                    ) != ''))}
-                            )  # update not None/empty
+            for k,v in json_args.items():
+                if (k in sub_args.keys() and
+                        (sub_args.get(k) is  None) or
+                        (sub_args.get(k) == '')
+                ):
+                    my_logger.debug(f'Updating args {k} with {v} from json file')
+                    sub_args[k] = v
+            # sub_args.update({k: v for k, v in json_args.items() if (k in sub_args.keys() and
+            #                                                         (sub_args.get(k) is not None) or
+            #                                                         (sub_args.get(k) != '')
+            #                                                         )
+            #                  }
+            #                 )  # update not None/empty
 
             if sub_args['cpus'] > 1 and not args.dask:
                 my_logger.warning('Setting cpus to 1 as not using dask. Waiting for 5 seconds.')
                 sub_args['cpus'] = 1
                 time.sleep(5)  # so can see the warning
-
+        for k,v in default.items():
+            if k == 'json_submit_file':
+                continue # json_submit_file is special! See above
+            if sub_args.get(k) in [None,'']:
+                sub_args[k] = v # update the value with default if None, not set or ''
+                my_logger.debug(f'Set {k} to {v} from default as not set')
         qsub_cmd, cmd_str = gen_pbs_script(cmd, holdafter=args.holdafter, **sub_args)
         if not args.dryrun:  # actually run the job
             my_logger.info('Running qsub: ' + ' '.join(qsub_cmd))
