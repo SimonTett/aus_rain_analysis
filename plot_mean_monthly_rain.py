@@ -14,7 +14,7 @@ import commonLib
 
 
 
-calib = 'brisbane'
+calib = 'melbourne'
 
 my_logger = ausLib.setup_log(1)
 sydney_sens_studies = ['Sydney_rain_brisbane','Sydney_rain_melbourne',
@@ -90,10 +90,9 @@ for site,ax in axs.items():
         my_logger.warning(f'No gauge data for {site}')
         continue
 
-    radar_total[site].rolling(time=roll_window, center=True).mean().plot(ax=ax, color='blue')
-    gauge_total[site].rolling(time=roll_window,center=True).mean().plot(ax=ax,color='purple')
+    radar_total[site].rolling(time=roll_window, center=True).mean().plot(ax=ax, color='blue',label='Radar')
+    gauge_total[site].rolling(time=roll_window,center=True).mean().plot(ax=ax,color='purple',label='Gauge')
     ax.set_ylabel('Total  (mm)',size='small')
-
     ax.set_title(site)
 
 
@@ -103,10 +102,10 @@ for site,ax in axs.items():
     gt  = gauge_total[site].rolling(time=roll_window_ratio,center=True).mean()
     rt = radar_total[site].rolling(time=roll_window_ratio, center=True).mean()
     gt = gt.interp_like(rt)
-    ratio = rt/gt.where(gt > 30)
-    ratio.plot(ax=ax2,drawstyle='steps-post',color='blue')
+    ratio = (rt/gt).where(gt > 5)
+    ratio.plot(ax=ax2,drawstyle='steps-post',color='black')
 
-    ax2.set_title(f'Radar/Gauge {site}',size='small')
+    ax2.set_title(f'{site}')
 
     ax2.axhline(1.0,linestyle='dashed',color='k')
     ax2.set_ylim(0.2,5)
@@ -117,9 +116,12 @@ for site,ax in axs.items():
         a.yaxis.set_major_formatter(ScalarFormatter())
         a.tick_params(axis='y', labelsize='small', rotation=45)
         ausLib.plot_radar_change(a, site_info[site],trmm=True)
+# put some legends on
+handles, labels = axs['Melbourne'].get_legend_handles_labels()
+fig.legend(handles, labels, ncol=2,fontsize='small',loc=(0.4, 0.9),handletextpad=0.2,handlelength=3.,columnspacing=1.0)
 
-fig.suptitle('12-month  rolling mean rainfall')
-fig2.suptitle('3-month rolling Radar/Gauge')
+fig.suptitle(f'{roll_window}-month  rolling mean rainfall {calib} calibration')
+fig2.suptitle(f'{roll_window_ratio}-month rolling Radar/Gauge ratio {calib} calibration')
 fig.show()
 fig2.show()
 fig_dir = pathlib.Path('extra_figs')

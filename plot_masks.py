@@ -8,8 +8,9 @@ masks={}
 topog={}
 projs={}
 regn={'x':slice(-125e3, 125e3), 'y':slice(-125e3, 125e3)}
-for site in ausLib.site_numbers.keys():
-    files = list((ausLib.data_dir/f'site_data/{site}').glob(f"{site}_*cbb_dem.nc"))
+for site,no in ausLib.site_numbers.items():
+
+    files = list((ausLib.data_dir/f'site_data/{site}').glob(f"{site}_{no:03d}_*cbb_dem.nc"))
     print(site,'files are files',files)
     CBB_DEM = xarray.open_mfdataset(files, concat_dim='prechange_start', combine='nested').sel(**regn)
     # get the projection info -- use the first proj thing we find.
@@ -27,10 +28,12 @@ for site in ausLib.site_numbers.keys():
 
 
 
+
 ## make plots
 # different projections for each plot. So set it up!
 per_subplot_kwagrs= {site:dict(projection=proj) for site,proj in projs.items()}
-fig,axes = ausLib.std_fig_axs('masks',per_subplot_kw=per_subplot_kwagrs)
+#fig,axes = ausLib.std_fig_axs('masks',per_subplot_kw=per_subplot_kwagrs)
+fig,axes = ausLib.std_fig_axs('masks',add_projection=True)
 levels=[0,50,100,150,200,300,400,500,600,700,800,900,1000,1500,2000,2500]
 for site,ax in axes.items():
     #a.set_extent([-125e3,125e3,-125e3,125e3])

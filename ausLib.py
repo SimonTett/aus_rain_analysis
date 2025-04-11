@@ -1,8 +1,8 @@
 # Library for australian analysis.
-from __future__ import annotations
+
 
 import argparse
-import io
+import shutil
 import itertools
 import json
 import os
@@ -21,7 +21,7 @@ import requests
 # stuff for timezones!
 from timezonefinder import TimezoneFinder
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import numpy as np
 import xarray
 import logging
@@ -29,6 +29,7 @@ import pandas as pd
 import typing
 import ast  # thanks chaptGPT co-pilot
 import numpy.random as random
+
 
 my_logger = logging.getLogger(__name__)  # for logging
 # dict of site names and numbers.
@@ -66,9 +67,14 @@ if hostname.startswith('gadi'):  # aus super-computer
 elif hostname.startswith('ccrc'):  # CCRC desktop
     data_dir = pathlib.Path("/home/z3542688/OneDrive/data/aus_radar_analysis/radar")
     common_data = pathlib.Path("/home/z3542688/OneDrive/data/common_data")
+
 elif hostname.lower().startswith('geos'):  # School of geosciences managed laptop/desktop
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
+    my_logger.warning("agcd_rain_dir not defined. ")
+elif '.geos.' in hostname.lower():
+    data_dir = pathlib.Path("/scratch/stett2/radar")
+    common_data = pathlib.Path("/scratch/stett2/common_data")
     my_logger.warning("agcd_rain_dir not defined. ")
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
@@ -657,16 +663,21 @@ def read_radar_file(path: pathlib.Path | str) -> pd.DataFrame:
     return df
 
 
-def site_info(site_no: int) -> pd.DataFrame:
+def site_info(site: int|str) -> pd.DataFrame:
     """
     Get information on a site.
     Args:
-        site_no: site to get info on
+        site_no: site to get info on. Provide site number or site name
     Returns: pandas series with information on site.
     """
 
     file = module_path/'meta_data' / 'long_radar_stns.csv'
     df = read_radar_file(file)
+    if isinstance(site, str):
+        # convert to site number
+        site_no = site_numbers[site]
+    else:
+        site_no = site
     L = df.id == site_no
     meta = df[L]
     return meta
@@ -968,6 +979,25 @@ def gen_pbs_script(
         log_base: typing.Optional[pathlib.Path] = None,
         setup_script: typing.Optional[pathlib.Path] = None,
         ) -> tuple[list[str], str]:
+    """
+    Generate a pbs qsub command and script to run it.
+    Args:
+        cmd_to_run: Name of the command to run.
+        holdafter:  list of jobs taht shoud run before this one.
+        queue: queue to submit to
+        project: project to submit to
+        storage: storage options
+        time: time to run for
+        cpus: number of cpus to use
+        memory: memory to use
+        job_name: name of job
+        email: email to send to
+        log_base:  log base file
+        setup_script:  script to run before running the command
+
+    Returns:list of qsub command and the script to run.
+
+    """
     # generate the qsub command
     if holdafter is None:
         holdafter = []  # set it to empty list.
@@ -1028,6 +1058,132 @@ echo $result
     my_logger.debug('Cmd_str: ' + cmd_str)
     return qsub_cmd, cmd_str
 
+def gen_slurm_script(
+        cmd_to_run: str,
+        holdafter: typing.Optional[list[str]] = None,
+        queue: typing.Optional[str] = None,
+        project: typing.Optional[str] = None,
+        storage: typing.Optional[str] = None,  # Not used in SLURM
+        time: typing.Optional[str] = None,
+        cpus: int = 1,
+        memory: typing.Optional[str] = None,
+        job_name: typing.Optional[str] = None,
+        email: str = '',
+        log_base: typing.Optional[pathlib.Path] = None,
+        setup_script: typing.Optional[pathlib.Path] = None,
+        ) -> tuple[list[str], str]:
+
+
+    """
+    Generate a SLURM sbatch command and script to run it.
+
+    This function was generated using AI based on the `gen_pbs_script` function,
+    which was designed for PBS job submission. The structure and logic were adapted
+    to work with SLURM. To reproduce this process, use an AI programming assistant
+    (e.g., GitHub Copilot) and provide the `gen_pbs_script` function as input.
+
+    Args:
+        cmd_to_run: Name of the command to run.
+        holdafter: List of jobs that should run before this one.
+        queue: Partition (queue) to submit to.
+        project: Project to submit to.
+        storage: Storage options (not used in SLURM).
+        time: Time to run for.
+        cpus: Number of CPUs to use.
+        memory: Memory to use.
+        job_name: Name of the job.
+        email: Email to send notifications to.
+        log_base: Base path for log files.
+        setup_script: Script to run before executing the command.
+
+    Returns:
+        A tuple containing:
+        - The sbatch command as a list of strings.
+        - The SLURM script as a string.
+    """
+    # Metadata for Reproducibility:
+    # Source Function: gen_pbs_script (provided in the project context).
+    # Adaptation: Replaced PBS directives (#PBS) with SLURM directives (#SBATCH) and adjusted SLURM-specific options.
+    # AI Tool: Generated using an AI programming assistant (e.g., GitHub Copilot).
+    # Environment: Python 3.x, with pathlib, typing, and logging modules.
+    # Purpose: To create a SLURM-compatible job submission script while maintaining the structure and logic of the original PBS function.
+    if holdafter is None:
+        holdafter = []  # Set it to an empty list.
+
+    # Check all required values are set.
+    args = locals()
+    none_vars = []
+    for name, value in args.items():
+        if value is None:
+            my_logger.warning(f'Must set {name}')
+            none_vars += [name]
+    if len(none_vars) > 0:
+        raise ValueError(f'Must set {" ".join(none_vars)} to values')
+
+    sbatch_cmd = ["sbatch"]
+    wd = pathlib.Path.cwd()  # Current working directory.
+    my_logger.debug('sbatch_cmd: ' + ' '.join(sbatch_cmd))
+
+    if len(job_name) > 15:
+        job_name = job_name[0:14]  # Truncate to 15 characters.
+        my_logger.debug('Truncated job_name to 15 chars')
+
+    # Make the directory for logs.
+    log_base.parent.mkdir(exist_ok=True, parents=True)
+
+    # Check if the setup script exists.
+    if not setup_script.exists():
+        raise FileNotFoundError(f'Setup script {setup_script} does not exist')
+
+    # Construct the SLURM script.
+    log_stdout = log_base.with_name(log_base.name + '.out')
+    log_stderr = log_base.with_name(log_base.name + '.err')
+    cmd_str = f"""
+#SBATCH --account={project}
+#SBATCH --partition={queue}
+#SBATCH --time={time}
+#SBATCH --mem={memory}
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --job-name={job_name}
+#SBATCH --output={log_stdout}
+#SBATCH --error={log_stderr}
+"""
+    if (len(email) > 0) and ('@' in email):
+        cmd_str += f"""
+#SBATCH --mail-type=END
+#SBATCH --mail-user={email}
+"""
+    if len(holdafter) > 0:
+        cmd_str += f'#SBATCH --dependency=afterok:{":".join(holdafter)}\n'
+
+    cmd_str += fr'''
+export TMPDIR=$SLURM_TMPDIR
+cd {wd} || exit # Ensure we are in the correct directory.
+. {setup_script} # Setup software and then run the command.
+cmd="{cmd_to_run}"
+echo "Cmd is $cmd"
+result=$($cmd)
+echo $result
+'''
+    my_logger.debug('Cmd_str: ' + cmd_str)
+    return sbatch_cmd, cmd_str
+
+
+def detect_batch_system():
+    """
+    Detect the batch system available on the machine. Thatks chatGPT for this code!
+    Returns:
+        str: 'SLURM', 'PBS', or 'None' if neither is detected.
+    """
+    if shutil.which("sbatch"):
+        return "SLURM"
+    elif shutil.which("qsub"):
+        return "PBS"
+    else:
+        return "None"
+
+
+
 
 def process_std_arguments(args: argparse.Namespace,
                           default:typing.Optional[dict] = None) -> logging.Logger:
@@ -1044,7 +1200,7 @@ def process_std_arguments(args: argparse.Namespace,
     if default is None:
         default = {}
     # specials for default
-    log_file = default.pop('log_file')
+    log_file = default.pop('log_file',None)
     my_logger = setup_log(args.verbose, args.log_file)
     # log the args
     for name, value in vars(args).items():
@@ -1132,23 +1288,34 @@ def process_std_arguments(args: argparse.Namespace,
             if sub_args.get(k) in [None,'']:
                 sub_args[k] = v # update the value with default if None, not set or ''
                 my_logger.debug(f'Set {k} to {v} from default as not set')
-        qsub_cmd, cmd_str = gen_pbs_script(cmd, holdafter=args.holdafter, **sub_args)
+
+        batch_sys = detect_batch_system()
+        submit_batch_cmd = ['']
+
+        if batch_sys == 'SLURM':
+            submit_batch_cmd, cmd_str = gen_slurm_script(cmd, holdafter=args.holdafter, **sub_args)
+        elif batch_sys == 'PBS':
+            submit_batch_cmd, cmd_str = gen_pbs_script(cmd, holdafter=args.holdafter, **sub_args)
+        elif args.dryrun:
+            my_logger.info(f'Doing dryrun. Not submitting job. Detected batch system is {batch_sys}')
+        else:
+            raise ValueError(f'Do not know what to do with batch system {batch_sys}')
         if not args.dryrun:  # actually run the job
-            my_logger.info('Running qsub: ' + ' '.join(qsub_cmd))
+            my_logger.info('Running: ' + ' '.join(submit_batch_cmd))
             # if we have a history file append to it.
             if history_file is not None:
                 history_file.parent.mkdir(exist_ok=True, parents=True)  # make directory if needed
                 with open(history_file, 'a') as f:
-                    print(str(datetime.utcnow()) + ': ' + cmd, file=f)
+                    print(str(datetime.now(UTC)) + ': ' + cmd, file=f)
             import subprocess
-            result = subprocess.run(qsub_cmd, input=cmd_str, text=True, capture_output=True)
+            result = subprocess.run(submit_batch_cmd, input=cmd_str, text=True, capture_output=True)
             if result.returncode != 0:
                 my_logger.warning(f'Error submitting job stdout: {result.stdout}')
                 my_logger.warning(f'Error submitting job stderr: {result.stderr}')
             result.check_returncode()
-            my_logger.warning(f'Output from {qsub_cmd} is {result.stdout}')
+            my_logger.warning(f'Output from {submit_batch_cmd} is {result.stdout}')
             if len(result.stderr) > 0:
-                my_logger.warning(f'Stderr from {qsub_cmd} is {result.stderr}')
+                my_logger.warning(f'Stderr from {submit_batch_cmd} is {result.stderr}')
             print(result.stdout)  # so can get the job id.
         else:
             print("fake_job.999999")
@@ -1385,19 +1552,49 @@ def write_out(
     my_logger.info(f'Wrote data to {outpath}')
 
 
-def std_fig_axs(fig_num, reduce_spline: bool = True, regions: bool = False, **kwargs) \
+def std_fig_axs(fig_num,
+                reduce_spline: bool = True,
+                add_projection:bool = False,
+                mosaic: typing.Optional[list[list[str]]] = None,
+                regions: bool = False, **kwargs) \
         -> tuple['matplotlib.figure.Figure', 'matplotlib.axes.Axes']:
-    mosaic = [['Mornington', 'BLANK', 'Cairns'],
-              ['Grafton', 'Brisbane', 'Gladstone'],
-              ['Canberra', 'Sydney', 'Newcastle'],
-              ['Adelaide', 'Wtakone', 'Melbourne'],
-              ]
+    """
+    Create a standard figure and axes for plotting.
+    Args:
+        fig_num:num of figure
+        reduce_spline: If True remove the top and right spines
+        add_projection:Add projection info to the axes
+        mosaic: List of names of the regions to be plotted.
+        regions:Add the region names to the plots
+        **kwargs: Passed through to the subplot_mosaic function
 
+    Returns:
+
+    """
+    if mosaic is None:
+        mosaic = [['Mornington', 'BLANK', 'Cairns'],
+                  ['Grafton', 'Brisbane', 'Gladstone'],
+                  ['Canberra', 'Sydney', 'Newcastle'],
+                  ['Adelaide', 'Wtakone', 'Melbourne'],
+                  ]
+    rgn_names =[name for sublist in mosaic for name in sublist if name != 'BLANK']
     if regions:
         mosaic = [row + [rname] for row, rname in zip(mosaic, region_names.keys())]
 
+    per_subplot_kw = {regn: dict() for regn in rgn_names}
+    if add_projection:
+        my_logger.info('Adding projection info')
+
+        for name in rgn_names:
+            # need the longitude and latitude for the radars.
+            site_no = site_numbers[name]
+            site_data = site_info(site_no).iloc[-1,:]
+            radar_info = gen_radar_projection(longitude=site_data.site_lon,
+                                              latitude=site_data.site_lat)
+            proj = radar_projection(radar_info)
+            per_subplot_kw[name].update(projection=proj)
     args = dict(num=fig_num, clear=True, figsize=(7, 9), layout='constrained',
-                empty_sentinel='BLANK', )  # default args,
+                empty_sentinel='BLANK',per_subplot_kw=per_subplot_kw )  # default args,
     args.update(**kwargs)  # update with any passed in args
     fig, axes = plt.subplot_mosaic(mosaic, **args)
     if reduce_spline:  # remove the top and right spines

@@ -1,4 +1,6 @@
 # code to do prob plot for GEV fit.
+import pandas as pd
+
 import ausLib
 import xarray
 import commonLib
@@ -12,17 +14,30 @@ shape=dict()
 delta_aic=dict()
 my_logger = ausLib.setup_log(1)
 use_cache=False
+#TODO -- update with change of start date.
+# dict of non default dates for the start of the data.
+non_default_dates=dict(Adelaide='20161201',Melbourne='20041201',WTakone='20161201')
 if not (use_cache and ('loaded_gev_data_fit' in locals())):
     for site in ausLib.site_numbers.keys():
         name = site + '_rain_melbourne'
         dir = ausLib.data_dir / 'processed' / name
         events = xarray.load_dataset(dir / f'events_seas_mean_{name}_DJF.nc')  # events
-        fits_t = xarray.load_dataset(dir / 'fits' / 'gev_fit_temp.nc')  # fits to data
-        fits = xarray.load_dataset(dir / 'fits' / 'gev_fit.nc')  # fits to data
+        date = non_default_dates.get(site)
+        if date is None:
+            end_str = '.nc'
+        else:
+            end_str = f'_{date}.nc'
+            date = pd.Timestamp(date)
+            L = events.t >= date
+            events = events.where(L,drop=True)
+        fits_t_file =  'gev_fit_temp'+end_str  # fits to data
+        fits_file = 'gev_fit'+end_str  # fits to data
+        fits_t = xarray.load_dataset(dir / 'fits' / fits_t_file)  # fits to data
+        fits = xarray.load_dataset(dir / 'fits' / fits_file)  # fits to data
         delta_aic[site] = (fits_t.AIC - fits.AIC).mean('sample').drop_sel(resample_prd='8h')
         params = fits_t.Parameters.mean('sample')
         # remove small values
-        L = events.max_value > 0.5
+        L = events.max_value > 1
         events = events.where(L)
         # normalise the data
         anomT = events.ObsT - events.ObsT.mean('EventTime')
@@ -71,7 +86,7 @@ for site,ax in axs.items():
     ax_inset.axhline(0,color='k',linestyle='--')
     ax_inset.yaxis.set_major_locator(MaxNLocator(nbins=5))
     ax_inset.label_outer()
-    # done making indivisual plots.
+    # done making individual plots.
 #general figure stuff
 handles, labels = axs['Melbourne'].get_legend_handles_labels()
 for handle in handles:

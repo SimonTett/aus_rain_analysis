@@ -189,12 +189,14 @@ if __name__ == "__main__":
     ausLib.add_std_arguments(parser)  # add on the std args
     args = parser.parse_args()
     if args.outdir is None:
-        output_dir = args.input_file.parent / 'fits'
+        parent = args.input_file.parent
+        output_dir = parent / 'fits'
     else:
         output_dir = args.outdir
+        #base_dir = output_dir
     ## defaults for submission.
-    pbs_log_dir = output_dir/'pbs_logs'
-    run_log_dir = output_dir/'run_logs'
+    pbs_log_dir = output_dir/ 'pbs_logs'
+    run_log_dir = output_dir / 'run_logs'
     log_file = 'gev_fits'+pd.Timestamp.utcnow().strftime('%Y_%m_%d_%H%M%S')
     log_base_default = pbs_log_dir /log_file
     log_file_default =  run_log_dir/f'{log_file}.log'
@@ -294,6 +296,7 @@ if __name__ == "__main__":
                                      recreate_fit=args.overwrite,use_dask=use_dask
                                      )
     my_logger.info(f"Computed time fits {ausLib.memory_use()}")
+
 
     #
     def comp_dist(ds, samples=100):

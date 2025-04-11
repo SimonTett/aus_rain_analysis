@@ -1,4 +1,4 @@
-# plot Cairns, West Takone, Sydney & Brisbane pre and post radar change as fn of range
+# plot all stations  pre and post most recent radar change as fn of range
 
 import matplotlib.pyplot as plt
 import ausLib
@@ -23,6 +23,8 @@ for site in sites.keys():
     if not seas_file.exists():
         raise FileNotFoundError(f'No season  file for {site} with {seas_file}')
     mx_rain = xarray.open_dataset(seas_file).max_rain_rate.load()
+    # mask out small extremes
+    mx_rain = mx_rain.where(mx_rain > 1)
     mn_rain = xarray.open_dataset(seas_file).mean_raw_rain_rate.load() * 91 * 24  # convert to mm
     mn_rain.attrs['units'] = 'mm'
     r = np.sqrt(mx_rain.x ** 2 + mx_rain.y ** 2) / 1000.
@@ -35,20 +37,21 @@ fig, axs = ausLib.std_fig_axs('med_max_rain_range')
 #plt.subplots(2,2,figsize=(8,6),sharex=True,sharey=True,clear=True,layout='constrained',num='med_max_rain_range')
 for (site, break_yr) in sites.items():
     ax = axs[site]
-    pre = mx_data[site].sel(resample_prd='1h', time=slice(None, f'{break_yr}'))
-    post = mx_data[site].sel(resample_prd='1h', time=slice(f'{break_yr + 1}', None))
+    pre = mx_data[site].sel(resample_prd='4h', time=slice(None, f'{break_yr}'))
+    post = mx_data[site].sel(resample_prd='4h', time=slice(f'{break_yr + 1}', None))
     if len(pre.time) > 0:
-        pre.plot.line(x='range_bins', ax=ax, linestyle='-', add_legend=False, label='_None')
+        #pre.plot.line(x='range_bins', ax=ax, linestyle='-', add_legend=False, label='_None')
         pre.median('time').plot(x='range_bins', ax=ax, linestyle='-', label=f"Pre {break_yr}", color='k', linewidth=3)
     if len(post.time) > 0:
-        post.plot.line(x='range_bins', ax=ax, linestyle='--', label="_None", add_legend=False)
+        #post.plot.line(x='range_bins', ax=ax, linestyle='--', label="_None", add_legend=False)
         post.median('time').plot(x='range_bins', ax=ax, linestyle='--', label=f"Post {break_yr}", color='k',
                                  linewidth=3
                                  )
     ax.set_title(site)
-    ax.set_yscale('log')
+    #ax.set_yscale('log')
     ax.set_xlabel('Range (km)')
     ax.set_ylabel('Rainfall (mm/h)')
+    ax.set_ylim(0,20)
     ax.legend()
 fig.suptitle('Rx1H')
 fig.show()
@@ -85,6 +88,7 @@ for (site, break_yr) in sites.items():
     #ax.set_yscale('log')
     ax.set_xlabel('Range (km)')
     ax.set_ylabel('Rainfall (mm)')
+
     ax.legend()
 fig.suptitle('Total DJF rain')
 fig.show()

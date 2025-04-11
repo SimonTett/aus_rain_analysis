@@ -1,6 +1,8 @@
 # plot the GEV fits for the event extremes.
 # will focus on the fractional changes and try to plot the 30min, 1hr & 2 hr data.
 ## load in the data
+import typing
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import xarray
@@ -11,7 +13,8 @@ import numpy as np
 import commonLib
 import pathlib
 
-my_logger = ausLib.setup_log(1)
+my_logger = ausLib.setup_log(2)
+non_default_dates=dict(Adelaide='20161201',Melbourne='20041201',WTakone='20161201')
 def read_data(file: pathlib.Path) -> xarray.Dataset:
     """
     Read in the fit data and filter out bad fits.
@@ -21,18 +24,38 @@ def read_data(file: pathlib.Path) -> xarray.Dataset:
     Returns: xarray.Dataset containing the fit data after remove of cases with -ve locations
 
     """
+    my_logger.debug(f'Reading {file}')
     ds = xarray.load_dataset(file).reindex(resample_prd=['30min', '1h', '2h', '4h'])  # order sensible and drop 8h
     #L = ds.Parameters.sel(parameter='scale') > -10
     L = (ds.Parameters.sel(parameter='location') > 0)
     if L.sum() < L.count():
         my_logger.warning(f'Filtering out {int(L.count() - L.sum())} bad fits for {file}')
     ds = ds.where(L)  #.dropna('sample', how='all')
-    return ds.mean(dim='sample').drop_vars('postchange_start', errors='ignore')
+    result = ds.mean(dim='sample').drop_vars('postchange_start', errors='ignore')
+    result.attrs=ds.attrs
+    return result
 
 
-def get_data(fit_dir: pathlib.Path, boostrap: bool = True) -> xarray.Dataset:
-    be_t = read_data(fit_dir / 'gev_fit_temp.nc')
-    be = read_data(fit_dir / 'gev_fit.nc')
+def get_data(fit_dir: pathlib.Path, boostrap: bool = True,
+             date_str:typing.Optional[str] = None) -> xarray.Dataset:
+
+    """
+
+    :param fit_dir:
+    :param boostrap:
+    :param date_str:
+    :return:
+    """
+    be_t_file = 'gev_fit_temp'
+    be_file = 'gev_fit'
+    if date_str is not None:
+        be_t_file += f'_{date_str}'
+        be_file += f'_{date_str}'
+
+    be_t_file = fit_dir / (be_t_file + '.nc')
+    be_file = fit_dir / (be_file+'.nc')
+    be_t = read_data(be_t_file)
+    be = read_data(be_file)
 
     # compute the fractional location and shape changes
     ds = dict()
@@ -44,8 +67,14 @@ def get_data(fit_dir: pathlib.Path, boostrap: bool = True) -> xarray.Dataset:
     be_ratio = be_ratio.assign_coords(parameter=param_names).rename(dict(parameter="parameter_change"))
     ds['be_ratio'] = be_ratio
     if boostrap:  # read in the boot strap data.
-        gev_bs_file = fit_dir / 'gev_fit_bs.nc'
-        gev_t_bs_file = fit_dir / 'gev_fit_temp_bs.nc'
+        gev_bs_file =  'gev_fit_bs'
+        gev_t_bs_file =  'gev_fit_temp_bs'
+        if date_str is not None:
+            gev_bs_file += f'_{date_str}'
+            gev_t_bs_file += f'_{date_str}'
+
+        gev_t_bs_file = fit_dir / (gev_t_bs_file + '.nc')
+        gev_bs_file = fit_dir / (gev_bs_file + '.nc')
         bs = read_data(gev_bs_file)
         bs_t = read_data(gev_t_bs_file)
         ds['p_bs'] = np.exp((bs_t.AIC - bs.AIC) / 2)
@@ -57,7 +86,8 @@ def get_data(fit_dir: pathlib.Path, boostrap: bool = True) -> xarray.Dataset:
         ds['bs_ratio'] = bs_ratio
         my_logger.debug(f'Loaded BS datat from {fit_dir}')
     my_logger.info(f'Loaded {fit_dir}')
-    return xarray.Dataset(ds)
+    ds = xarray.Dataset(ds).assign_attrs(be_t.attrs)
+    return ds
 
 
 # Main code
@@ -69,17 +99,17 @@ if __name__ == '__main__':
     uncert = 0.05  # 5-95%
     uncert_sd_scale = scipy.stats.norm().isf(uncert)  # roughly 5-95% range
     quants = [uncert, 0.5, 1 - uncert]
-    # mornington looks weird – need to examine it more carefully. Prob look at events. Some oddities in the fit.
-    # so filtering out shapes < -10. I think it is problems with the fit.
+
     end_name_sens = '_rain_brisbane'  # calibration
     end_name = '_rain_melbourne'
 
     for site in ausLib.site_numbers.keys():
         name = site + end_name
         path = ausLib.data_dir / f'processed/{name}/fits'
-        gev[site] = get_data(path)
+        date_str = non_default_dates.get(site)
+        gev[site] = get_data(path,date_str=date_str)
         sens_path = ausLib.data_dir / f'processed/{site}{end_name_sens}/fits'
-        sens = get_data(sens_path, boostrap=False)
+        sens = get_data(sens_path, boostrap=False,date_str=date_str)
         rename = {k: k + '_sens' for k in sens.data_vars}
         sens = sens.rename(rename)
         gev[site] = xarray.merge([gev[site], sens])
@@ -185,7 +215,8 @@ if __name__ == '__main__':
                 a.set_ylabel('Loc/Scale (mm)', size='small')
                 mn = mn * resample_hours
                 mn_sens = mn_sens * resample_hours
-                a.set_ylim(0, 20.)
+                a.set_ylim(1, 60.)
+                a.set_yscale('log')
                 a.tick_params(axis='y', labelcolor='k', labelsize='small')
 
             err = np.abs(q_bs.isel(quantile=[0, -1]) - q_bs.sel(quantile=0.5))

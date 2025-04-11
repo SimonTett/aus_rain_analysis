@@ -35,7 +35,7 @@ def get_dem_files(bounding_box: tuple[float, float, float, float],
     Get the DEM files that cover the bounding box.
 
     :param bounding_box: Co-ordinate bounds for DEM files. Format is (min_lon, min_lat, max_lon, max_lat)
-    :param dryrun: do a dryrun. No files will be downloaded though earrhaccess will be queried.
+    :param dryrun: do a dryrun. No files will be downloaded though earth access will be queried.
     :param cache_dir: Where downloaded STRM files will be stored.
     :return: a list of files that should cover the bounding box.
     Data will be retrieved if zip files do not exist in the STRM directory.
@@ -140,7 +140,7 @@ if __name__ == '__main__':
                         help='Remake SRTM data if set otherwise cache data. Note STRM data used to generate DEM data')
     parser.add_argument('--srtm_cache_dir', type=pathlib.Path, default=SRTM_dir,
                         help='Where SRTM data downloaded from earthdata is stored')
-
+    parser.add_argument('--offset', type=int,help='Offset for DEM data. Default is None')
     ausLib.add_std_arguments(parser)  # add on the std args
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # setup the logging and deal with standard args.
@@ -162,6 +162,9 @@ if __name__ == '__main__':
     my_logger.info(f'Output dir is {outdir}')
     for name, info in metadata.iterrows():
         outfile = pathlib.Path(outdir) / f'{site}_{name}_cbb_dem.nc'
+        if args.offset is not None:
+            extra_attrs['offset'] = args.offset
+            outfile = outfile.parent/f'{outfile.stem}_offset_{args.offset:.0f}m{outfile.suffix}'
 
         # see if outfile exists and if we are allowed to overwrite it.
         if outfile.exists() and (not args.overwrite):
@@ -206,6 +209,9 @@ if __name__ == '__main__':
         proj_info = ausLib.gen_radar_projection(*sitecoords[0:2])
         DEM = wrl.georef.create_xarray_dataarray(
             polarvalues, r=r, phi=coord[:, 0, 1], site=sitecoords).wrl.georef.georeference(crs=proj_rad)
+        if args.offset:
+            msk = DEM <= 0
+            DEM = DEM.where(msk, DEM + args.offset)
 
         PBB = wrl.qual.beam_block_frac(polarvalues, alt, beamradius)
         PBB = np.ma.masked_invalid(PBB)

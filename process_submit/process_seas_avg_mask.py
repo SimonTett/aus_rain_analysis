@@ -5,6 +5,7 @@
 # 2) Mask (per month) where count_raw_Reflectivity_thresh > 20% of  samples
 # 3) Mask (per month) where number of raw samples < 70% of max samples
 # 4) Also mask out where over ocn.
+# 5) Mask out where mean_rain < 0.2 * mean_rain.median()
 
 import argparse
 import sys
@@ -22,6 +23,7 @@ import ast
 import multiprocessing
 
 import ausLib
+from plot_adelaide import mean_rain
 
 horizontal_coords = ['x', 'y']  # for radar data.
 cpm_horizontal_coords = ['grid_latitude', 'grid_longitude']  # horizontal coords for CPM data.
@@ -109,7 +111,7 @@ def group_data_set(ds: xarray.Dataset, *args, group_dim: str = 'time', **kwargs)
 if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
     parser = argparse.ArgumentParser(description="Compute Masked seasonal mean data for processed radar data")
-    parser.add_argument('input_dir',  type=pathlib.Path, help='Input dir for radar data')
+    parser.add_argument('input_dir',  type=pathlib.Path, help='Input dir for radar data for specific site')
     parser.add_argument('--output', type=pathlib.Path, help='name of output file')
     parser.add_argument('--site', type=str, help='Site name -- overrides meta data in input files')
     parser.add_argument('--cbb_dem_files', type=pathlib.Path, help='Names of CCB/DEM files', nargs='+')
@@ -227,6 +229,9 @@ if __name__ == '__main__':
         ausLib.write_out(radar,args.no_mask_file, extra_attrs=extra_attrs)
     # keep where BBF < 0.5 and land.
     msk = (bbf < 0.5) & (CBB_DEM.elevation > 0.0)
+    # and where long term mean rain > 0.3 * median (x,y) long term mean rain
+    mean_rain = radar.mean_raw_rain_rate.mean('time').load()
+    msk = msk & (mean_rain > 0.3 * mean_rain.median())
     # msk variables which have both an x and y dimension.
     xy_vars = [v for v in radar.variables if ('x' in radar[v].dims) and ('y' in radar[v].dims)]
     for var in xy_vars:
@@ -237,6 +242,7 @@ if __name__ == '__main__':
     # and where count_raw_var_thresh < 20% of samples -- crude mask for artifacts.
     tmsk = radar[f'count_raw_{variable_name}_thresh'] < 0.2 * samples
     tmsk=tmsk.load()
+
 
     # mask out the x-y vars
     for var in xy_vars:
