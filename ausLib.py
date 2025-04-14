@@ -87,6 +87,16 @@ module_path = pathlib.Path(__file__).parent  # path to this module
 
 timezone_finder = TimezoneFinder()  # instance of timezone_finder -- only want one,
 
+def expand(filestr: str) -> pathlib.Path:
+    """
+
+    Expand any env vars, convert to path and then expand any user constructs.
+    :param filestr: path like string
+    :return:expanded path
+    """
+    path = os.path.expandvars(filestr)
+    path = pathlib.Path(path).expanduser()
+    return path
 
 def extract_rgn(radar_ds: xarray.Dataset) -> typing.Dict[str, slice]:
     """
@@ -1070,7 +1080,7 @@ def gen_slurm_script(
         job_name: typing.Optional[str] = None,
         email: str = '',
         log_base: typing.Optional[pathlib.Path] = None,
-        setup_script: typing.Optional[pathlib.Path] = None,
+        setup_script: typing.Optional[pathlib.Path] = None, # not used in SLURM
         ) -> tuple[list[str], str]:
 
 
@@ -1113,8 +1123,9 @@ def gen_slurm_script(
     # Check all required values are set.
     args = locals()
     none_vars = []
+    allowed_none = ['project','storage','setup_script']
     for name, value in args.items():
-        if value is None:
+        if (name not in allowed_none) and (value is None):
             my_logger.warning(f'Must set {name}')
             none_vars += [name]
     if len(none_vars) > 0:
@@ -1132,21 +1143,26 @@ def gen_slurm_script(
     log_base.parent.mkdir(exist_ok=True, parents=True)
 
     # Check if the setup script exists.
-    if not setup_script.exists():
+    if (setup_script is not None ) and (not setup_script.exists()):
         raise FileNotFoundError(f'Setup script {setup_script} does not exist')
 
     # Construct the SLURM script.
     log_stdout = log_base.with_name(log_base.name + '.out')
     log_stderr = log_base.with_name(log_base.name + '.err')
-    cmd_str = f"""
-#SBATCH --account={project}
-#SBATCH --partition={queue}
+    # deal with the optional cases first
+    cmd_str = '#!/bin/bash\n'
+    if project is not None:
+        cmd_str += f'#SBATCH --account={project}\n'
+    if queue is not None:
+        cmd_str += f'#SBATCH --partition={queue}\n'
+    cmd_str += f"""
 #SBATCH --time={time}
 #SBATCH --mem={memory}
 #SBATCH --cpus-per-task={cpus}
 #SBATCH --job-name={job_name}
 #SBATCH --output={log_stdout}
 #SBATCH --error={log_stderr}
+#SBATCH --export=ALL
 """
     if (len(email) > 0) and ('@' in email):
         cmd_str += f"""
@@ -1159,7 +1175,11 @@ def gen_slurm_script(
     cmd_str += fr'''
 export TMPDIR=$SLURM_TMPDIR
 cd {wd} || exit # Ensure we are in the correct directory.
-. {setup_script} # Setup software and then run the command.
+'''
+    if setup_script is not None:
+        cmd_str +=f'. {setup_script}\n'
+
+    cmd_str +=f'''
 cmd="{cmd_to_run}"
 echo "Cmd is $cmd"
 result=$($cmd)
@@ -1250,10 +1270,11 @@ def process_std_arguments(args: argparse.Namespace,
                     del json_args[k]
                     my_logger.debug(f'removed {k} from json file')
             # convert things that should be paths from strings to paths
+            # that will also expand any env vars and convert ~
             keys = ['setup_script', 'log_base', 'history_file']  # things that should be converted to paths
             for k in keys:
                 try:
-                    json_args[k] = pathlib.Path(json_args[k])
+                    json_args[k] = expand(json_args[k])
                 except KeyError:
                     pass
             # deal with history

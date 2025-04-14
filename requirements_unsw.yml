@@ -6,7 +6,6 @@
 name: mamba_rain_env
 channels:
     - conda-forge
-    - defaults
 dependencies:
     - xarray~=2024.1.1
     - flox~=0.8
