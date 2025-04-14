@@ -1,0 +1,8 @@
+{
+  "comment": "Configuration for process_seas_avg_mask",
+  "memory": "10GB",
+  "time": "01:00:00",
+  "cpus": 1,
+  "queue": "General",
+  "history_file": "$AUSRAIN_HIST_DIR/process_seas_avg_mask.txt"
+}

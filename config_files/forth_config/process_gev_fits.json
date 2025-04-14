@@ -1,0 +1,15 @@
+{
+  "comment": "Configuration for process_gev_fits.py",
+  "memory": "20GB",
+  "memory_comment": "**Probably** need a lot more memory when running with dask.",
+  "time": "06:00:00",
+  "time_comment": "Should take a wee bit under 100 minutes on single core",
+  "cpus": 1,
+  "cpus_comment":"In principle can run on 7 or 14 cores but when do so get occasional R failure/hang",
+  "general_comment": " Code occasionally hangs, Suspect coz out of memory and R halts or something! Maybe trying to have multiple instances of R running breaks things",
+  "queue": "normalbw",
+  "project": "wq02",
+  "storage": "gdata/rq0+gdata/hh5+gdata/ua8",
+  "setup_script": "/home/561/st7295/aus_rain_analysis/setup.sh",
+  "history_file": "/home/561/st7295/aus_rain_analysis/histories/process_gev_fits.txt"
+}
