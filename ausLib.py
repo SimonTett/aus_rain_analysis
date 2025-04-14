@@ -72,7 +72,7 @@ elif hostname.lower().startswith('geos'):  # School of geosciences managed lapto
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
     my_logger.warning("agcd_rain_dir not defined. ")
-elif '.geos.' in hostname.lower():
+elif '.geos.' in hostname.lower(): # geos linux machines
     data_dir = pathlib.Path("/scratch/stett2/radar")
     common_data = pathlib.Path("/scratch/stett2/common_data")
     my_logger.warning("agcd_rain_dir not defined. ")
