@@ -72,7 +72,7 @@ if [[ -z "${region_name}" ]]; then
   job_name="smn_${name}"
   log_file=process_seas_avg_mask_${name}_${time_str}
   submit_opts=" --submit"
-  submit_opts+=" --json_submit ${AUSRAIN}/config_files/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
+  submit_opts+=" --json_submit ${AUSRAIN_CONFIG_DIR}/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
   submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
   submit_opts+=${hold_after}
   cmd="process_seas_avg_mask.py  ${summary_dir} --output ${sm_file} --no_mask_file ${nomask_file} ${extra_args} ${submit_opts} "
@@ -88,7 +88,7 @@ fi
 # event processing
 job_name="ev_${name}"
 log_file=process_events_${name}_${time_str}
-submit_opts=" --submit --json_submit  ${AUSRAIN}/config_files/process_events.json --log_base ${pbs_log_dir}/${log_file}"
+submit_opts=" --submit --json_submit  ${AUSRAIN_CONFIG_DIR}/process_events.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
 submit_opts+=" ${hold_after} "
 cmd="process_events.py  ${sm_file} ${event_file}  ${extra_args} ${region_args} ${submit_opts}"
@@ -103,7 +103,7 @@ echo "Submitted job $jobid_event for $cmd" 2>&1
 # GEV processing
 job_name="gev_${name}"
 log_file=process_gev_fits_${name}_${time_str}
-submit_opts=" --submit --json_submit  ${AUSRAIN}/config_files/process_gev_fits.json --log_base ${pbs_log_dir}/${log_file}"
+submit_opts=" --submit --json_submit  ${AUSRAIN_CONFIG_DIR}/process_gev_fits.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
 submit_opts+=" ${hold_after} "
 cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 --bootstrap=100 ${extra_args} ${submit_opts} "
