@@ -949,6 +949,9 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
                      help='Name of log file -- if provided. log info goes there as well as std out/err'
                      )
 
+    std.add_argument('--profile',type=pathlib.Path,
+                     help='Profile code saving data to named file')
+
     # add a submit sub-command,
     # note that a value of '' means do not do anything. This is to allow checking for values we actually need
     submit = parser.add_argument_group('Submit. Only used if --submit set')
@@ -971,6 +974,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     submit.add_argument('--dryrun', help='Dry run only. Nothing will be submitted and script will exit',
                         action='store_true'
                         )
+    submit.add_argument('--nodelist', help='List of nodes to run on', nargs='+')
     submit.add_argument('--history_file', help='Store command in history file', type=pathlib.Path)
     submit.add_argument('--purpose', nargs='+', help='Purpose of the job. Does nothing but put in log file')
 
@@ -988,6 +992,7 @@ def gen_pbs_script(
         email: str = '',
         log_base: typing.Optional[pathlib.Path] = None,
         setup_script: typing.Optional[pathlib.Path] = None,
+        node_list: typing.Optional[[list[str],str]] = None,
         ) -> tuple[list[str], str]:
     """
     Generate a pbs qsub command and script to run it.
@@ -1003,24 +1008,28 @@ def gen_pbs_script(
         job_name: name of job
         email: email to send to
         log_base:  log base file
+        node_list: list of nodes to run on. Ignored for pbs
         setup_script:  script to run before running the command
 
     Returns:list of qsub command and the script to run.
 
     """
+    # TODO merge gen_pbs_script and gen_slurm_script
     # generate the qsub command
     if holdafter is None:
         holdafter = []  # set it to empty list.
-    # check all values are set.
+    # Check all required values are set.
     args = locals()
     none_vars = []
-
+    allowed_none = ['project','storage','setup_script','node_list']
     for name, value in args.items():
-        if value is None:
+        if (name not in allowed_none) and (value is None):
             my_logger.warning(f'Must set {name}')
             none_vars += [name]
     if len(none_vars) > 0:
         raise ValueError(f'Must set {" ".join(none_vars)} to values')
+    if node_list is not None:
+        raise ValueError('node_list not supported in pbs. Please implement.')
     qsub_cmd = ["qsub"]
     wd = pathlib.Path.cwd()  # where we are now.
     qsub_cmd.append('-')  # read from std in.
@@ -1079,6 +1088,7 @@ def gen_slurm_script(
         memory: typing.Optional[str] = None,
         job_name: typing.Optional[str] = None,
         email: str = '',
+        node_list: typing.Optional[[list[str],str]] = None,
         log_base: typing.Optional[pathlib.Path] = None,
         setup_script: typing.Optional[pathlib.Path] = None, # not used in SLURM
         ) -> tuple[list[str], str]:
@@ -1103,6 +1113,7 @@ def gen_slurm_script(
         memory: Memory to use.
         job_name: Name of the job.
         email: Email to send notifications to.
+        node_list
         log_base: Base path for log files.
         setup_script: Script to run before executing the command.
 
@@ -1120,16 +1131,7 @@ def gen_slurm_script(
     if holdafter is None:
         holdafter = []  # Set it to an empty list.
 
-    # Check all required values are set.
-    args = locals()
-    none_vars = []
-    allowed_none = ['project','storage','setup_script']
-    for name, value in args.items():
-        if (name not in allowed_none) and (value is None):
-            my_logger.warning(f'Must set {name}')
-            none_vars += [name]
-    if len(none_vars) > 0:
-        raise ValueError(f'Must set {" ".join(none_vars)} to values')
+
 
     sbatch_cmd = ["sbatch"]
     wd = pathlib.Path.cwd()  # Current working directory.
@@ -1169,6 +1171,10 @@ def gen_slurm_script(
 #SBATCH --mail-type=END
 #SBATCH --mail-user={email}
 """
+    if node_list is not None:
+        if isinstance(node_list, str):
+            node_list = [node_list]
+        cmd_str += f'#SBATCH --nodelist={",".join(node_list)}\n'
     if len(holdafter) > 0:
         cmd_str += f'#SBATCH --dependency=afterok:{":".join(holdafter)}\n'
 
@@ -1247,12 +1253,13 @@ def process_std_arguments(args: argparse.Namespace,
         cmd = ' '.join(cmd)  # remake the cmd.
         my_logger.info('Cmd is: ' + cmd)
 
-        # generate the command and qsub_cmd
+        # generate the submission command and submit_cmd
 
-        sub_args = dict(project=args.project, queue=args.queue, storage=args.storage,
+        submit_args = dict(project=args.project, queue=args.queue, storage=args.storage,
                         time=args.time, cpus=args.cpus, memory=args.memory, job_name=args.job_name,
                         email=args.email, log_base=args.log_base,setup_script=args.setup_script,
-                        )
+                        node_list = args.node_list,
+                        ) # arguments relevant to submission.
 
 
         history_file = args.history_file
@@ -1283,40 +1290,35 @@ def process_std_arguments(args: argparse.Namespace,
             except KeyError:
                 pass  # no history file
 
-            my_logger.debug(f'Updating {json_args} with sub_args')
+            my_logger.debug(f'Updating {json_args} with submit_args')
 
             for k,v in json_args.items():
-                if (k in sub_args.keys() and
-                        (sub_args.get(k) is  None) or
-                        (sub_args.get(k) == '')
+                if (k in submit_args.keys() and
+                        (submit_args.get(k) is  None) or
+                        (submit_args.get(k) == '')
                 ):
                     my_logger.debug(f'Updating args {k} with {v} from json file')
-                    sub_args[k] = v
-            # sub_args.update({k: v for k, v in json_args.items() if (k in sub_args.keys() and
-            #                                                         (sub_args.get(k) is not None) or
-            #                                                         (sub_args.get(k) != '')
-            #                                                         )
-            #                  }
-            #                 )  # update not None/empty
+                    submit_args[k] = v
 
-            if sub_args['cpus'] > 1 and not args.dask:
+
+            if submit_args['cpus'] > 1 and not args.dask:
                 my_logger.warning('Setting cpus to 1 as not using dask. Waiting for 5 seconds.')
-                sub_args['cpus'] = 1
+                submit_args['cpus'] = 1
                 time.sleep(5)  # so can see the warning
         for k,v in default.items():
             if k == 'json_submit_file':
                 continue # json_submit_file is special! See above
-            if sub_args.get(k) in [None,'']:
-                sub_args[k] = v # update the value with default if None, not set or ''
+            if submit_args.get(k) in [None,'']:
+                submit_args[k] = v # update the value with default if None, not set or ''
                 my_logger.debug(f'Set {k} to {v} from default as not set')
 
         batch_sys = detect_batch_system()
         submit_batch_cmd = ['']
 
         if batch_sys == 'SLURM':
-            submit_batch_cmd, cmd_str = gen_slurm_script(cmd, holdafter=args.holdafter, **sub_args)
+            submit_batch_cmd, cmd_str = gen_slurm_script(cmd, holdafter=args.holdafter, **submit_args)
         elif batch_sys == 'PBS':
-            submit_batch_cmd, cmd_str = gen_pbs_script(cmd, holdafter=args.holdafter, **sub_args)
+            submit_batch_cmd, cmd_str = gen_pbs_script(cmd, holdafter=args.holdafter, **submit_args)
         elif args.dryrun:
             my_logger.info(f'Doing dryrun. Not submitting job. Detected batch system is {batch_sys}')
         else:

@@ -119,6 +119,7 @@ if __name__ == '__main__':
                         choices=['DJF', 'MAM', 'JJA', 'SON','monthly'])
     parser.add_argument('--years', nargs='+', help='years to use', type=int)
     parser.add_argument('--no_mask_file',type=pathlib.Path, help='File where no mask data written out')
+    parser.add_argument('--radius', type=float, help='Radius to use for radar data. If not set then all data used.')
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Very I/O code so avoid dask
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # setup the logging
@@ -232,6 +233,11 @@ if __name__ == '__main__':
     # and where long term mean rain > 0.3 * median (x,y) long term mean rain
     mean_rain = radar.mean_raw_rain_rate.mean('time').load()
     msk = msk & (mean_rain > 0.3 * mean_rain.median())
+    # and if radius set then keep where within radius.
+    if args.radius:
+        my_logger.info(f"Using radius of {args.radius}")
+        r = np.sqrt(radar.x.astype('float') ** 2 + radar.y.astype('float') ** 2)
+        msk = msk & (r < args.radius)
     # msk variables which have both an x and y dimension.
     xy_vars = [v for v in radar.variables if ('x' in radar[v].dims) and ('y' in radar[v].dims)]
     for var in xy_vars:

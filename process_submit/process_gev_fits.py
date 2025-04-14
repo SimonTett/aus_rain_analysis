@@ -69,7 +69,8 @@ def comp_radar_fit(
         name: typing.Optional[str] = None,
         extra_attrs: typing.Optional[dict] = None,
         use_dask: bool = False,
-        verbose: bool = False
+        verbose: bool = False,
+        initial_params: typing.Optional[xarray.DataArray] = None,
 ) -> tuple[xarray.Dataset, typing.Optional[xarray.Dataset]]:
     """
     Compute the GEV fits for radar data. This is a wrapper around the R code to do the fits.
@@ -89,6 +90,7 @@ def comp_radar_fit(
         extra_attrs: any extra attributes to be added
         use_dask: If True use dask for the computation.
         verbose: Passed through to R code. Will be veryyy verbose.
+        initial_params: initial parameters for the fit.
 
     Returns:fit
 
@@ -129,7 +131,7 @@ def comp_radar_fit(
     my_logger.debug('Doing GEV fit')
     fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=verbose,
                            recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs,
-                           use_dask=use_dask)
+                           use_dask=use_dask,initial=initial_params)
     my_logger.debug('Done GEV fit')
 
     if bootstrap_samples > 0:
@@ -174,20 +176,9 @@ def comp_radar_fit(
 
     return fit, bs_fit
 # main code!
-if __name__ == "__main__":
-    multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
+def main():
+    # main script
 
-    parser = argparse.ArgumentParser(description="Compute GEV fits for radar event  data")
-    parser.add_argument('input_file', type=pathlib.Path, help='input file of events from  radar data')
-    parser.add_argument('--outdir', type=pathlib.Path,
-                        help='output directory for fits. If not provided - computed from input file name'
-                        )
-    parser.add_argument('--nsamples', type=int, help='Number of samples to use', default=100)
-    parser.add_argument('--bootstrap_samples', type=int, help='Number of event bootstraps to use', default=0)
-    parser.add_argument('--time_range', type=pd.Timestamp, nargs='+',
-                        help='Time range to use for fits. Provide 1 or 2 arguments', default=None)
-    ausLib.add_std_arguments(parser)  # add on the std args
-    args = parser.parse_args()
     if args.outdir is None:
         parent = args.input_file.parent
         output_dir = parent / 'fits'
@@ -281,19 +272,26 @@ if __name__ == "__main__":
         extra_attrs.update(time_range=[str(t) for t in time_range])
 
     my_logger.info(f"Computing fits")
+    initial_params = xarray.DataArray([radar_dataset.max_value.mean(),radar_dataset.max_value.std(),0.1],
+                                    coords=dict(parameter=['location','scale','shape']),)
 
     fit, fit_bs = comp_radar_fit(radar_dataset,
                                  n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
                                  name='fit_nocov', file=output_fit, bootstrap_file=output_fit_bs,
-                               extra_attrs=extra_attrs, recreate_fit=args.overwrite,use_dask=use_dask
+                               extra_attrs=extra_attrs, recreate_fit=args.overwrite,use_dask=use_dask,
+                                 verbose=args.verbose > 2,
+                                 initial_params=initial_params
                                  )
     my_logger.info(f"Computed no cov fits {ausLib.memory_use()}") # memory use
-
+    initial_params = xarray.DataArray([radar_dataset.max_value.mean(),0.0,radar_dataset.max_value.std(),0.0,0.1],
+                                    coords=dict(parameter=['location','Dlocation_Tanom','scale','Dscale_Tanom','shape']),)
     fit_t, fit_t_bs = comp_radar_fit(radar_dataset, cov=['Tanom'],
                                      n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
                                      extra_attrs=extra_attrs, name='fit_temp', file=output_fit_t,
                                      bootstrap_file=output_fit_t_bs,
-                                     recreate_fit=args.overwrite,use_dask=use_dask
+                                     recreate_fit=args.overwrite,use_dask=use_dask,
+                                     verbose=args.verbose > 2,
+                                     initial_params=initial_params
                                      )
     my_logger.info(f"Computed time fits {ausLib.memory_use()}")
 
@@ -302,7 +300,8 @@ if __name__ == "__main__":
     def comp_dist(ds, samples=100):
 
         dist = scipy.stats.multivariate_normal(ds['mean'].squeeze(),
-                                               ds['cov'].squeeze()
+                                               ds['cov'].squeeze(),
+                                               allow_singular=True
                                                )
         dist_sample = dist.rvs(size=samples)
         dist_sample = xarray.DataArray(data=dist_sample,
@@ -334,4 +333,31 @@ if __name__ == "__main__":
                 dfract_bs = fit_t_bs.Parameters.sel(parameter=dp) / fit_t_bs.Parameters.sel(parameter=p)
                 q_bs = dfract_bs.quantile([0.1, 0.5, 0.9], dim='bootstrap_sample').to_dataframe().unstack()
                 print(f"BS fract -cov  {dp}: {q_bs.round(3)}", file=f)
+    return fit, fit_bs, fit_t, fit_t_bs
     my_logger.info(f"Done")
+if __name__ == "__main__":
+    multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
+    parser = argparse.ArgumentParser(description="Compute GEV fits for radar event  data")
+    parser.add_argument('input_file', type=pathlib.Path, help='input file of events from  radar data')
+    parser.add_argument('--outdir', type=pathlib.Path,
+                        help='output directory for fits. If not provided - computed from input file name'
+                        )
+    parser.add_argument('--nsamples', type=int, help='Number of samples to use', default=100)
+    parser.add_argument('--bootstrap_samples', type=int, help='Number of event bootstraps to use', default=0)
+    parser.add_argument('--time_range', type=pd.Timestamp, nargs='+',
+                        help='Time range to use for fits. Provide 1 or 2 arguments', default=None)
+    ausLib.add_std_arguments(parser)  # add on the std args
+    args = parser.parse_args()
+    if args.profile:
+        my_logger.info(f'Running Profiler. Data dumped to  {args.profile}')
+        import cProfile
+        profile = cProfile.Profile()
+        profile.enable()
+        try:
+            fit, fit_bs, fit_t, fit_t_bs= main()
+        finally:
+            profile.disable()
+            profile.dump_stats(args.profile)
+    else:
+        fit, fit_bs, fit_t, fit_t_bs=main()
+
