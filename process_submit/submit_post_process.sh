@@ -4,6 +4,7 @@
 # --region x0 y0 x1 y1 reg_name -- region to extract to and name of region.
 #     If this is provided then code does not sumbit job to do seasonal meaning/masking
 #        as assumes this has already been done.
+#  --radius distance -- passed to seasonal_mask 
 #     The output events and gev fits are created in a new directory based on reg_name.
 # --holdafter jobs -- run first post-processing script after the job(s) have completed.
 #
@@ -15,6 +16,7 @@ fi
 summary_dir=$1 ; shift
 region_name=""
 hold_after=""
+sm_args=""
 while (( "$#" )); do
   case "$1" in
     --region)
@@ -38,6 +40,10 @@ while (( "$#" )); do
         shift # Move to the next argument
       done
       ;;
+    --radius) # add to mean_args
+	sm_args+=" $1" ; shift
+	sm_args+=" $1" ; shift # add on the value
+	;;
     *)
       extra_args+=" $1" # just add it onto the args for all processing
       shift
@@ -70,12 +76,12 @@ time_str=$(date +"%Y%m%d_%H%M%S")
 jobid_mean=""
 if [[ -z "${region_name}" ]]; then
   job_name="smn_${name}"
-  log_file=process_seas_avg_mask_${name}_${time_str}
+  log_file=process_seas_avg_mask_${name}_${time_str} 
   submit_opts=" --submit"
   submit_opts+=" --json_submit ${AUSRAIN_CONFIG_DIR}/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
   submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
   submit_opts+=${hold_after}
-  cmd="process_seas_avg_mask.py  ${summary_dir} --output ${sm_file} --no_mask_file ${nomask_file} ${extra_args} ${submit_opts} "
+  cmd="process_seas_avg_mask.py  ${summary_dir} --output ${sm_file} --no_mask_file ${nomask_file} ${sm_args} ${extra_args} ${submit_opts} "
   jobid_mean=$($cmd)
   status=$?
   if [[ $status -ne 0 ]]; then

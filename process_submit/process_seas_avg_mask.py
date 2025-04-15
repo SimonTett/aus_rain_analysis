@@ -6,6 +6,7 @@
 # 3) Mask (per month) where number of raw samples < 70% of max samples
 # 4) Also mask out where over ocn.
 # 5) Mask out where mean_rain < 0.2 * mean_rain.median()
+# 6) Optinally mask where futher than radius m away,
 
 import argparse
 import sys
@@ -23,7 +24,6 @@ import ast
 import multiprocessing
 
 import ausLib
-from plot_adelaide import mean_rain
 
 horizontal_coords = ['x', 'y']  # for radar data.
 cpm_horizontal_coords = ['grid_latitude', 'grid_longitude']  # horizontal coords for CPM data.
@@ -237,7 +237,7 @@ if __name__ == '__main__':
     if args.radius:
         my_logger.info(f"Using radius of {args.radius}")
         r = np.sqrt(radar.x.astype('float') ** 2 + radar.y.astype('float') ** 2)
-        msk = msk & (r < args.radius)
+        msk = msk & (r <= args.radius)
     # msk variables which have both an x and y dimension.
     xy_vars = [v for v in radar.variables if ('x' in radar[v].dims) and ('y' in radar[v].dims)]
     for var in xy_vars:
