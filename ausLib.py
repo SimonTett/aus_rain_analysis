@@ -934,6 +934,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
 
     --setup_script -- script to run before running the command
     --holdafter -- hold job until the held after job has ran.
+    --nodelist -- list of nodes to run on.
     --dryrun -- dry run only. Nothing will be submitted and script will exit
     --history_file -- store command in history file
     --purpose -- purpose of the job. Does nothing but put in log file
@@ -992,7 +993,7 @@ def gen_pbs_script(
         email: str = '',
         log_base: typing.Optional[pathlib.Path] = None,
         setup_script: typing.Optional[pathlib.Path] = None,
-        node_list: typing.Optional[[list[str],str]] = None,
+        node_list: typing.Optional[typing.Union[list[str],str]] = None,
         ) -> tuple[list[str], str]:
     """
     Generate a pbs qsub command and script to run it.
@@ -1088,9 +1089,9 @@ def gen_slurm_script(
         memory: typing.Optional[str] = None,
         job_name: typing.Optional[str] = None,
         email: str = '',
-        node_list: typing.Optional[[list[str],str]] = None,
+        node_list: typing.Optional[typing.Union[list[str],str]] = None,
         log_base: typing.Optional[pathlib.Path] = None,
-        setup_script: typing.Optional[pathlib.Path] = None, # not used in SLURM
+        setup_script: typing.Optional[pathlib.Path] = None # not used in SLURM
         ) -> tuple[list[str], str]:
 
 
@@ -1257,7 +1258,7 @@ def process_std_arguments(args: argparse.Namespace,
         submit_args = dict(project=args.project, queue=args.queue, storage=args.storage,
                         time=args.time, cpus=args.cpus, memory=args.memory, job_name=args.job_name,
                         email=args.email, log_base=args.log_base,setup_script=args.setup_script,
-                        node_list = args.node_list,
+                        node_list = args.nodelist,
                         ) # arguments relevant to submission.
 
 
