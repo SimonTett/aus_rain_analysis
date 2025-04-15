@@ -210,7 +210,7 @@ def main():
             out_post = args.time_range[0].strftime('_%Y%m%d')
         elif len(args.time_range) == 2:
             time_range = tuple(args.time_range)
-            out_post = args.time_range[0].strftime('_%Y%m%d')
+            out_post = "_"+"_".join([tr.strftime('%Y%m%d') for tr in args.time_range])
         else:
             parser.print_help()
             raise ValueError("Time range must be 1 or 2 elements")
@@ -223,9 +223,6 @@ def main():
     output_summary = output_dir / "gev_summary.txt"
     output_fit_t_bs = output_dir / "gev_fit_temp_bs.nc"
     output_fit_bs = output_dir / "gev_fit_bs.nc"
-    # deal with time_range argument. That modifies the output files.
-
-
     files = [output_fit, output_fit_t, output_summary]
     if args.bootstrap_samples > 0:
         my_logger.info(f"Bootstrapping")
@@ -238,15 +235,15 @@ def main():
             output_fit_t_bs, output_fit_bs = tuple(files[3:5])
     exist = [file.exists() for file in files]
     if all(exist) and (not args.overwrite):
-        my_logger.warning(f"All output files {files} exist and overwrite not set. Exiting")
-        sys.exit(0)
+        my_logger.warning(f"All output files {files} exist and overwrite not set. They should be read in")
+        #sys.exit(0)
     vars_to_drop = ['xpos', 'ypos', 'fraction', 'sample_resolution', 'height', 'Observed_temperature']#, 'time','t']
     radar_dataset = xarray.open_dataset(args.input_file,chunks=dict(EventTime=-1,resample_prd=1,quantv=-1),cache=True,
                                         drop_variables=vars_to_drop)  # load the processed radar
     if time_range is not None:
         L=(radar_dataset.t >= time_range[0] )
         if time_range[1] is not None:
-            L = L & (radar_dataset.t <= time_range[0])
+            L = L & (radar_dataset.t <= time_range[1])
         L = L.compute()
         radar_dataset = radar_dataset.where(L,drop=True)
     # remove nuisance variables
@@ -256,6 +253,7 @@ def main():
     if not use_dask:
         my_logger.debug('Loading data')
         radar_dataset=radar_dataset.load()
+        
     threshold = 0.5  # some max are zero -- presumably no rain then.
     msk = (radar_dataset.max_value > threshold)
     radar_dataset = radar_dataset.where(msk)
@@ -274,11 +272,10 @@ def main():
     my_logger.info(f"Computing fits")
     dd = radar_dataset.max_value.sel(quantv=0.5,drop=True)
     initial_params =[dd.mean('EventTime'), dd.std('EventTime')]
-    initial_params.append(xarray.DataArray(0.1).broadcast_like(initial_params[0]))
-    initial_params = xarray.concat(initial_params,dim='parameter').assign_coords(parameter=['location','scale','shape'])
-
-    #initial_params = xarray.DataArray([radar_dataset.max_value.mean(),radar_dataset.max_value.std(),0.1],
-    #                                coords=dict(parameter=['location','scale','shape']),)
+    initial_params = xarray.concat(initial_params,dim='parameter',coords='minimal').assign_coords(parameter=['location','scale'])
+    # best not to provide initial guess for shape as can cause problems... 
+    #shape = xarray.DataArray(0.1).broadcast_like(initial_params[0]).assign_coords(parameter='shape')
+    #initial_params = xarray.concat([initial_params, shape], dim='parameter',coords='minimal')
 
     fit, fit_bs = comp_radar_fit(radar_dataset,
                                  n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
@@ -291,9 +288,9 @@ def main():
     #
     # Set up initial params for fit.
     dd = xarray.concat([xarray.DataArray(0.0)] * 2, dim='parameter').assign_coords(parameter=['Dlocation_Tanom', 'Dscale_Tanom'])
-    initial_params = xarray.concat([initial_params, dd], dim='parameter')
-    #initial_params = xarray.DataArray([radar_dataset.max_value.mean(),0.0,radar_dataset.max_value.std(),0.0,0.1],
-    #                                coords=dict(parameter=['location','Dlocation_Tanom','scale','Dscale_Tanom','shape']),)
+    initial_params = xarray.concat([initial_params, dd], dim='parameter',coords='minimal')
+
+
     fit_t, fit_t_bs = comp_radar_fit(radar_dataset, cov=['Tanom'],
                                      n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
                                      extra_attrs=extra_attrs, name='fit_temp', file=output_fit_t,
@@ -327,8 +324,13 @@ def main():
             q_aic_bs = (fit_t_bs.AIC - fit_bs.AIC).quantile([0.1, 0.5, 0.9], dim='bootstrap_sample').to_dataframe().unstack()
             print(f"AIC_bs: {q_aic_bs.round(-1)}", file=f)
         # Uncertainties from the covariance matrix
-        cov_mean = fit_t.Cov.mean('sample')
-        p_mean = fit_t.Parameters.mean('sample')
+        cov_mean = fit_t.Cov.mean('sample', skipna=True)
+        p_mean = fit_t.Parameters.mean('sample', skipna=True)
+        if cov_mean.isnull().any():
+            breakpoint()
+        if p_mean.isnull().any():
+            breakpoint()
+            
         ds_cov = xarray.Dataset(dict(cov=cov_mean, mean=p_mean))
         samp_params = ds_cov.groupby('resample_prd',squeeze=False).map(comp_dist,samples=args.nsamples).\
             sel(resample_prd=ds_cov.resample_prd)
