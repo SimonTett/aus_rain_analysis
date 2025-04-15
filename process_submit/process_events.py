@@ -129,8 +129,11 @@ def comp_events(data_set: xarray.Dataset, group_fn: typing.Optional[typing.Calla
     coords = source_coords(source)
     event_ds = data_set.groupby(data_set.resample_prd).map(event_stats,
                                                            group_fn=group_fn,x_coord=coords[0], y_coord=coords[1])
-
     # groupby resample_prd. event_stats takes a dataset and a group_fn and returns the event dataset.
+    # reindex so have the same ordering
+    event_ds = event_ds.reindex(resample_prd = data_set.resample_prd)
+
+
     time_quantisation = 'datetime64[M]'
     time_coord = 'time'
     msk  = event_ds.max_value.notnull()
@@ -203,7 +206,7 @@ if __name__ == '__main__':
         my_logger.warning(f"Output file {out_file} exists and overwrite not set. Exiting")
         sys.exit(0)
 
-    radar = xarray.open_dataset(in_file,chunks=dict(resample_prd=1,time=-1,x=-1,y=-1))
+    radar = xarray.open_dataset(in_file)
     regn = None
     if args.region:
         rgn = args.region
@@ -261,7 +264,14 @@ if __name__ == '__main__':
     ref_time = '1970-01-01T14:00'
 
     ds = xarray.Dataset(dict(max_value=mx, max_time=mxTime))
-    group_fn = lambda time  : np.floor(((time - np.datetime64(ref_time)) / np.timedelta64(1, 'D'))).rename('EventTime')#.compute()
+    #group_fn = lambda time  : np.floor(((time - np.datetime64(ref_time)) / np.timedelta64(1, 'D'))).rename('EventTime')#.compute()
+    group_fn = lambda time: xarray.DataArray(
+        np.floor(((time - np.datetime64(ref_time)) / np.timedelta64(1, 'D'))),
+        dims=time.dims,
+        coords=time.coords,
+        name="EventTime"
+    )
+
     radar_events = comp_events(ds, source='RADAR', topog=topog, group_fn=group_fn,
                                extras=[obs_temperature, radar.fraction,
                                        (radar.sample_resolution.dt.seconds / 60.).rename('sample_resolution')]
