@@ -272,8 +272,13 @@ def main():
         extra_attrs.update(time_range=[str(t) for t in time_range])
 
     my_logger.info(f"Computing fits")
-    initial_params = xarray.DataArray([radar_dataset.max_value.mean(),radar_dataset.max_value.std(),0.1],
-                                    coords=dict(parameter=['location','scale','shape']),)
+    dd = radar_dataset.max_value.sel(quantv=0.5,drop=True)
+    initial_params =[dd.mean('EventTime'), dd.std('EventTime')]
+    initial_params.append(xarray.DataArray(0.1).broadcast_like(initial_params[0]))
+    initial_params = xarray.concat(initial_params,dim='parameter').assign_coords(parameter=['location','scale','shape'])
+
+    #initial_params = xarray.DataArray([radar_dataset.max_value.mean(),radar_dataset.max_value.std(),0.1],
+    #                                coords=dict(parameter=['location','scale','shape']),)
 
     fit, fit_bs = comp_radar_fit(radar_dataset,
                                  n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
@@ -283,8 +288,12 @@ def main():
                                  initial_params=initial_params
                                  )
     my_logger.info(f"Computed no cov fits {ausLib.memory_use()}") # memory use
-    initial_params = xarray.DataArray([radar_dataset.max_value.mean(),0.0,radar_dataset.max_value.std(),0.0,0.1],
-                                    coords=dict(parameter=['location','Dlocation_Tanom','scale','Dscale_Tanom','shape']),)
+    #
+    # Set up initial params for fit.
+    dd = xarray.concat([xarray.DataArray(0.0)] * 2, dim='parameter').assign_coords(parameter=['Dlocation_Tanom', 'Dscale_Tanom'])
+    initial_params = xarray.concat([initial_params, dd], dim='parameter')
+    #initial_params = xarray.DataArray([radar_dataset.max_value.mean(),0.0,radar_dataset.max_value.std(),0.0,0.1],
+    #                                coords=dict(parameter=['location','Dlocation_Tanom','scale','Dscale_Tanom','shape']),)
     fit_t, fit_t_bs = comp_radar_fit(radar_dataset, cov=['Tanom'],
                                      n_samples=args.nsamples, bootstrap_samples=args.bootstrap_samples,
                                      extra_attrs=extra_attrs, name='fit_temp', file=output_fit_t,
