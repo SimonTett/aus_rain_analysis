@@ -1222,7 +1222,6 @@ def process_std_arguments(args: argparse.Namespace,
 
     Returns: logger
     """
-    #raise NotImplementedError('Needs some testing!')
     if default is None:
         default = {}
     # specials for default
@@ -1300,7 +1299,6 @@ def process_std_arguments(args: argparse.Namespace,
                     my_logger.debug(f'Updating args {k} with {v} from json file')
                     submit_args[k] = v
 
-
             if submit_args['cpus'] > 1 and not args.dask:
                 my_logger.warning('Setting cpus to 1 as not using dask. Waiting for 5 seconds.')
                 submit_args['cpus'] = 1
@@ -1339,7 +1337,10 @@ def process_std_arguments(args: argparse.Namespace,
             my_logger.warning(f'Output from {submit_batch_cmd} is {result.stdout}')
             if len(result.stderr) > 0:
                 my_logger.warning(f'Stderr from {submit_batch_cmd} is {result.stderr}')
-            print(result.stdout)  # so can get the job id.
+            jobid = result.stdout
+            if batch_sys == 'SLURM':
+                jobid = jobid.split(' ')[-1]
+            print(jobid)  # so can get the job id.
         else:
             print("fake_job.999999")
         my_logger.debug('Submitted so exiting')

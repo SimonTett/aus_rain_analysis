@@ -1,6 +1,6 @@
 {
   "comment": "Configuration for process_gev_fits.py",
-  "memory": "20GB",
+  "memory": "2GB",
   "memory_comment": "**Probably** need a lot more memory when running with dask.",
   "time": "06:00:00",
   "time_comment": "Should take a wee bit under 100 minutes on single core",
