@@ -26,14 +26,27 @@ sns.scatterplot(data=lr, x='site_lon', y='site_lat', hue='Type', style='Beamwidt
 ax.legend(ncol=3,fontsize='small',handletextpad=0.1,handlelength=0.5)
 # add 125x125 km boxes centred on the radars.
 #lr.plot.scatter(x='site_lon',y='site_lat',marker='o',ax=ax,s=20)
-
+process = lambda ds,site: (ds.mean_raw_rain_rate.mean('time').load().assign_attrs(site=site))*90*24
+mean_rain = ausLib.read_process(process=process,)
+## plot data
 dx=125e3
+rain_levels=[20,50,100,200,500,750,1000,1250,1500,2000]
 for name, row in lr.iterrows():
     n = ausLib.site_names[row.id]
+    # plot the mean total DJF rainfall
+    site = n + '_rain_melbourne'
+    radar_info = ausLib.gen_radar_projection(longitude=row.site_lon,
+                                      latitude=row.site_lat)
+    proj = ausLib.radar_projection(radar_info)
+    #albers_projection = ccrs.AlbersEqualArea(central_longitude=row.site_lon, central_latitude=row.site_lat)
+    mean_rain[site].plot(ax=ax, levels=rain_levels, add_colorbar=False, cmap='YlGnBu', transform=proj,zorder=-10)
     ax.text(row.site_lon, row.site_lat, n, va='bottom',size='small')
-    albers_projection = ccrs.AlbersEqualArea(central_longitude=row.site_lon, central_latitude=row.site_lat)
-    rect_patch=matplotlib.patches.Rectangle((-dx,-dx),2*dx,2*dx,linewidth=1,edgecolor='r',facecolor='none',transform=albers_projection)
-    ax.add_patch(rect_patch)
+
+    rect_patch=matplotlib.patches.Rectangle((-dx,-dx),2*dx,2*dx,linewidth=1,edgecolor='r',facecolor='none',transform=proj)
+    circle_patch = matplotlib.patches.Circle((0, 0), radius=dx, linewidth=1, edgecolor='r', facecolor='none',
+                                             transform=proj,zorder=20)
+
+    ax.add_patch(circle_patch)
 
 # add on lines for regions
 text_kwargs=dict(va='center',ha='left',color='royalblue',backgroundcolor='lightgrey',fontweight='bold',zorder=-5)

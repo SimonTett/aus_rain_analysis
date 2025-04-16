@@ -8,6 +8,7 @@ import scipy.stats
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 # get in the data.
+
 norm_data=dict()
 norm_crit=dict()
 shape=dict()
@@ -16,13 +17,13 @@ my_logger = ausLib.setup_log(1)
 use_cache=False
 #TODO -- update with change of start date.
 # dict of non default dates for the start of the data.
-non_default_dates=dict(Adelaide='20161201',Melbourne='20041201',WTakone='20161201')
+
 if not (use_cache and ('loaded_gev_data_fit' in locals())):
     for site in ausLib.site_numbers.keys():
         name = site + '_rain_melbourne'
         dir = ausLib.data_dir / 'processed' / name
         events = xarray.load_dataset(dir / f'events_seas_mean_{name}_DJF.nc')  # events
-        date = non_default_dates.get(site)
+        date = ausLib.non_default_dates.get(site)
         if date is None:
             end_str = '.nc'
         else:

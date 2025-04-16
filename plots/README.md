@@ -6,3 +6,4 @@
 4) plot_mathews_building_max_group.py -- plots seasonal max and grouped seasonal max for max rain at Mathews Blding.
 5) plot_Sydney_sens_study.py -- plots  sensitivity studies for Sydney.
 6) plot_long_radar_stns.py -- plots the locations of the long lasting radar stations
+7) plot_seas_mean_ratio.py -- plots the seasonal mean raw rain ratios from radar vs gauge.

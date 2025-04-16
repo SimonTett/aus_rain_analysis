@@ -12,6 +12,8 @@ import sys
 import tempfile
 import time
 import zipfile
+from typing import Optional
+
 import cartopy.crs as ccrs
 import cartopy.geodesic
 import matplotlib
@@ -29,6 +31,7 @@ import pandas as pd
 import typing
 import ast  # thanks chaptGPT co-pilot
 import numpy.random as random
+from matplotlib import dates
 
 
 my_logger = logging.getLogger(__name__)  # for logging
@@ -36,17 +39,20 @@ my_logger = logging.getLogger(__name__)  # for logging
 site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50, Canberra=40,
                     Cairns=19, Mornington=36, Grafton=28, Newcastle=4, Gladstone=23
                     )
+
 site_names = dict(zip(site_numbers.values(), site_numbers.keys()))  # reverse lookup
+
+# sites where do not use all data. date is start of data.
+non_default_dates=dict(Gladstone='20051201',Melbourne='20031201',WTakone='20141201')
 all_sites=list(site_numbers.keys())
-# Mornington is poor so removing it. Melbourne and West Takone not well bias corrected.
-for site in ['Mornington','Melbourne','Wtakone']:
-    all_sites.remove(site)
-region_names = dict(#Tropics=['Cairns', 'Mornington'],
-                    EAus=all_sites, # t
+
+region_names = dict(Tropics=['Cairns', 'Mornington'],
+                    EAus = all_sites,
                     QLD=['Gladstone', 'Brisbane', 'Grafton'],
                     NSW=['Newcastle', 'Sydney', 'Canberra'],
                     South=['Melbourne', 'Wtakone', 'Adelaide']
                     )
+
 # need a reverse sort -- sites -> regions
 names_to_region = dict()
 for site in site_numbers.keys():
@@ -1581,6 +1587,8 @@ def std_fig_axs(fig_num,
                 reduce_spline: bool = True,
                 add_projection:bool = False,
                 mosaic: typing.Optional[list[list[str]]] = None,
+                xtime:bool = False,
+                xlim:typing.Optional[tuple[typing.Any,typing.Any]] = None,
                 regions: bool = False, **kwargs) \
         -> tuple['matplotlib.figure.Figure', 'matplotlib.axes.Axes']:
     """
@@ -1591,20 +1599,29 @@ def std_fig_axs(fig_num,
         add_projection:Add projection info to the axes
         mosaic: List of names of the regions to be plotted.
         regions:Add the region names to the plots
+        xtime: x axis is time with range between 1997-01-001 and 2025-03-01
+        xlim: x limits.
         **kwargs: Passed through to the subplot_mosaic function
 
     Returns:
 
     """
     if mosaic is None:
-        mosaic = [['Mornington', 'BLANK', 'Cairns'],
+        mosaic = [['Mornington', 'Cairns','BLANK'],
                   ['Grafton', 'Brisbane', 'Gladstone'],
                   ['Canberra', 'Sydney', 'Newcastle'],
                   ['Adelaide', 'Wtakone', 'Melbourne'],
                   ]
     rgn_names =[name for sublist in mosaic for name in sublist if name != 'BLANK']
+
     if regions:
-        mosaic = [row + [rname] for row, rname in zip(mosaic, region_names.keys())]
+        rnames = [r for r in region_names.keys() if r != 'EAus']
+        # first remove blank
+        mosaic = [[item for item in row if item != 'BLANK'] for row in mosaic]
+        mosaic = [row + [rname] for row, rname in zip(mosaic, rnames) ]
+        # add in EAus.
+        mosaic[0].append('EAus')
+
 
     per_subplot_kw = {regn: dict() for regn in rgn_names}
     if add_projection:
@@ -1626,7 +1643,54 @@ def std_fig_axs(fig_num,
         for ax in axes.values():
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
+    if xtime and xlim is None:
+        xlim = [np.datetime64('1997-01-01'), np.datetime64('2025-03-01')]
+    if xlim is not None:
+        for ax in axes.values():
+            ax.set_xlim(xlim)
     return fig, axes
+
+def read_process(sites:typing.Optional[list[str]]=None,
+                 process:typing.Optional[typing.Callable[[xarray.Dataset,str],typing.Any]] = None,
+                 conversion:str='_rain_melbourne',
+                 seas_file_fn:typing.Optional[typing.Callable[[str],pathlib.Path]] = None,
+                 save_dir:typing.Optional[pathlib.Path] = None) -> dict :
+    """
+    Read in the data for a site and process it with the function process
+    :param sites: List of sites to process. If None then all sites will be processed
+    :param conversion: Conversion used. name is site + conversion
+    :param seas_file_fn: Function to get the file name for the season data. If None then use default which is
+        ausLib.data_dir / f'processed/{name}/seas_mean_{name}_DJF.nc'
+    :param process:Function to process the data. If None then do not process the data and just return it
+    :param save_dir: Where to save the data. If None then do not save the data.
+      Files, within this directory, are called {name}_processed.nc.
+    :return: a dict of stuff indexed by names.
+
+
+    """
+    result=dict()
+    # set up defaults
+    if sites is None:
+        sites = list(site_numbers.keys())
+
+    if seas_file_fn is None: # no function provided so use default
+        seas_file_fn = lambda name: data_dir / f'processed/{name}/seas_mean_{name}_DJF.nc'
+
+    for site in sites:
+        name = site + conversion
+        seas_file = seas_file_fn(name)
+        if not seas_file.exists():
+            raise FileNotFoundError(f'No season  file for {site} with {seas_file}')
+        ds = xarray.load_dataset(seas_file)
+        if process is None:
+            result[name] = ds
+        else:
+            result[name]=process(ds,name)
+    if save_dir is not None:
+        save_dir.mkdir(exist_ok=True,parents=True)
+        for location_name in result.keys():
+            result[location_name].to_netcdf(save_dir/f'{location_name}_processed.nc')
+    return result
 
 
 def comp_ratios(gev_parameters: xarray.Dataset, covariance: str | list[str] = 'Tanom') -> xarray.DataArray:
@@ -1649,8 +1713,10 @@ def comp_ratios(gev_parameters: xarray.Dataset, covariance: str | list[str] = 'T
     da=xarray.concat(da,dim='parameter')
     return da
 
-def plot_radar_change(ax:matplotlib.pyplot.axes,radar_site:pd.DataFrame,
-                      trmm:bool = False) -> None:
+def plot_radar_change(ax:matplotlib.pyplot.axes,
+                      radar_site:pd.DataFrame,
+                      trmm:bool = False,
+                      site_start:bool = False) -> None:
     """
     Plot the change times on an existing axis
     Args:
@@ -1662,15 +1728,35 @@ def plot_radar_change(ax:matplotlib.pyplot.axes,radar_site:pd.DataFrame,
     """
 
     lim = np.array(ax.get_ylim())
-    y = 0.75 * lim[1] + 0.25 * lim[0]
+    x_limits = ax.get_xlim()
+    x_limits = [x.replace(tzinfo=None) for x in dates.num2date(x_limits)] # assume UTC
+    #y = 0.75 * lim[1] + 0.25 * lim[0]
     for name, r in radar_site.iterrows():
         x = np.datetime64(r['postchange_start'])
-        ax.axvline(x, color='k', linestyle='--')
-        ax.text(x, 0.7, r.radar_type, transform=ax.get_xaxis_transform(),
-                ha='left', va='center', fontsize='x-small', rotation=90)
+        if x_limits[0] <= x <= x_limits[1]:
+            ax.axvline(x, color='k', linestyle='--')
+            ax.text(x, 0.7, r.radar_type, transform=ax.get_xaxis_transform(),
+                    ha='left', va='center', fontsize='x-small', rotation=90)
     if trmm: # plot TRMM range
         for d in ['1997-11-27','2001-06-08','2014-07-15']:
             ax.axvline(np.datetime64(d),color='green',linewidth=1.5,linestyle='--')
         d='2014-03-10' # guess for when  first data from GPMM is
         ax.axvline(np.datetime64(d),color='green',linewidth=1.5,linestyle='dashdot')
+
+    if site_start: # plot start of site
+        usite = radar_site.location.unique()[0]
+        # and then try and rename
+        renames = {'N.W. Tasmania (West Takone)':'WTakone'}
+        if 'Tasmania' in usite:
+            pass
+            #breakpoint()
+        for k,v in renames.items():
+            if usite.startswith(k):
+                usite = v
+        start_time = non_default_dates.get(usite)
+        if start_time is not None:
+            x = pd.Timestamp(start_time).replace(tzinfo=None)
+            if x_limits[0] <= x <= x_limits[1]:
+                ax.axvline(x, color='blue', linestyle='--',linewidth=2)
+
 
