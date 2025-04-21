@@ -683,7 +683,7 @@ def site_info(site: int|str) -> pd.DataFrame:
     """
     Get information on a site.
     Args:
-        site_no: site to get info on. Provide site number or site name
+        site: site to get info on. Provide site number or site name
     Returns: pandas series with information on site.
     """
 

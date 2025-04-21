@@ -167,6 +167,33 @@ def comp_events(data_set: xarray.Dataset, group_fn: typing.Optional[typing.Calla
 
     return event_ds
 
+def extract_2m_dewpoint(site: str) -> xarray.DataArray:
+    """
+    Extract the 2m dewpoint temperature for a site.
+    :param site: The site to extract the dewpoint for.
+    :return: The dewpoint temperature.
+    """
+    station_record = ausLib.site_info(site).iloc[-1] # get the last record
+    file = ausLib.data_dir/"ERA5_data/ERA5_dewpoint_monthly.nc"
+    dewpoint = xarray.open_dataset(file).d2m
+    dewpoint_ts = dewpoint.sel(longitude=station_record.site_lon,latitude=station_record.site_lat,method='nearest')
+    dewpoint_ts = dewpoint_ts.rename(valid_time='time')
+    days = dewpoint_ts.time.dt.days_in_month
+
+    count = dewpoint_ts.resample(time='QS-DEC').count()
+    dewpoint_ts = dewpoint_ts.resample(time='QS-DEC').mean().rename('dewpoint')
+
+    dewpoint_ts = dewpoint_ts.where(count == 3,drop=True) # make sure have three months
+    offset = (days.resample(time='QS-DEC').sum()/2).where(count == 3,drop=True).astype('int')
+    offset  = np.array([np.timedelta64(oo,'D') for oo in offset.values])
+    # get times to middle of season.
+
+
+    dewpoint_ts['time'] = dewpoint_ts.time+offset
+
+
+    return dewpoint_ts
+
 
 acorn_lookup = dict(Adelaide=23000, Melbourne=86338, Wtakone=96003, Sydney=66214, Brisbane=40842, Canberra=70351,
                     Cairns=31011, Mornington=29077,
@@ -176,7 +203,7 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
     parser = argparse.ArgumentParser(description="Compute events for Australian radar data")
     parser.add_argument('input_file', type=pathlib.Path, help='input file for seasonal processed radar data')
-    parser.add_argument('output', type=pathlib.Path, help='Filename for events file. ')
+    parser.add_argument('output', type=pathlib.Path, help='Ouput Filename for events file. ')
     parser.add_argument('--station_id', type=int, help='ACORN id for station used to generate temperature covariate. '
                                                        'If not provided computed from site in input file'
                         )
@@ -238,6 +265,8 @@ if __name__ == '__main__':
     obs_temperature.index = obs_temperature.index + offset
     attrs = obs_temperature.attrs.copy()
     obs_temperature = obs_temperature.to_xarray().rename('ObsT').rename(dict(date='time')).assign_attrs(attrs)
+    # get the dewpoint -- from ERA5 data.
+    dewpoint = extract_2m_dewpoint(site)
 
     # want the topography
     orig_regn = ausLib.extract_rgn(radar)
@@ -273,10 +302,11 @@ if __name__ == '__main__':
     )
 
     radar_events = comp_events(ds, source='RADAR', topog=topog, group_fn=group_fn,
-                               extras=[obs_temperature, radar.fraction,
+                               extras=[obs_temperature, radar.fraction, dewpoint,
                                        (radar.sample_resolution.dt.seconds / 60.).rename('sample_resolution')]
                                )
     radar_events['Observed_temperature'] = obs_temperature
+    radar_events['ERA5_dewpoint'] = dewpoint
     radar_events.attrs = radar.attrs
     radar_events = radar_events.compute()
     ausLib.write_out(radar_events, out_file, extra_attrs=extra_attrs, time_dim=None)
