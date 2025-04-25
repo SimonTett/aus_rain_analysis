@@ -16,7 +16,8 @@ fi
 summary_dir=$1 ; shift
 region_name=""
 hold_after=""
-sm_args=""
+sm_args="" # args for the seasonal mean
+gev_args="" # args for the GEV fit
 while (( "$#" )); do
   case "$1" in
     --region)
@@ -44,6 +45,16 @@ while (( "$#" )); do
 	sm_args+=" $1" ; shift
 	sm_args+=" $1" ; shift # add on the value
 	;;
+    --time_range) # add to gev args
+	gev_args+=" $1" ; shift
+	while (( "$#" )); do
+	    if [[ $1 == -* ]]; then
+		break # Exit the loop if another option is encountered
+            fi
+            gev_args+=" $1" ; shift # Add the argument to hold_after
+	done
+	;;
+		 
     *)
       extra_args+=" $1" # just add it onto the args for all processing
       shift
@@ -112,7 +123,7 @@ log_file=process_gev_fits_${name}_${time_str}
 submit_opts=" --submit --json_submit  ${AUSRAIN_CONFIG_DIR}/process_gev_fits.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
 submit_opts+=" ${hold_after} "
-cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 --bootstrap=100 ${extra_args} ${submit_opts} "
+cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 --bootstrap=100 ${gev_args} ${extra_args} ${submit_opts} "
 jobid_gev=$($cmd)
 status=$?
 if [[ $status -ne 0 ]]; then
