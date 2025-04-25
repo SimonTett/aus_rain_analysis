@@ -18,6 +18,7 @@ region_name=""
 hold_after=""
 sm_args="" # args for the seasonal mean
 gev_args="" # args for the GEV fit
+covariates=""
 while (( "$#" )); do
   case "$1" in
     --region)
@@ -30,6 +31,16 @@ while (( "$#" )); do
         echo "Error: Argument for $1 is missing" >&2
         exit 1
       fi
+      ;;
+    --covariates)
+      covariates=$1; shift # handle covariates.
+      while (( "$#" )); do
+        if [[ $1 == -* ]]; then
+          break # Exit the loop if another option is encountered
+        fi
+        covariates+=" $1"; shift # Add the argument to covariates
+
+      done
       ;;
     --holdafter) # need to specially handle holdafter -- as gets passed through to the first submission
       hold_after=$1; shift
@@ -131,5 +142,24 @@ if [[ $status -ne 0 ]]; then
   exit 1
 fi
 echo "Submitted job $jobid_gev for $cmd" 2>&1
-echo "${jobid_mean}" "${jobid_event}" "${jobid_gev}" # return list of all jobs submitted.
+# run gev covariates -- these will be dependant on the jobid_gev as want them to run after the gev fits
+# so get the no covariates first.
+cov_gev_jid=''
+for cov in ${covariates}; do
+  job_name="gev_${cov}_${name}"
+  log_file=process_gev_fits_${name}_${cov}_${time_str}
+  submit_opts=" --submit --json_submit  ${AUSRAIN_CONFIG_DIR}/process_gev_cov.json --log_base ${pbs_log_dir}/${log_file}"
+  submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
+  submit_opts+=" --holdafter ${jobid_gev} "
+  cmd="process_gev_cov.py ${event_file} --outdir ${gev_dir} --covariate ${cov} ${extra_args} ${submit_opts} "
+  jobid_cov=$($cmd)
+  status=$?
+  if [[ $status -ne 0 ]]; then
+    echo "Error submitting job $jobid_cov for $cmd" 2>&1
+    exit 1
+  fi
+  echo "Submitted job $jobid_cov for $cmd" 2>&1
+  cov_gev_jid+=" $jobid_cov"
+done
+echo "${jobid_mean}" "${jobid_event}" "${jobid_gev}" "${cov_gev_jid}" # return list of all jobs submitted.
 

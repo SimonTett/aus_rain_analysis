@@ -23,7 +23,7 @@ if not  (use_cache and 'datasets_resoln_fraction' in locals()):
     my_logger.info('Loaded all data')
 
 ## now to plot the data.
-fig, axes = ausLib.std_fig_axs(f'resoln_fraction', sharey=True,sharex=True)
+fig, axes = ausLib.std_fig_axs(f'resoln_fraction', sharey=True,sharex=True,xtime=True)
 for site, ax in axes.items():
     sample_resolution = datasets_resoln_fraction[site].sample_resolution.load()
     sample_resolution.dt.total_seconds().plot(ax=ax,

@@ -14,7 +14,7 @@ import commonLib
 import pathlib
 
 my_logger = ausLib.setup_log(2)
-non_default_dates=dict(Adelaide='20161201',Melbourne='20041201',WTakone='20161201')
+
 def read_data(file: pathlib.Path) -> xarray.Dataset:
     """
     Read in the fit data and filter out bad fits.
@@ -106,7 +106,7 @@ if __name__ == '__main__':
     for site in ausLib.site_numbers.keys():
         name = site + end_name
         path = ausLib.data_dir / f'processed/{name}/fits'
-        date_str = non_default_dates.get(site)
+        date_str = ausLib.non_default_dates.get(site)
         gev[site] = get_data(path,date_str=date_str)
         sens_path = ausLib.data_dir / f'processed/{site}{end_name_sens}/fits'
         sens = get_data(sens_path, boostrap=False,date_str=date_str)
