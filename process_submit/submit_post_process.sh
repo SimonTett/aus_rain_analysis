@@ -40,7 +40,7 @@ while (( "$#" )); do
         if [[ $1 == -* ]]; then
           break # Exit the loop if another option is encountered
         fi
-        gev_args+=" $1"; shift # Add the argument to covariates
+        covariates+=" $1"; shift # Add the argument to covariates
 
       done
       ;;
@@ -59,9 +59,9 @@ while (( "$#" )); do
       done
       ;;
     --radius) # add to mean_args
-	    sm_args+=" $1" ; shift
-	    sm_args+=" $1" ; shift # add on the value
-	    ;;
+	sm_args+=" $1" ; shift
+	sm_args+=" $1" ; shift # add on the value
+	;;
     *)
       extra_args+=" $1" # just add it onto the args for all processing
       shift
