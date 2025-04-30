@@ -150,10 +150,16 @@ def comp_events(data_set: xarray.Dataset, group_fn: typing.Optional[typing.Calla
             da_extreme_times = da.sel(**sel).squeeze(drop=True).where(msk).drop_vars(time_coord)
             event_ds = event_ds.merge(da_extreme_times)
             my_logger.debug(f'Added {da_extreme_times.name} in')
+
+    # work out distance. Need xpos and ypos if topog is not None for ht
+    xpos = event_ds.xpos.where(msk,event_ds.xpos.min())
+    ypos = event_ds.ypos.where(msk,event_ds.ypos.min())
+    # add in distance
+    event_ds['distance'] =   np.sqrt(xpos**2+ypos**2)/1e3 # convert
+    event_ds['distance']  = event_ds['distance'].where(msk,np.nan)
     # add in hts
     if topog is not None:
-        xpos = event_ds.xpos.where(msk,event_ds.xpos.min())
-        ypos = event_ds.ypos.where(msk,event_ds.ypos.min())
+
         coords = source_coords(source)
         sel = dict(zip(coords, [xpos, ypos]))
         ht = topog.sel(**sel).where(msk)
@@ -216,7 +222,9 @@ if __name__ == '__main__':
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args.
     # Turn of dask as this is rather I/O. Turning it on slows things down!
     args = parser.parse_args()
-    my_logger = ausLib.process_std_arguments(args)  # setup the logging and do std stuff
+    in_file = args.input_file
+    out_file = args.output
+    my_logger = ausLib.process_std_arguments(args,files=[out_file])  # setup the logging and do std stuff
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
@@ -264,7 +272,7 @@ if __name__ == '__main__':
     offset = (obs_temperature.index.diff() / 2.).fillna(pd.Timedelta(45, 'D'))
     obs_temperature.index = obs_temperature.index + offset
     attrs = obs_temperature.attrs.copy()
-    obs_temperature = obs_temperature.to_xarray().rename('ObsT').rename(dict(date='time')).assign_attrs(attrs)
+    obs_temperature = obs_temperature.to_xarray().rename('temperature').rename(dict(date='time')).assign_attrs(attrs)
     # get the dewpoint -- from ERA5 data.
     dewpoint = extract_2m_dewpoint(site)
 

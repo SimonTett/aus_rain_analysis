@@ -13,11 +13,14 @@ if [[ -z $AUSRAIN ]]; then
   echo "Error: Must define AUSRAIN first. Have you done . setup.sh ??" >&2
   exit 1
 fi
+# get error number for error  because file already exists.
+: ${EEXIST:=$(python -c "import errno; print(errno.EEXIST)")}
+export EEXIST
 summary_dir=$1 ; shift
 region_name=""
 hold_after=""
 sm_args=""
-covariates=""
+gev_args=""
 while (( "$#" )); do
   case "$1" in
     --region)
@@ -32,14 +35,18 @@ while (( "$#" )); do
       fi
       ;;
     --covariates)
-      covariates=$1; shift # handle covariates.
+      gev_args+=$1; shift # handle covariates.
       while (( "$#" )); do
         if [[ $1 == -* ]]; then
           break # Exit the loop if another option is encountered
         fi
-        covariates+=" $1"; shift # Add the argument to covariates
+        gev_args+=" $1"; shift # Add the argument to covariates
 
       done
+      ;;
+    --bootstrap) # bootstrap -- add to gev_args
+      gev_args+=$1; shift # handle -bootstrap
+      gev_args+=$1; shift # how many samples are wanted
       ;;
     --holdafter) # need to specially handle holdafter -- as gets passed through to the first submission
       hold_after=$1; shift
@@ -52,9 +59,9 @@ while (( "$#" )); do
       done
       ;;
     --radius) # add to mean_args
-	sm_args+=" $1" ; shift
-	sm_args+=" $1" ; shift # add on the value
-	;;
+	    sm_args+=" $1" ; shift
+	    sm_args+=" $1" ; shift # add on the value
+	    ;;
     *)
       extra_args+=" $1" # just add it onto the args for all processing
       shift
@@ -95,12 +102,18 @@ if [[ -z "${region_name}" ]]; then
   cmd="process_seas_avg_mask.py  ${summary_dir} --output ${sm_file} --no_mask_file ${nomask_file} ${sm_args} ${extra_args} ${submit_opts} "
   jobid_mean=$($cmd)
   status=$?
-  if [[ $status -ne 0 ]]; then
+  if [[ ${status} -eq 0 ]]; then
+    echo "Submitted job $jobid_mean for $cmd" 2>&1
+    hold_after="--holdafter ${jobid_mean}" # hold after only if run the mean processing
+  elif [[ ${status} -eq ${EEXIST} ]]; then
+      echo 'Output file already exists. Skipping job submission.' >&2
+      jobid_mean=""
+  else
     echo "Error submitting job $jobid_mean for $cmd" 2>&1
-    exit 1
+    exit ${status}
   fi
-  echo "Submitted job $jobid_mean for $cmd" 2>&1
-  hold_after="--holdafter ${jobid_mean}" # hold after only if run the mean processing
+
+
 fi
 # event processing
 job_name="ev_${name}"
@@ -110,45 +123,39 @@ submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} 
 submit_opts+=" ${hold_after} "
 cmd="process_events.py  ${sm_file} ${event_file}  ${extra_args} ${region_args} ${submit_opts}"
 jobid_event=$($cmd)
-hold_after=" --holdafter ${jobid_event}" # hold after event processing
+
 status=$?
-if [[ $status -ne 0 ]]; then
+if [[ ${status} -eq 0 ]]; then
+  echo "Submitted job $jobid_event for $cmd" 2>&1
+  hold_after="--holdafter ${jobid_event}" # hold after only if run the event processing
+elif [[ ${status} -eq ${EEXIST} ]]; then # file already exists so keep the existing hold after
+    echo 'Output file already exists. Skipping job submission.' >&2
+    jobid_event=""
+else
   echo "Error submitting job $jobid_event for $cmd" 2>&1
-  exit 1
+  exit ${status}
 fi
-echo "Submitted job $jobid_event for $cmd" 2>&1
+
 # GEV processing
 job_name="gev_${name}"
 log_file=process_gev_fits_${name}_${time_str}
 submit_opts=" --submit --json_submit  ${AUSRAIN_CONFIG_DIR}/process_gev_fits.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
 submit_opts+=" ${hold_after} "
-cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 --bootstrap=100 ${extra_args} ${submit_opts} "
+cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 ${gev_args} ${extra_args} ${submit_opts} "
 jobid_gev=$($cmd)
 status=$?
-if [[ $status -ne 0 ]]; then
+if [[ ${status} -eq 0 ]]; then
+  echo "Submitted job $jobid_gev for $cmd" 2>&1
+  hold_after="--holdafter ${jobid_gev}" # hold after only if run the gev processing
+elif [[ ${status} -eq ${EEXIST} ]]; then # file already exists so keep the existing hold after
+    echo 'Output file already exists. Skipping job submission.' >&2
+    jobid_gev=""
+else
   echo "Error submitting job $jobid_gev for $cmd" 2>&1
-  exit 1
+  exit ${status}
 fi
 echo "Submitted job $jobid_gev for $cmd" 2>&1
-# run gev covariates -- these will be dependant on the jobid_gev as want them to run after the gev fits
-# so get the no covariates first.
-cov_gev_jid=''
-for cov in ${covariates}; do
-  job_name="gev_${cov}_${name}"
-  log_file=process_gev_fits_${name}_${cov}_${time_str}
-  submit_opts=" --submit --json_submit  ${AUSRAIN_CONFIG_DIR}/process_gev_cov.json --log_base ${pbs_log_dir}/${log_file}"
-  submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
-  submit_opts+=" --holdafter ${jobid_gev} "
-  cmd="process_gev_cov.py ${event_file} --outdir ${gev_dir} --covariate ${cov} ${extra_args} ${submit_opts} "
-  jobid_cov=$($cmd)
-  status=$?
-  if [[ $status -ne 0 ]]; then
-    echo "Error submitting job $jobid_cov for $cmd" 2>&1
-    exit 1
-  fi
-  echo "Submitted job $jobid_cov for $cmd" 2>&1
-  cov_gev_jid+=" $jobid_cov"
-done
-echo "${jobid_mean}" "${jobid_event}" "${jobid_gev}" "${cov_gev_jid}" # return list of all jobs submitted.
+
+echo "${jobid_mean}" "${jobid_event}" "${jobid_gev}"  # return list of all jobs submitted.
 

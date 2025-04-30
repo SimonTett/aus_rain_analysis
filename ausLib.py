@@ -2,6 +2,7 @@
 
 
 import argparse
+import errno
 import shutil
 import itertools
 import json
@@ -12,7 +13,7 @@ import sys
 import tempfile
 import time
 import zipfile
-from typing import Optional
+
 
 import cartopy.crs as ccrs
 import cartopy.geodesic
@@ -944,6 +945,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     --dryrun -- dry run only. Nothing will be submitted and script will exit
     --history_file -- store command in history file
     --purpose -- purpose of the job. Does nothing but put in log file
+    --profile filename -- profile code saving data to named file
     Returns: nada
 
     """
@@ -956,8 +958,7 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
                      help='Name of log file -- if provided. log info goes there as well as std out/err'
                      )
 
-    std.add_argument('--profile',type=pathlib.Path,
-                     help='Profile code saving data to named file')
+
 
     # add a submit sub-command,
     # note that a value of '' means do not do anything. This is to allow checking for values we actually need
@@ -976,7 +977,8 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     submit.add_argument('--json_submit_file', type=pathlib.Path,
                         help='JSON file containing default options. These overwritten by command line args'
                         )
-    submit.add_argument('--setup_script', help='Script to run before running the command', type=pathlib.Path)
+    submit.add_argument('--setup_script',
+                        help='Script to run before running the command', type=pathlib.Path)
     submit.add_argument('--holdafter', help='Hold job until the held after job(s) have ran.', nargs='+')
     submit.add_argument('--dryrun', help='Dry run only. Nothing will be submitted and script will exit',
                         action='store_true'
@@ -984,7 +986,8 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     submit.add_argument('--nodelist', help='List of nodes to run on', nargs='+')
     submit.add_argument('--history_file', help='Store command in history file', type=pathlib.Path)
     submit.add_argument('--purpose', nargs='+', help='Purpose of the job. Does nothing but put in log file')
-
+    submit.add_argument('--profile',type=pathlib.Path,
+                     help='Profile code saving data to named file')
 
 def gen_pbs_script(
         cmd_to_run: str,
@@ -1219,35 +1222,48 @@ def detect_batch_system():
 
 
 def process_std_arguments(args: argparse.Namespace,
-                          default:typing.Optional[dict] = None) -> logging.Logger:
+                          default:typing.Optional[dict] = None,
+                          files:typing.Optional[list[pathlib.Path]]=None
+                          ) -> logging.Logger:
     """
     Process standard arguments. See add_std_arguments for setup.
     Args:
         args: arguments to be processed.
           Deals with verbose, log_file and dask and submission options
         default: default values for the submission options. Will be used if not set in args or json_submit_file
-
+        files: list of files to be checked for existence.
+        If provided and overwrite not set then raise error if all files exists. This is done prior to submitting a job
     Returns: logger
     """
     if default is None:
         default = {}
     # specials for default
-    log_file = default.pop('log_file',None)
+    if log_file := args.log_file is None:
+        log_file = default.pop('log_file',None)
+
     my_logger = setup_log(args.verbose, args.log_file)
     # log the args
     for name, value in vars(args).items():
         my_logger.info(f"Arg:{name} =  {value}")
+    # see if files exist and overwrite not set.
+    if (not args.overwrite) and (files is not None):
+        exists = [f.exists() for f in files]
+        if all(exists):
+           my_logger.warning(f'All files {files} exists and --overwrite not set')
+           sys.exit(errno.EEXIST) # exist with code for file already exists
     # deal with submission.
     if args.submit:
         my_logger.debug('Submitting job')
 
 
-
         # remove some specific things which get done as part of submission
         # currently submit (don't want it to submit again), dryrun (don't want to dryrun !) and
-        # setup_script (as that gets done as part of the submission)
+        # setup_script (as that gets done as part of the submission), profiling -- will run cmd with profiling if asked.
 
-        cmd = [c for c in sys.argv if not (c.startswith('--submit') or c.startswith('--dryrun'))]
+        cmd = [c for c in sys.argv if not (c.startswith('--submit') or c.startswith('--dryrun') )]
+        # if profile is set then modify cmd
+        if args.profile: # no need to remove it as it is in the submit group which won't do anything unless --submit set.
+            cmd = ['python',  '-m','cProfile','-o',str(args.profile)] + cmd
         # remove setup_script
         # Find the position of the string that starts with '--setup_script'
         position = next((i for i, s in enumerate(cmd) if s.startswith('--setup_script')), None)

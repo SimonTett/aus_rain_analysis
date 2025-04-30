@@ -11,16 +11,12 @@
 import argparse
 import sys
 
-import dask
+
 import xarray
-import wradlib as wrl
-import numpy as np
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import typing
+
 import pandas as pd
 import pathlib
-import ast
+
 import multiprocessing
 
 import ausLib
@@ -122,7 +118,7 @@ if __name__ == '__main__':
     parser.add_argument('--radius', type=float, help='Radius to use for radar data. If not set then all data used.')
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Very I/O code so avoid dask
     args = parser.parse_args()
-    my_logger = ausLib.process_std_arguments(args)  # setup the logging
+    # work out outut file.
     if args.output is None:
         full_path = args.input_dir.resolve().parts
         out_radar = pathlib.Path(*full_path[:-2]) / 'processed' / full_path[-1]
@@ -131,12 +127,11 @@ if __name__ == '__main__':
         else:
             out_radar = out_radar/f'seas_mean_{args.input_dir.name}_{args.season}.nc'
 
-        my_logger.debug(f'Set out_radar to {out_radar}')
+
     else:
         out_radar = args.output
-    if out_radar.exists() and (not args.overwrite):
-        my_logger.warning(f"Output file {out_radar} exists and overwrite not set. Exiting")
-        sys.exit(0)
+    my_logger = ausLib.process_std_arguments(args,files=[out_radar])  # setup the logging
+    my_logger.info(f"Input dir: {args.input_dir}  Output file: {out_radar}")
     out_radar.parent.mkdir(exist_ok=True, parents=True)  # make directory if it doesn't exist.
 
     input_files = list(args.input_dir.glob('*.nc'))
