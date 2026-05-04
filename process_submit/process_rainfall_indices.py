@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # %run -i process_submit/process_rainfall_indices --glob "09" --months 1 --indir "C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar\raw_radar_data" Adelaide data
 # test code to produce equivalent QC to Bowden et al.
 # However rather than QCing "events" will QC days.
@@ -204,7 +205,7 @@ if __name__ == "__main__":
     # print out all the arguments and add them to attributes of the final dataset.
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
-                       utc_time=pd.Timestamp.utcnow().isoformat(),
+                       utc_time=pd.Timestamp.now('UTC').isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()],
                        site=args.site, dbz_range=args.dbz_range,to_rain=args.to_rain)
 
