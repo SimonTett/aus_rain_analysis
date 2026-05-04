@@ -1,4 +1,4 @@
-# stuff to setup env
+obs# stuff to setup env
 export HDF5_USE_FILE_LOCKING=FALSE # turn off file locking for HDF5 error. Reduces errors.
 export AUSRAIN=~st7295/aus_rain_analysis
 module load intel-compiler/2021.10.0
@@ -14,9 +14,9 @@ module load gdal # needed for gdal stuff.
 module load nco # for nco
 # and activate the virtual env
 source $AUSRAIN/venv/bin/activate
-# add in dask magic
-module use /g/data/hh5/public/modules/
-module load dask-optimiser
+# add in dask magic -- no longer works so commented out.
+#module use /g/data/hh5/public/modules/
+#module load dask-optimiser
 # paths and stuff
 export PYTHONPATH=$PYTHONPATH:~/common_lib:$AUSRAIN
 export PATH=$AUSRAIN:$AUSRAIN/process_submit:$PATH

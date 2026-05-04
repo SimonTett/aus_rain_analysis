@@ -108,13 +108,14 @@ if [[ -z ${name} ]] ; then
 fi
 
 time_str=$(date +"%Y%m%d_%H%M%S")
-root_dir="/scratch/wq02/st7295/radar/summary"
+root_dir="/scratch/wq02/st7295/radar/rain_indices"
 out_dir="${root_dir}/${name}"
-mkdir -p "${out_dir}/run_logs/rainfall_indices"
+
+
 for year in $(seq ${year_start} ${year_end}); do # parallel jobs -- one for each year
-  run_log_file="${out_dir}/run_logs/rainfall_indices/${name}_${year}_${time_str}.log"
-  pbs_log_file="${out_dir}/pbs_logs/rainfall_indices/${name}_${year}_${time_str}"
-  job_name=ref_${year}_${name}
+  run_log_file="${out_dir}/run_logs/${name}_${year}_${time_str}.log"
+  pbs_log_file="${out_dir}/pbs_logs/${name}_${year}_${time_str}"
+  job_name=ind_${year}_${name}
   submit_args="${base_submit_args}" # copy base submit args
   submit_args+=" --job_name ${job_name}  --log_base ${pbs_log_file}"
   cmd="process_rainfall_indices.py ${site} ${root_dir}/$name $extra_args  --years ${year} --log_file ${run_log_file} $*"

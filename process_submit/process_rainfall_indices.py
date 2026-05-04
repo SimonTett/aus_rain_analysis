@@ -85,7 +85,7 @@ def comp_bowden_indices(radar_file:pathlib.Path,
     ## read steiner and do various fixes.
     steiner = xarray.load_dataset(st)  # read in steiner classification.
     # extract what we want and change time name
-    steiner = steiner.steiner.sel(time=rain.valid_time.values, method='nearest', tolerance=np.timedelta64(60, 's'))
+    steiner = steiner.steiner.sel(time=rain.valid_time.values, method='nearest', tolerance=np.timedelta64(5, 'm')) # 5 minute tolerance
     # fix times
     steiner = steiner.rename(dict(time='valid_time'))
     steiner.coords['valid_time'] = rain.valid_time
