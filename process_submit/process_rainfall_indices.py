@@ -172,7 +172,6 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
 
     parser = argparse.ArgumentParser(description='Process reflectivity data')
-
     parser.add_argument('site', help='Radar site to process',
                         default='Melbourne', choices=ausLib.site_numbers.keys())
     parser.add_argument('outdir', type=pathlib.Path,
@@ -202,7 +201,7 @@ if __name__ == "__main__":
 
 
 
-    # print out all the arguments and add them to attributes of the final dataset.
+    # Extra args to be added to attributes of the final dataset.
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.now('UTC').isoformat(),
@@ -210,13 +209,11 @@ if __name__ == "__main__":
                        site=args.site, dbz_range=args.dbz_range,to_rain=args.to_rain)
 
 
-    site_number = f'{ausLib.site_numbers[args.site]:d}'
-    # deal with some args.
 
-
+    ## deal with some args.  This could (eventually) go into process_std_args
     indir = args.indir # if use rainfall3 then this varies.
     glob = args.glob # if use rainfall3 then this varies.
-
+    site_number = f'{ausLib.site_numbers[args.site]:d}'
 
     indir = indir/site_number # work out directory for input data. Depends on site_number.
     my_logger.info(f'Input directory is {indir}')
@@ -229,6 +226,7 @@ if __name__ == "__main__":
         outdir = pathlib.Path.cwd()/args.site
     outdir.mkdir(parents=True, exist_ok=True)
     my_logger.info(f'Output directory is {outdir}')
+
     ## dealt with arguments. Now to do the processing.
     for year in args.years:
         my_logger.info(f'Processing year {year}')

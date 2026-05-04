@@ -252,7 +252,9 @@ def summary_process(data_array: xarray.DataArray,
         list_resamp_result.append(rr)
     # end of looping over time resample periods
     if len(list_resamp_result) > 0:  # some  data to process
+
         rr = xarray.concat(list_resamp_result, dim='resample_prd')
+        rr = rr.assign_coords(resample_prd=[str(s) for s in rr['resample_prd'].values]) # fix the coord values.
         result.update(rr)
 
     # sort out meta-data.
@@ -380,12 +382,20 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
 
     parser = argparse.ArgumentParser(description='Process reflectivity data')
+    ## the next three args could be standard and processed by the std processing.
     parser.add_argument('site', help='Radar site to process',
                         default='Melbourne', choices=site_numbers.keys())
+    parser.add_argument('outdir', type=pathlib.Path,
+                        help='output directory. Will be created if it does not exist. If not set will be cwd()/site',
+                        nargs='?')
+    parser.add_argument('--indir', type=pathlib.Path, help='input directory',
+                        default = ausLib.hist_ref_dir)
+
+
     parser.add_argument('--years', nargs='+', type=int, help='List of years to process',
                         default=range(2020, 2023))
     parser.add_argument('--months', nargs='+', type=int, help='list of months to process', default=range(1, 13))
-    parser.add_argument('outdir', type=pathlib.Path, help='output directory. Must be provided')
+
     parser.add_argument('--glob', help='Pattern for globbing zip files',
                         default='[0-9][0-9].gndrefl.zip')
     parser.add_argument('--resample', nargs='+',
@@ -428,7 +438,7 @@ if __name__ == "__main__":
     # print out all the arguments and add them to attributes of the final dataset.
 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
-                       utc_time=pd.Timestamp.utcnow().isoformat(),
+                       utc_time=pd.Timestamp.now('UTC').isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()],
                        site=args.site, dbz_range=args.dbz_range, min_fract_avg=args.min_fract_avg)
     if args.to_rain is not None:
@@ -437,7 +447,7 @@ if __name__ == "__main__":
         extra_attrs.update(coarsen=args.coarsen, coarsen_method=args.coarsen_method)
 
     site_number = f'{site_numbers[args.site]:d}'
-    indir = pathlib.Path('/g/data/rq0/hist_gndrefl') / site_number
+    indir = args.indir/ site_number
     if args.use_rainfields3:
         indir = pathlib.Path('/g/data/rq0/rainfields3') / site_number
     my_logger.info(f'Input directory is {indir}')
@@ -446,9 +456,24 @@ if __name__ == "__main__":
         my_logger.warning('Input directory {indir} does not exist')
         raise FileNotFoundError(f'Input directory {indir} does not exist')
     my_logger.info(f'resample periods are: {args.resample}')
-    outdir = pathlib.Path(args.outdir)
+
+    ## deal with some args.  This coudl (eventually) go into process_std_args
+    indir = args.indir # if use rainfall3 then this varies.
+    glob = args.glob # if use rainfall3 then this varies.
+    site_number = f'{ausLib.site_numbers[args.site]:d}'
+
+    indir = indir/site_number # work out directory for input data. Depends on site_number.
+    my_logger.info(f'Input directory is {indir}')
+    if not indir.exists():
+        my_logger.warning('Input directory {indir} does not exist')
+        raise FileNotFoundError(f'Input directory {indir} does not exist')
+
+    outdir = args.outdir
+    if outdir is None:
+        outdir = pathlib.Path.cwd()/args.site
     outdir.mkdir(parents=True, exist_ok=True)
     my_logger.info(f'Output directory is {outdir}')
+
 
     outdir_full = None
     out_coord_dir = None
@@ -516,7 +541,6 @@ if __name__ == "__main__":
             basename = 'reflectivity'
             if args.to_rain is not None:
                 basename = 'rain_rate'
-
             summary_data = summary_process(ds[basename], mean_resample=args.resample,
                                            threshold=args.threshold,
                                            base_name=basename,
@@ -536,7 +560,7 @@ if __name__ == "__main__":
                 ValueError(f'large sample resolution {min_res} mins')
             ausLib.write_out(summary_data, outpath, time_unit=time_unit, extra_attrs=extra_attrs)
             my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
-            summary_data.to_netcdf(outpath, unlimited_dims='time')## TODO. Remove this?
+  
 
             if args.write_full:  # write out the full file.
                 full_file = outdir_full / file

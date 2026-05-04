@@ -21,7 +21,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 import requests
-from dask import datasets
+
+
 # stuff for timezones!
 from timezonefinder import TimezoneFinder
 import pytz
@@ -66,6 +67,12 @@ acorn_lookup = dict(Adelaide=23000, Melbourne=86338, Wtakone=96003, Sydney=66214
                     Cairns=31011, Mornington=29077,
                     Grafton=59151, Newcastle=61078, Gladstone=39083
                     )  # acorn station IDs for each site.
+
+reflectivity_to_rain =dict(
+    Melbourne = (0.0271, 0.650),
+    Cape_Grim= (0.0224, 0.670),
+    Brisbane=(0.0256, 0.688)
+)
 hostname = platform.node()
 if hostname.startswith('gadi'):  # aus super-computer
     radar_dir = pathlib.Path("/g/data/rq0/level_2/")
@@ -864,7 +871,7 @@ def read_radar_zipfile_old(
         my_logger.debug(f'read in {len(ds[concat_dim])} times from {path} {memory_use()}')
     return ds
 
-import zipfile
+
 import fnmatch
 import io
 def read_radar_zipfile(
@@ -873,7 +880,6 @@ def read_radar_zipfile(
         first_file: bool = False,
         region: typing.Optional[typing.Dict[str, slice]] = None,
         file_pattern: str = '*.nc',
-        try_mf:bool = True,
         **load_kwargs
 ) -> typing.Optional[xarray.Dataset]:
     """
@@ -904,6 +910,7 @@ def read_radar_zipfile(
     for key in ['combine', 'concat_dim', 'parallel']:
         if key in load_args:
             load_args.pop(key)
+
     with zipfile.ZipFile(path) as zf:
         names = [n for n in zf.namelist() if fnmatch.fnmatch(n, file_pattern)]
         if first_file:
@@ -1871,6 +1878,7 @@ def write_out(
     :param time_dim: time dimension
     :return:
     """
+    data.load() # just in case!
     if extra_attrs is None:
         extra_attrs = {}
     if time_unit is None:
