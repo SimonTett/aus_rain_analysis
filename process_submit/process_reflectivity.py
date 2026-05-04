@@ -311,184 +311,15 @@ def fix_spatial_units(ds: xarray.Dataset):
     return ds
 
 
-##
-type_cm = typing.Literal['mean', 'median']
-type_rain_conv = typing.Optional[typing.Tuple[float, float]]  # for converting to rain
-
-
-def read_zip(path: pathlib.Path | str,
-             concat_dim: str = 'valid_time',
-             coarsen: typing.Optional[typing.Dict[str, int]] = None,
-             coarsen_method: type_cm = 'mean',
-             bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds'),
-             dbz_ref_limits: typing.Optional[typing.Tuple[float, float]] = None,
-             coarsen_cv_max: typing.Optional[float] = None,
-             check_finite: bool = True,
-             first_file: bool = False,
-             region: typing.Optional[typing.Dict[str, slice]] = None,
-             to_rain: type_rain_conv = None,
-             calibration:typing.Optional[pd.DataFrame] = None,
-             **load_kwargs
-             ) -> typing.Optional[xarray.Dataset]:
-    """
-    Read radar zip file
-
-
-    :param first_file: Passed to ausLib.read_radar_zipfile
-    :param check_finite:  Check data is finite (not inf) -- see ausLib.coarsen_ds
-    :param path: path to zip file to be read in
-    :param concat_dim: Dimension over which to concatenate
-
-    :param dbz_ref_limits: tuple of limits for reflectivity in dbz.
-       Values below lower limit are set to 0.0 when converted to reflectivty and above to missing.
-        If None no limits are applied.
-    :param coarsen: dict for coarsening. If None no coarsening done
-    :param coarsen_method: method to coarsen by
-    :param coarsen_cv_max: Maximum coefficient of variability (std/mean) for coarsened data.
-    Values above this are set to missing.  If set var_speckle will be computed
-    :param bounds_vars:  tuple of variables that are bounds
-    :param region -- region to select from.
-    :param to_rain -- if set convert reflectivty to rain using these co-efficients. Happens after dbz_ref_limits used.
-    :param calibration -- if not none then apply calibration to data prior to any other changes,
-    :param load_kwargs: kwargs for loading in read_radar_zipfile
-
-    :return:
-    """
-    if isinstance(path, str):
-        path = pathlib.Path(path)  # convert to a path
-
-    if not path.exists():
-        raise ValueError(f"{path} does not exist")
-    radar_dataset = ausLib.read_radar_zipfile(path, first_file=first_file,
-                                              concat_dim=concat_dim, region=region,
-                                              **load_kwargs)
-    # hdf5 engine is very slow. but netcdf4 needs dask in single thread mode. Sigh!
-    # drop cases where entire field is missing
-    if radar_dataset is None:  # no data retrieved.
-        my_logger.warning(f'No data for {path}')
-        return None
-    got_ref = 'reflectivity' in radar_dataset.variables
-    if got_ref:
-        L = radar_dataset.reflectivity.isnull().all(['x', 'y'])
-        if L.sum() > 0:
-            bad_times = L[concat_dim][L]
-            my_logger.warning(f'All data missing for times: {bad_times.values[[0, -1]]}')
-            for time in bad_times:
-                my_logger.debug(f'All data missing for time {time}')
-            radar_dataset = radar_dataset.where(~L, drop=True)
-    if len(radar_dataset) == 0:
-        my_logger.warning(f'No data for {path}')
-        return None
-    # sort variables so all dimensions are monotonically increasing.
-
-    result = dict()
-    for var in radar_dataset.data_vars:
-        v = radar_dataset[var]
-        for d in list(v.dims):
-            nd = v[d].size
-            v = v.sortby(d).drop_duplicates(d)  # sort and remove duplicates for this dim.
-            if v[d].size != nd:
-                my_logger.warning(f'Removed duplicates for {var} on {d} from {path}')
-
-        result[var] = v
-        my_logger.debug(f'Sorted variable {var} dims')
-    radar_dataset = xarray.Dataset(result)
-
-    # do some specials for reflectivity
-    v = 'reflectivity'
-    if got_ref:
-        with xarray.set_options(keep_attrs=True):
-            units = ausLib.lc_none(radar_dataset[v].attrs, 'units')
-            std_name = ausLib.lc_none(radar_dataset[v].attrs, 'standard_name')
-            if std_name != 'equivalent_reflectivity_factor':
-                ValueError(f'Std name for reflectivity is {std_name} not equivalent_reflectivity_factor')
-            # count number of missing values but only for reflectivity data
-            miss_var = 'count_' + str(v) + '_missing'
-            vars_non_time = set(list(radar_dataset[v].dims)) - {concat_dim}
-            mv = radar_dataset[v].isnull()
-            mv = mv.sum(vars_non_time)
-            mv = mv.assign_attrs(units='', extra='Count of missing values')
-            radar_dataset[miss_var] = mv
-            # apply calibration adjustment if provided.
-            if calibration is not None:
-                for indx, row in calibration.iterrows():
-                    L = (radar_dataset[concat_dim] <= row['max_time'] )& (radar_dataset[concat_dim] >= row['min_time'])
-                    if L.any():
-                        radar_dataset[L][v] = radar_dataset[L][v] - row['calibration_offset']
-                        my_logger.debug(f'Applied calibration {row} to {L.sum()} times in {v}')
-                        radar_dataset[v].attrs['calibration_offset'] = row['calibration_offset']
-                raise NotImplementedError('Calibration not yet tested')
-            # set values below threshold to 0 and above to missing for reflectivity
-            L0 = None
-            if (dbz_ref_limits is not None) and (units == 'dbz') and (std_name == 'equivalent_reflectivity_factor'):
-                L0 = radar_dataset[v] < dbz_ref_limits[0]
-                L1 = radar_dataset[v] > dbz_ref_limits[1]
-                vars_non_time = set(list(L1.dims)) - {concat_dim}
-                miss_var = 'count_' + str(v) + '_high'
-                radar_dataset[miss_var] = L1.sum(vars_non_time). \
-                    assign_attrs(units='', extra='Count of values set missing as > thresh',
-                                 threshold_dbz=dbz_ref_limits[1])  # fraction of values > thresh
-
-                if L1.sum() > 0:  # got some values above the max thresh
-                    radar_dataset[v] = radar_dataset[v].where(~L1, other=np.nan)  # above threshold nan
-                    my_logger.debug(f'Set {L1.values.sum():,} values above {dbz_ref_limits[1]} to missing for {v}')
-            if units == 'dbz':
-                radar_dataset[v] = 10 ** (radar_dataset[v] / 10.)  # convert from DBZ to Z
-                if L0 is not None:  # have a mask for 0
-                    radar_dataset[v] = radar_dataset[v].where(~L0, other=0.0).assign_attrs(
-                        zero_dbz=dbz_ref_limits[0])  # below threshold 0
-                    my_logger.debug(f'Set {L0.values.sum():,} values below  {dbz_ref_limits[0]} to 0 ')
-                radar_dataset[v].attrs['units'] = 'mm**6/m**3'
-            if to_rain is not None:
-                radar_dataset[v] = (radar_dataset[v] ** to_rain[1]) * to_rain[0]
-                radar_dataset[v].attrs.update(units='mm/h', standard_name='rainfall_rate',
-                                              long_name='Ranfall_rate computed from ' +
-                                                        radar_dataset[v].attrs.get('long_name', ''))
-                my_logger.debug(f'Converted {v} to rain rate using {to_rain}')
-
-    if coarsen is not None:  # coarsen the data
-        if coarsen_cv_max is not None:
-            speckle_vars = ('reflectivity',)  # extra , as this is a 1 element tuple
-        else:
-            speckle_vars = ()
-        radar_dataset = ausLib.coarsen_ds(radar_dataset, coarsen, bounds_vars=bounds_vars,
-                                          coarsen_method=coarsen_method, check_finite=check_finite,
-                                          speckle_vars=speckle_vars)
-
-        for bname in speckle_vars:  # loop over speckle vars -- vars we generated speckle for.
-            vname = 'reflectivity_speckle'
-            miss_var = f'count_{vname}_high'
-            cv = radar_dataset[vname] / radar_dataset[bname]
-            msk = cv > coarsen_cv_max
-            if msk.sum() > 0:
-                radar_dataset[bname] = radar_dataset[bname].where(~msk, other=np.nan)
-                my_logger.warning(f'Set CV {msk.values.sum():,} values above {coarsen_cv_max} to missing for {bname}')
-            vars_non_time = set(list(msk.dims)) - {concat_dim}
-
-            v = msk.sum(vars_non_time)  # No of values above threshold
-            radar_dataset[miss_var] = v.assign_attrs(units='', extra=f'Number coarsened CV > {coarsen_cv_max}')
-    # fix names -- convert reflectivity to  rain_rate
-    if to_rain is not None:
-        variables = [v for v in radar_dataset.data_vars if 'reflectivity' in v]
-        for v in variables:
-            newname = str(v).replace('reflectivity', 'rain_rate')
-            da_name = str(radar_dataset[v].name).replace('reflectivity', 'rain_rate')
-            radar_dataset[newname] = radar_dataset[v].rename(da_name)
-            my_logger.debug(f'Renamed {v} to {newname} with name {da_name}')
-        radar_dataset = radar_dataset.drop_vars(variables)
-
-    radar_dataset = radar_dataset.compute()
-    return radar_dataset
-
 
 ##
 def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                          coarsen: typing.Optional[typing.Dict[str, int]] = None,
-                         coarsen_method: type_cm = 'mean',
+                         coarsen_method: ausLib.type_cm = 'mean',
                          dbz_ref_limits: typing.Optional[typing.Tuple[float, float]] = None,
-                         coarsen_cv_max: typing.Optional[float] = None,
+                         #coarsen_cv_max: typing.Optional[float] = None,
                          region: typing.Optional[typing.Dict[str, slice]] = None,
-                         to_rain: type_rain_conv = None,
+                         to_rain: ausLib.type_rain_conv = None,
                          calibration: typing.Optional[pd.DataFrame] = None,
                          ) -> xarray.Dataset:
     """
@@ -508,18 +339,20 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                        'count_rain_rate_missing']  # variables not to read for meta info
     drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj', 'doppler_velocity',
                  'count_rain_rate_missing']  # variables not to read for data
-    fld_info = read_zip(zip_files[0], drop_variables=drop_vars_first, coarsen=coarsen,
+    fld_info = ausLib.read_zip(zip_files[0], drop_variables=drop_vars_first, coarsen=coarsen,
                         first_file=True, parallel=True, region=region)
 
     ds = []
     for zip_file in zip_files:
-        dd = read_zip(zip_file, coarsen=coarsen, coarsen_method=coarsen_method,
+        dd = ausLib.read_zip(zip_file, coarsen=coarsen, coarsen_method=coarsen_method,
                       dbz_ref_limits=dbz_ref_limits,
-                      coarsen_cv_max=coarsen_cv_max,
+                      #coarsen_cv_max=coarsen_cv_max,
                       region=region,
-                      drop_variables=drop_vars, concat_dim='valid_time', parallel=True,
+                      drop_variables=drop_vars, concat_dim='valid_time',
+                      #parallel=True,
                       combine='nested',
-                      chunks=dict(valid_time=6), engine='netcdf4', to_rain=to_rain,
+                      #chunks=dict(valid_time=6), engine='netcdf4',
+                             to_rain=to_rain,
                       calibration=calibration)
 
         ds.append(dd)
@@ -563,8 +396,8 @@ if __name__ == "__main__":
     parser.add_argument('--dbz_range', nargs=2, type=float, default=[15., 55.],
                         help='range for dbz ref. '
                              'Values below are set to 0 when converting DBZ to linear units; above to missing')
-    parser.add_argument('--cv_max', type=float, help='Maximum coefficient of variability for coarsened data',
-                        default=None)
+    #parser.add_argument('--cv_max', type=float, help='Maximum coefficient of variability for coarsened data',
+    #                    default=None)
     parser.add_argument('--write_full', action='store_true',
                         help='Write out full datasets after coarsening. Will be written out to site_full/filename')
     parser.add_argument('--region', nargs=4, type=float, help='Region to extract data for as x0 x1 y0 y1')
@@ -584,6 +417,8 @@ if __name__ == "__main__":
     parser.add_argument('--use_rainfields3', action='store_true',
                         help='Use rainfields3 data rather than hist. Will need calibration values '
                              'from meta-data')
+    parser.add_argument('--quantize_levels',type=float,nargs='+',
+                        help='Levels to quantize too.')
     ausLib.add_std_arguments(parser)
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # deal with the std arguments
@@ -668,13 +503,14 @@ if __name__ == "__main__":
             if (not args.overwrite) and outpath.exists():
                 my_logger.warning(f'{outpath} exists  skipping processing. Use --overwrite')
                 continue
-            to_rain: type_rain_conv = None
+            to_rain: ausLib.type_rain_conv = None
             if args.to_rain is not None:
-                to_rain = tuple(args.to_rain)  # type checker moaning here.
+                to_rain = tuple(args.to_rain[0],args.to_rain[1])  # type checker moaning here.
             ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
                                       coarsen=coarsen, region=region,
                                       coarsen_method=args.coarsen_method,
-                                      coarsen_cv_max=args.cv_max, to_rain=to_rain,
+                                      #coarsen_cv_max=args.cv_max,
+                                      to_rain=to_rain,
                                       calibration=calib)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
             basename = 'reflectivity'
@@ -700,7 +536,7 @@ if __name__ == "__main__":
                 ValueError(f'large sample resolution {min_res} mins')
             ausLib.write_out(summary_data, outpath, time_unit=time_unit, extra_attrs=extra_attrs)
             my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
-            summary_data.to_netcdf(outpath, unlimited_dims='time')
+            summary_data.to_netcdf(outpath, unlimited_dims='time')## TODO. Remove this?
 
             if args.write_full:  # write out the full file.
                 full_file = outdir_full / file

@@ -6,13 +6,82 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import commonLib
+def plot_inset_axes(ax, ax_posn:tuple[float,float,float,float],
+                    lon_bounds:tuple[float,float], lat_bounds:tuple[float,float]):
+    """
+    Plot inset axes on the main plot.
+    :param ax: main plot axis
+    :param lon: longitude of the inset axes
+    :param lat: latitude of the inset axes
+    :param dx: size of the inset axes
+    :return: None
+    """
+    # create a new inset axes
+    import cartopy.mpl.geoaxes as geoaxes
+    inset_ax:geoaxes.GeoAxes = ax.inset_axes(ax_posn, projection=ccrs.PlateCarree())
+    inset_ax.set_extent([lon_bounds[0], lon_bounds[1], lat_bounds[0], lat_bounds[1]], crs=ccrs.PlateCarree())
+    # add box to the main axes
+    rect = matplotlib.patches.Rectangle(
+        (lon_bounds[0], lat_bounds[0]),  # Bottom-left corner
+        lon_bounds[1] - lon_bounds[0],  # Width
+        lat_bounds[1] - lat_bounds[0],  # Height
+        transform=ccrs.PlateCarree(),
+        edgecolor='red',
+        facecolor='none',
+        linewidth=2
+    )
+    ax.add_patch(rect)
+    # add some lines
+    # Get the bounds of the inset axes in longitude/latitude
+    inset_bounds = inset_ax.get_extent()  # [min_lon, max_lon, min_lat, max_lat]
 
+    # Transform the inset bounds into fractions of the main axes
+    corners = [
+        (inset_bounds[0], inset_bounds[2]),  # Bottom-left
+        (inset_bounds[1], inset_bounds[2]),  # Bottom-right
+        (inset_bounds[1], inset_bounds[3]),  # Top-right
+        (inset_bounds[0], inset_bounds[3]),  # Top-left
+    ]
+
+    # Convert corners to display coordinates
+    transformed_corners = [ax.transData.transform_point(corner) for corner in corners]
+
+    # Draw lines connecting the inset bounds to the main plot
+    for i, corner in enumerate(transformed_corners):
+        next_corner = transformed_corners[(i + 1) % len(transformed_corners)]
+        ax.plot(
+            [corner[0], next_corner[0]],
+            [corner[1], next_corner[1]],
+            color='black',
+            linestyle='--',
+            transform=ax.transAxes
+        )
+
+    return inset_ax
 long_radar_data = ausLib.read_radar_file("meta_data/long_radar_stns.csv")
 all_radar_data = ausLib.read_radar_file("meta_data/radar_site_list.csv")
 fig = plt.figure(num="long_radar_stns", figsize=(8, 5), clear=True, layout='constrained')
 ax = fig.add_subplot(111, projection=ccrs.PlateCarree())
 ax.set_extent([110, 160, -45, -10])
 ax.coastlines()
+# add on the inset axes
+# inset=dict(
+#     Tropics = plot_inset_axes(ax,(0.5,0.5,0.3,0.3),
+#                         lon_bounds=(138.,146.5), lat_bounds=(-18., -12.)),
+#     QLD = plot_inset_axes(ax,(0.75,0.75,0.22,0.22),
+#                           lon_bounds=(150., 154.), lat_bounds=(-30., -28.)),
+#     NSW = plot_inset_axes(ax,(0.8,0.025,0.2,0.35),
+#                             lon_bounds=(148., 153.), lat_bounds=(-37.5, -31.5)),
+#     South = plot_inset_axes(ax,(0.05,0.05,0.5,0.5),
+#                             lon_bounds=(138., 146.5), lat_bounds=(-42, -33)),
+#
+# )
+# # put coatlines on the inset axes
+# for name, ax in inset.items():
+#     ax.coastlines()
+#
+# fig.show()
+# breakpoint()
 lr = long_radar_data.groupby('id').tail(1)  # most recent records for each ID
 lr = lr.sort_values('id', axis=0).set_index('id', drop=False)
 # add in changes.
@@ -31,6 +100,8 @@ mean_rain = ausLib.read_process(process=process,)
 ## plot data
 dx=125e3
 rain_levels=[20,50,100,200,500,750,1000,1250,1500,2000]
+# add on inset axes
+
 for name, row in lr.iterrows():
     n = ausLib.site_names[row.id]
     # plot the mean total DJF rainfall
@@ -65,3 +136,4 @@ ax.axhline(-35.0,color='blue',linestyle='--')
 ax.set_title("Australian Radars")
 fig.show()
 commonLib.saveFig(fig)
+#commonLib.saveFig(fig,transpose=True)

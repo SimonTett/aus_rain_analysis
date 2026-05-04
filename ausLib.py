@@ -21,6 +21,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 import requests
+from dask import datasets
 # stuff for timezones!
 from timezonefinder import TimezoneFinder
 import pytz
@@ -44,7 +45,7 @@ site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50,
 site_names = dict(zip(site_numbers.values(), site_numbers.keys()))  # reverse lookup
 
 # sites where do not use all data. date is start of data.
-non_default_dates=dict(Gladstone='20051201',Melbourne='20031201',WTakone='20141201')
+non_default_dates=dict(Gladstone='20051201',Melbourne='20031201',Wtakone='20141201')
 all_sites=list(site_numbers.keys())
 
 region_names = dict(Tropics=['Cairns', 'Mornington'],
@@ -78,6 +79,8 @@ elif hostname.startswith('ccrc'):  # CCRC desktop
 elif hostname.lower().startswith('geos'):  # School of geosciences managed laptop/desktop
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
+    hist_ref_dir = data_dir / "raw_radar_data/hist_gndrefl" # partial local copy of ref data
+    radar_dir = data_dir / "raw_radar_data/level_2" # partial local copy of level 2 data.
     my_logger.warning("agcd_rain_dir not defined. ")
 elif '.geos.' in hostname.lower(): # geos linux machines
     data_dir = pathlib.Path("/scratch/stett2/radar")
@@ -394,18 +397,42 @@ def memory_use() -> str:
     return mem
 
 
-def dask_client() -> 'dask.distributed.Client':
+def dask_client(mode:typing.Literal['io','cpu'] = 'io',
+                max_cores:typing.Optional[int] = None) -> 'dask.distributed.Client':
     """
     Start or connect to an existing dask client. Address for server stored in $DASK_SCHEDULER_ADDRESS
+    :param mode -- one of io or cpu.
+      io -- means io heavy so have n_workers=1 and n_threads=available cores.
+      cpu -- cpu heavy so have n_workers - available cores. and n_threads = 1
     :return: dask.distributed.Client
     """
     import dask.distributed
     try:
         dask_sa = os.environ['DASK_SCHEDULER_ADDRESS']
         my_logger.warning(f"already got client at {dask_sa}")
-        client = dask.distributed.get_client(dask_sa, timeout='2s')  # fails. FIX if ever want client
-    except KeyError:
-        client = dask.distributed.Client(timeout='2s')
+        client = dask.distributed.get_client(dask_sa, timeout='2s')
+        return client
+    except KeyError: # not got a client so make  one.
+        ncores = os.cpu_count() or 1
+        if max_cores is not None:
+            ncores = max([ncores,max_cores])
+
+        if mode == "cpu": # cpu mode. Max number of workers each with 1 thread.
+            default_workers = ncores
+            default_threads = 1
+            processes= True
+        elif mode == "io":
+            # "io" default: one process, many threads to reduce process/memory overhead.
+            default_workers = 1
+            default_threads = ncores
+            processes = False
+        else:
+            raise  ValueError(f"mode={mode} not recognized. Should be one of io or cpu")
+        client = dask.distributed.Client(timeout='2s',
+                                         n_workers=default_workers,
+                                         threads_per_worker=default_threads,
+                                            processes=processes
+                                            )
         dask_sa = client.scheduler_info()['address']  # need to dig deep into dask doc to get this!
         os.environ['DASK_SCHEDULER_ADDRESS'] = dask_sa
         my_logger.warning(f"Starting new Dask client on {dask_sa}. Available in $DASK_SCHEDULER_ADDRESS ")
@@ -517,7 +544,7 @@ def coarsen_ds(
         speckle_vars: typing.Tuple[str] = (),
         check_finite: bool = False,
         coarsen_method: typing.Literal['mean', 'median'] = 'mean',
-        bounds_vars: typing.Tuple[str] = ('y_bounds', 'x_bounds'),
+        bounds_vars: tuple[str,str] = ('y_bounds', 'x_bounds'),
 ) -> xarray.Dataset:
     """
     Coarsen a dataset doing specials for dbz variables and bounds
@@ -582,13 +609,174 @@ def coarsen_ds(
     my_logger.debug('Coarsened data')
     return result
 
+##
+type_cm = typing.Literal['mean', 'median']
+type_rain_conv = typing.Optional[tuple[float, float]]  # for converting to rain
 
-def read_radar_zipfile(
+
+def read_zip(path: pathlib.Path | str,
+             concat_dim: str = 'valid_time',
+             coarsen: typing.Optional[dict[str, int]] = None,
+             coarsen_method: type_cm = 'mean',
+             bounds_vars: tuple[str,str] = ('y_bounds', 'x_bounds'),
+             dbz_ref_limits: typing.Optional[tuple[float, float]] = None,
+  #            coarsen_cv_max: typing.Optional[float] = None,
+  #     :param coarsen_cv_max: Maximum coefficient of variability (std/mean) for coarsened data.
+             check_finite: bool = True,
+             first_file: bool = False,
+             region: typing.Optional[dict[str, slice]] = None,
+             to_rain: type_rain_conv = None,
+             calibration:typing.Optional[pd.DataFrame] = None,
+             **load_kwargs
+             ) -> typing.Optional[xarray.Dataset]:
+    """
+    Read radar zip file and process it.
+
+
+    :param first_file: Passed to ausLib.read_radar_zipfile
+    :param check_finite:  Check data is finite (not inf) -- see ausLib.coarsen_ds
+    :param path: path to zip file to be read in
+    :param concat_dim: Dimension over which to concatenate
+
+    :param dbz_ref_limits: tuple of limits for reflectivity in dbz.
+       Values below lower limit are set to 0.0 when converted to rainfall and above to missing.
+        If None no limits are applied.
+    :param coarsen: dict for coarsening. If None no coarsening done
+    :param coarsen_method: method to coarsen by
+
+    Values above this are set to missing.  If set var_speckle will be computed
+    :param bounds_vars:  tuple of variables that are bounds
+    :param region -- region to select from.
+    :param to_rain -- if set convert reflectivity to rain using these co-efficients. Happens after dbz_ref_limits used.
+    :param calibration -- if not none then apply calibration to reflectivity data prior to any other changes,
+    :param load_kwargs: kwargs for loading in read_radar_zipfile
+
+    :return:dataset or None
+    """
+    if isinstance(path, str):
+        path = pathlib.Path(path)  # convert to a path
+
+    if not path.exists():
+        raise ValueError(f"{path} does not exist")
+    radar_dataset = read_radar_zipfile(path, first_file=first_file,
+                                              concat_dim=concat_dim, region=region,
+                                              **load_kwargs)
+
+    # drop cases where entire field is missing
+    if radar_dataset is None:  # no data retrieved.
+        my_logger.warning(f'No data for {path}')
+        return None
+    got_ref = 'reflectivity' in radar_dataset.variables
+    if got_ref:
+        L = radar_dataset.reflectivity.isnull().all(['x', 'y'])
+        if L.sum() > 0:
+            bad_times = L[concat_dim][L]
+            my_logger.warning(f'All data missing for times: {bad_times.values[[0, -1]]}')
+            for time in bad_times:
+                my_logger.debug(f'All data missing for time {time}')
+            radar_dataset = radar_dataset.where(~L, drop=True)
+    if len(radar_dataset) == 0:
+        my_logger.warning(f'No data for {path}')
+        return None
+    # sort variables so all dimensions are monotonically increasing.
+
+    result = dict()
+    for var in radar_dataset.data_vars:
+        v = radar_dataset[var]
+        for d in list(v.dims):
+            nd = v[d].size
+            v = v.sortby(d).drop_duplicates(d)  # sort and remove duplicates for this dim.
+            if v[d].size != nd:
+                my_logger.warning(f'Removed duplicates for {var} on {d} from {path}')
+
+        result[var] = v
+        my_logger.debug(f'Sorted variable {var} dims')
+    radar_dataset = xarray.Dataset(result)
+
+    # do some specials for reflectivity
+    v = 'reflectivity'
+    if got_ref:
+        with xarray.set_options(keep_attrs=True):
+            units = lc_none(radar_dataset[v].attrs, 'units')
+            std_name = lc_none(radar_dataset[v].attrs, 'standard_name')
+            if std_name != 'equivalent_reflectivity_factor':
+                ValueError(f'Std name for reflectivity is {std_name} not equivalent_reflectivity_factor')
+            # count number of missing values but only for reflectivity data
+            miss_var = 'count_' + str(v) + '_missing'
+            vars_non_time = set(list(radar_dataset[v].dims)) - {concat_dim}
+            mv = radar_dataset[v].isnull()
+            mv = mv.sum(vars_non_time)
+            mv = mv.assign_attrs(units='', extra='Count of missing values')
+            radar_dataset[miss_var] = mv
+            # apply calibration adjustment if provided.
+            if calibration is not None:
+                for indx, row in calibration.iterrows():
+                    L = (radar_dataset[concat_dim] <= row['max_time'] )& (radar_dataset[concat_dim] >= row['min_time'])
+                    if L.any():
+                        radar_dataset[L][v] = radar_dataset[L][v] - row['calibration_offset']
+                        my_logger.debug(f'Applied calibration {row} to {L.sum()} times in {v}')
+                        radar_dataset[v].attrs['calibration_offset'] = row['calibration_offset']
+                raise NotImplementedError('Calibration not yet tested')
+            # set values below threshold to 0 and above to missing for reflectivity
+            L0 = None
+            if (dbz_ref_limits is not None) and (units == 'dbz') and (std_name == 'equivalent_reflectivity_factor'):
+                L0 = radar_dataset[v] < dbz_ref_limits[0]
+                L1 = radar_dataset[v] > dbz_ref_limits[1]
+                vars_non_time = set(list(L1.dims)) - {concat_dim}
+                miss_var = 'count_' + str(v) + '_high'
+                radar_dataset[miss_var] = L1.sum(vars_non_time). \
+                    assign_attrs(units='', extra='Count of values set missing as > thresh',
+                                 threshold_dbz=dbz_ref_limits[1])  # fraction of values > thresh
+
+                if L1.sum() > 0:  # got some values above the max thresh
+                    radar_dataset[v] = radar_dataset[v].where(~L1, other=np.nan)  # above threshold nan
+                    my_logger.debug(f'Set {L1.values.sum():,} values above {dbz_ref_limits[1]} to missing for {v}')
+            if units == 'dbz':
+                radar_dataset[v] = 10 ** (radar_dataset[v] / 10.)  # convert from DBZ to Z
+                if L0 is not None:  # have a mask for 0
+                    radar_dataset[v] = radar_dataset[v].where(~L0, other=0.0).assign_attrs(
+                        zero_dbz=dbz_ref_limits[0])  # below threshold 0
+                    my_logger.debug(f'Set {L0.values.sum():,} values below  {dbz_ref_limits[0]} to 0 ')
+                radar_dataset[v].attrs['units'] = 'mm**6/m**3'
+            if to_rain is not None:
+                radar_dataset[v] = (radar_dataset[v] ** to_rain[1]) * to_rain[0]
+                radar_dataset[v].attrs.update(units='mm/h', standard_name='rainfall_rate',
+                                              long_name='Ranfall_rate computed from ' +
+                                                        radar_dataset[v].attrs.get('long_name', ''))
+                my_logger.debug(f'Converted {v} to rain rate using {to_rain}')
+
+    if coarsen is not None:  # coarsen the data
+        #if coarsen_cv_max is not None:
+        #    speckle_vars = ('reflectivity',)  # extra , as this is a 1 element tuple
+        #else:
+        #    speckle_vars = ()
+        radar_dataset = coarsen_ds(radar_dataset, coarsen, bounds_vars=bounds_vars,
+                                          coarsen_method=coarsen_method, check_finite=check_finite)#,
+        #                                 speckle_vars=speckle_vars)
+
+
+
+    if to_rain is not None:  # fix names -- convert reflectivity to  rain_rate
+        variables = [v for v in radar_dataset.data_vars if 'reflectivity' in v]
+        for v in variables:
+            newname = str(v).replace('reflectivity', 'rain_rate')
+            da_name = str(radar_dataset[v].name).replace('reflectivity', 'rain_rate')
+            radar_dataset[newname] = radar_dataset[v].rename(da_name)
+            my_logger.debug(f'Renamed {v} to {newname} with name {da_name}')
+        radar_dataset = radar_dataset.drop_vars(variables)
+
+    radar_dataset = radar_dataset.compute() # actually do the computation.
+    return radar_dataset
+
+
+
+def read_radar_zipfile_old(
         path: pathlib.Path,
         concat_dim: str = 'valid_time',
         first_file: bool = False,
         region: typing.Optional[typing.Dict[str, slice]] = None,
         file_pattern: str = '*.nc',
+        try_mf:bool = True,
         **load_kwargs
 ) -> typing.Optional[xarray.Dataset]:
     """
@@ -614,15 +802,19 @@ def read_radar_zipfile(
             files = files[0:1]
         if load_kwargs.get('combine') == 'nested':
             load_kwargs.update(concat_dim=concat_dim)
-        try:
-            ds = xarray.open_mfdataset(files, **load_kwargs)
+        read_data = False
+        datasets = []
+        if try_mf:
+            try:
+                ds = xarray.open_mfdataset(files, **load_kwargs)
+                read_data = True
+            except (RuntimeError,ValueError) as error:
+                my_logger.warning(
+                    f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files"
+                )
+                time.sleep(0.1)  # sleep a bit and try again with loading
+        if not read_data:
 
-        except RuntimeError as error:
-            my_logger.warning(
-                f"Error reading in {files[0]} - {files[-1]} {error} {type(error)}. Trying again loading individual files"
-            )
-            time.sleep(0.1)  # sleep a bit and try again with loading
-            datasets = []
             load_args = load_kwargs.copy()
             # drop things that don't work with load!
             for key in ['combine', 'concat_dim', 'parallel']:
@@ -637,20 +829,31 @@ def read_radar_zipfile(
             if len(datasets) == 0:
                 return None
             ds = xarray.concat(datasets, concat_dim)  #
+
         # check have not got zero len dims on region.
         if region is not None:
             ds = ds.sel(**region)
             bad_dims = [rname for rname in region.keys() if ds.sizes[rname] == 0]
             if len(bad_dims) > 0:
+                datasets.clear()
+                ds.close()  # close any file managers attached to the aggregate dataset.
                 raise ValueError('Following dimensions have zero length: ' + ','.join(bad_dims))
 
         if first_file:
             ds = ds.drop_vars(concat_dim, errors='ignore')  # drop the concat dim as only want the first value
         # check dimension sizes are OK
 
-        ds = ds.compute()  # compute/load before closing the files.
-        ds.close()  # close the files
+        ds = ds.compute()  # materialize before temp dir cleanup.
+        # In fallback mode keep explicit closes for each source file handle.
+        for one_ds in datasets:
+            try:
+                one_ds.close()
+            except Exception:
+                pass
+        datasets.clear()
+        ds.close()  # close any file managers attached to the aggregate dataset.
         my_logger.debug('Read in data. Cleaning tempdir')
+
     # fix y_bounds which is in reverse order from x_bounds.
     var = 'y_bounds'
     if var in ds.data_vars:
@@ -660,6 +863,83 @@ def read_radar_zipfile(
     if not first_file:
         my_logger.debug(f'read in {len(ds[concat_dim])} times from {path} {memory_use()}')
     return ds
+
+import zipfile
+import fnmatch
+import io
+def read_radar_zipfile(
+        path: pathlib.Path,
+        concat_dim: str = 'valid_time',
+        first_file: bool = False,
+        region: typing.Optional[typing.Dict[str, slice]] = None,
+        file_pattern: str = '*.nc',
+        try_mf:bool = True,
+        **load_kwargs
+) -> typing.Optional[xarray.Dataset]:
+    """
+    Read netcdf data from a zipfile containing lots of netcdf files
+    Args:
+        :param path: Path to zipfile
+        :param concat_dim: dimension to concatenate along
+        :param bounds_vars: tuple of variables that are bounds
+      :param first_file: If True only read in the first file
+      :param region -- region to extract data from
+      :param file_pattern: pattern to match files default is *.nc
+    :param **load_kwargs: kwargs to be passed to xarray.open_mfdataset
+    Returns: xarray dataset or None if nothing successfully read.
+
+        Members are decompressed directly into in-memory BytesIO buffers rather than
+    being extracted to a temporary directory. This eliminates intermediate disk
+    writes and is typically faster when the OS temp dir is on SSD. [This part AI generated]
+
+    Requires ``h5netcdf`` (for NetCDF4/HDF5 members) or ``scipy`` (for NetCDF3).
+
+    """
+
+    my_logger.debug(f'Unzipping and reading in data {memory_use()} for {path}')
+    datasets=[]
+
+    load_args = load_kwargs.copy()
+    # drop things that don't work with load!
+    for key in ['combine', 'concat_dim', 'parallel']:
+        if key in load_args:
+            load_args.pop(key)
+    with zipfile.ZipFile(path) as zf:
+        names = [n for n in zf.namelist() if fnmatch.fnmatch(n, file_pattern)]
+        if first_file:
+            names = names[:1]
+        for name in names:
+            raw = zf.read(name)  # decompress into bytes
+            buf = io.BytesIO(raw)  # wrap as file-like
+            try:
+                ds = xarray.open_dataset(buf, engine='h5netcdf', **load_args)
+                # check have not got zero len dims on region.
+                if region is not None:
+                    ds = ds.sel(**region)
+                    bad_dims = [rname for rname in region.keys() if ds.sizes[rname] == 0]
+                    if len(bad_dims) > 0:
+                        datasets.clear()
+                        ds.close()  # close any file managers attached to the aggregate dataset.
+                        raise ValueError('Following dimensions have zero length: ' + ','.join(bad_dims))
+                datasets.append(ds.load())  # materialise before buf goes away
+                ds.close()
+            except Exception as e:
+                my_logger.warning(f"Error reading {name} from {path}: {e} -- skipping")
+
+    if not datasets: # nothing found
+        return None
+    datasets = xarray.concat(datasets, concat_dim)  #
+
+
+    # fix y_bounds which is in reverse order from x_bounds.
+    var = 'y_bounds'
+    if var in ds.data_vars:
+        v = datasets[var]
+        datasets[var] = xarray.concat([v.isel(n2=1).assign_coords(n2=0), v.isel(n2=0).assign_coords(n2=1)], dim='n2')
+
+    if not first_file:
+        my_logger.debug(f'read in {len(datasets[concat_dim])} times from {path} {memory_use()}')
+    return datasets
 
 
 def read_radar_file(path: pathlib.Path | str) -> pd.DataFrame:
@@ -921,6 +1201,8 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     These are:
     -v -- verbose
     --dask -- turn on dask. (if dask set)
+    --mode -- one of io or cpu (or case variants)
+    --max_cores -- max number of cores to use
     --log_file -- have a log file.
     --overwrite -- overwrite files.
     And  arguments for submitting jobs to a queue system.
@@ -954,6 +1236,9 @@ def add_std_arguments(parser: argparse.ArgumentParser, dask: bool = True) -> Non
     std.add_argument('-v', '--verbose', action='count', help='Verbose output', default=0)
     if dask:  # some codes don't want dask.
         std.add_argument('--dask', action='store_true', help='Start dask client')
+        std.add_argument('--mode',choices=['io','cpu'], default='io',
+                         help='Run mode. io: max threads, cpu: max workers')
+        std.add_argument('--max_cores',type=int,help='Maximum number of cores to use')
     std.add_argument('--log_file',
                      help='Name of log file -- if provided. log info goes there as well as std out/err'
                      )
@@ -1371,7 +1656,7 @@ def process_std_arguments(args: argparse.Namespace,
 
     try:
         if args.dask:
-            dask_client()
+            dask_client(mode=args.mode.lower(),max_cores=args.max_cores)
     except AttributeError:  # no dask
         my_logger.debug('No dask setup')
     return my_logger
@@ -1595,10 +1880,14 @@ def write_out(
         data[time_dim].encoding.update(units=time_unit, dtype='float64')
     data.encoding.update(zlib=True, complevel=4)
     data.attrs.update(extra_attrs)
+    # make dir for output
+    outpath.parent.mkdir(exist_ok=True, parents=True)
     data.to_netcdf(outpath, unlimited_dims=time_dim)
+    if not outpath.exists():
+        my_logger.error(f'Failed to write data {outpath}')
     my_logger.info(f'Wrote data to {outpath}')
 
-
+import matplotlib
 def std_fig_axs(fig_num,
                 reduce_spline: bool = True,
                 add_projection:bool = False,
@@ -1606,7 +1895,7 @@ def std_fig_axs(fig_num,
                 xtime:bool = False,
                 xlim:typing.Optional[tuple[typing.Any,typing.Any]] = None,
                 regions: bool = False, **kwargs) \
-        -> tuple['matplotlib.figure.Figure', 'matplotlib.axes.Axes']:
+        -> tuple[matplotlib.figure.Figure, matplotlib.axes.Axes]:
     """
     Create a standard figure and axes for plotting.
     Args:
@@ -1698,6 +1987,7 @@ def read_process(sites:typing.Optional[list[str]]=None,
         if not seas_file.exists():
             raise FileNotFoundError(f'No season  file for {site} with {seas_file}')
         ds = xarray.load_dataset(seas_file)
+        my_logger.debug(f'Loaded {seas_file} for {name}')
         if process is None:
             result[name] = ds
         else:
@@ -1705,11 +1995,13 @@ def read_process(sites:typing.Optional[list[str]]=None,
     if save_dir is not None:
         save_dir.mkdir(exist_ok=True,parents=True)
         for location_name in result.keys():
-            result[location_name].to_netcdf(save_dir/f'{location_name}_processed.nc')
+            save_file = save_dir / f'{location_name}_processed.nc'
+            result[location_name].to_netcdf(save_file)
+            my_logger.debug(f'Saved {location_name} to {save_file}')
     return result
 
 
-def comp_ratios(gev_parameters: xarray.Dataset, covariance: str | list[str] = 'Tanom') -> xarray.DataArray:
+def comp_ratios(gev_parameters: xarray.Dataset, covariance: str | list[str] = 'temperatureanom') -> xarray.DataArray:
     """
     Compute the ratios of the GEV parameters.
     Args:
@@ -1774,5 +2066,24 @@ def plot_radar_change(ax:matplotlib.pyplot.axes,
             x = pd.Timestamp(start_time).replace(tzinfo=None)
             if x_limits[0] <= x <= x_limits[1]:
                 ax.axvline(x, color='blue', linestyle='--',linewidth=2)
+
+
+def fix_levels(radar_field:xarray.DataArray,levels:np.array) -> xarray.DataArray:
+    """
+    Round radar levels (in dBZ) to specified levels.
+    Done so can run a case with fixed levels
+    Afterwards the only values which are not NaN are those which are in the levels.
+    Args:
+        radar_field: xarray data array of the radar field
+        levels: levels to use to map too.
+    """
+    raise NotImplementedError("This function is not tested  yet")
+    # force levels to be monotonicly increasing
+    levels = np.sort(np.unique(levels))
+
+    conds = [ radar_field < level for level in levels[1:]] # array of fields. Will consume a lot of memory
+    truncated = np.select(conds,levels,default=levels[0])
+    return truncated
+
 
 

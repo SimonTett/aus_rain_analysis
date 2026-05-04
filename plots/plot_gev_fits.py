@@ -37,16 +37,18 @@ def read_data(file: pathlib.Path) -> xarray.Dataset:
 
 
 def get_data(fit_dir: pathlib.Path, boostrap: bool = True,
-             date_str:typing.Optional[str] = None) -> xarray.Dataset:
+             date_str:typing.Optional[str] = None,
+             cov_variable:str = 'temperature') -> xarray.Dataset:
 
     """
 
     :param fit_dir:
     :param boostrap:
     :param date_str:
+    :param cov_variable: variable to use for the fit.
     :return:
     """
-    be_t_file = 'gev_fit_temp'
+    be_t_file = f'gev_fit_{cov_variable}'
     be_file = 'gev_fit'
     if date_str is not None:
         be_t_file += f'_{date_str}'
@@ -62,13 +64,13 @@ def get_data(fit_dir: pathlib.Path, boostrap: bool = True,
     ds['be_t'] = be_t.Parameters.sel(parameter=['location', 'scale', 'shape'])
     ds['delta_AIC'] = (be_t.AIC - be.AIC)
     ds['p'] = np.exp((be_t.AIC - be.AIC) / 2)
-    be_ratio = ausLib.comp_ratios(be_t.Parameters)
-    param_names = [k.replace('_Tanom', '') for k in be_ratio.parameter.values]
+    be_ratio = ausLib.comp_ratios(be_t.Parameters,covariance=cov_variable+'anom')
+    param_names = [k.replace(f'_{cov_variable}anom', '') for k in be_ratio.parameter.values]
     be_ratio = be_ratio.assign_coords(parameter=param_names).rename(dict(parameter="parameter_change"))
     ds['be_ratio'] = be_ratio
     if boostrap:  # read in the boot strap data.
         gev_bs_file =  'gev_fit_bs'
-        gev_t_bs_file =  'gev_fit_temp_bs'
+        gev_t_bs_file =  f'gev_fit_{cov_variable}_bs'
         if date_str is not None:
             gev_bs_file += f'_{date_str}'
             gev_t_bs_file += f'_{date_str}'
@@ -80,7 +82,7 @@ def get_data(fit_dir: pathlib.Path, boostrap: bool = True,
         ds['p_bs'] = np.exp((bs_t.AIC - bs.AIC) / 2)
         ds['bs_t'] = bs_t.Parameters.sel(parameter=['location', 'scale', 'shape'])
         ds['bs_delta_AIC'] = (bs_t.AIC - bs.AIC)
-        bs_ratio = ausLib.comp_ratios(bs_t.Parameters)  #.std('bootstrap_sample')
+        bs_ratio = ausLib.comp_ratios(bs_t.Parameters,covariance=cov_variable+'anom')  #.std('bootstrap_sample')
         # now to rename
         bs_ratio = bs_ratio.assign_coords(parameter=param_names).rename(dict(parameter="parameter_change"))
         ds['bs_ratio'] = bs_ratio
@@ -102,14 +104,14 @@ if __name__ == '__main__':
 
     end_name_sens = '_rain_brisbane'  # calibration
     end_name = '_rain_melbourne'
-
+    variable = 'dewpoint'  # temperature or dewpoint
     for site in ausLib.site_numbers.keys():
         name = site + end_name
-        path = ausLib.data_dir / f'processed/{name}/fits'
+        path = ausLib.data_dir / f'processed/{name}/gev_fits'
         date_str = ausLib.non_default_dates.get(site)
-        gev[site] = get_data(path,date_str=date_str)
-        sens_path = ausLib.data_dir / f'processed/{site}{end_name_sens}/fits'
-        sens = get_data(sens_path, boostrap=False,date_str=date_str)
+        gev[site] = get_data(path,date_str=date_str,boostrap=False,cov_variable=variable)
+        sens_path = ausLib.data_dir / f'processed/{site}{end_name_sens}/gev_fits'
+        sens = get_data(sens_path, boostrap=False,date_str=date_str,cov_variable=variable)
         rename = {k: k + '_sens' for k in sens.data_vars}
         sens = sens.rename(rename)
         gev[site] = xarray.merge([gev[site], sens])
@@ -134,7 +136,7 @@ if __name__ == '__main__':
     my_logger.info('Processed regions')
     ## now to plot the data
 
-    fig, axes = ausLib.std_fig_axs(f'GEV_change', regions=True, sharey=True, sharex=True)
+    fig, axes = ausLib.std_fig_axs(f'GEV_change_{variable}', regions=True, sharey=True, sharex=True)
 
     for site, ax in axes.items():
         if site not in gev:
@@ -148,10 +150,11 @@ if __name__ == '__main__':
         z_0 = dict()
         z_cc = dict()
         z_sup_cc = dict()
-        for p, m, c in zip(['Dlocation', 'Dscale'], ['o', 'h'], ['blue', 'red']):
+        for p, m, c in zip([f'Dlocation', 'Dscale'], ['o', 'h'], ['blue', 'red']):
             mn = gev[site].be_ratio.sel(parameter_change=p) * 100
             mn_sens = gev[site].be_ratio_sens.sel(parameter_change=p) * 100
-            sd = gev[site].bs_ratio.sel(parameter_change=p).std('bootstrap_sample') * 100
+            #sd = gev[site].bs_ratio.sel(parameter_change=p).std('bootstrap_sample') * 100
+            sd=0.1
             ax.errorbar(mn.resample_prd, mn, yerr=uncert_sd_scale * sd, label=p, linestyle='--', color=c, capsize=5,
                         elinewidth=2
                         )
