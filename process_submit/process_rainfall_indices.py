@@ -57,7 +57,10 @@ def steiner_path(reflect_path: pathlib.Path,
 
 def comp_bowden_indices(radar_file:pathlib.Path,
     to_rain:typing.Optional[tuple[float,float]] = None,
-    dbz_ref_limits:typing.Optional[tuple[float,float]] = None)  -> xarray.Dataset:
+    dbz_ref_limits:typing.Optional[tuple[float,float]] = None,
+    tolerance: pd.Timedelta = pd.Timedelta("5min"),
+    steiner_file:typing.Optional[pathlib.Path] = None,
+                        )  -> typing.Optional[xarray.Dataset]:
     """"
         Compute indices used in Bowden et al, 2025:  https://doi.org/10.1029/2024JD041790
         :param radar_file - file to radar data
@@ -65,6 +68,10 @@ def comp_bowden_indices(radar_file:pathlib.Path,
            Default is Melbourne values of  0.0271 & 0.65
         :param dbz_ref_limits -- dbz limits. Passed to read_zip.
           Default is 15.0 &55.
+        :param tolerance -- tolerance for time match between steiner and reflectivity data. Default is 5 mins
+        :param steiner_file -- name of file containing steiner data. If not provided uses steiner_path to guess it.
+
+
         """
     # defaults
     if to_rain is None:
@@ -72,30 +79,49 @@ def comp_bowden_indices(radar_file:pathlib.Path,
     if dbz_ref_limits is None:
         dbz_ref_limits = (15.,55.)
     spatial_dims = ['x', 'y']
-    drop_vars_first = ['error', 'reflectivity', 'doppler_velocity',
-                       'count_rain_rate_missing']  # variables not to read for meta info
+
     drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj', 'doppler_velocity',
                  'count_rain_rate_missing']  # variables not to read for data
-    st = steiner_path(radar_file)
-    rain = ausLib.read_zip(radar_file, to_rain=to_rain, dbz_ref_limits=dbz_ref_limits, coarsen=dict(x=2, y=2),
-                    region=dict(x=slice(-126.5, 126.5), y=slice(126.5, -126.5))
+    if steiner_file is None:
+        steiner_file = steiner_path(radar_file)
+
+    rain = ausLib.read_zip(radar_file, to_rain=to_rain,
+                           dbz_ref_limits=dbz_ref_limits,
+                           coarsen=dict(x=2, y=2),
+                            region=dict(x=slice(-126.5, 126.5), y=slice(126.5, -126.5)),
+                           drop_vars=drop_vars,
                            )  # compat with steiner calculation.
     rain = rain.rain_rate
-    my_logger.debug(f"Reading steiner data from {st}")
+    my_logger.debug(f"Reading steiner data from {steiner_file}")
     ## read steiner and do various fixes.
-    steiner = xarray.load_dataset(st)  # read in steiner classification.
-    # extract what we want and change time name
-    steiner = steiner.steiner.sel(time=rain.valid_time.values, method='nearest', tolerance=np.timedelta64(5, 'm')) # 5 minute tolerance
+    steiner = xarray.load_dataset(steiner_file)  # read in steiner classification.
     # fix times
-    steiner = steiner.rename(dict(time='valid_time'))
-    steiner.coords['valid_time'] = rain.valid_time
+    steiner = steiner.steiner.rename(dict(time='valid_time'))
+    # extract what we want
+
+    steiner = steiner.reindex(
+        valid_time=rain.valid_time,
+        method='nearest',
+        tolerance=tolerance
+    )
+
+    # provide some diagnostic info if have missing values.
+    missing_times = steiner.isnull().all(['x', 'y']) # all values missing at time?
+    if bool(missing_times.any()): # any times missing?
+        bad_times = steiner.valid_time.where(missing_times, drop=True)
+        my_logger.warning(
+            f"{int(missing_times.sum())} times in {radar_file} were not matched in {steiner_file} within 5 minutes"
+        )
+        my_logger.debug(f"First unmatched times: {bad_times.values[:5]}")
+        steiner = steiner.where(~missing_times,drop=True) # reduce steiner array to cases where times are not missing
+
 
     # fix the co-ords
     for c in ['x', 'y']:
         cv = rain.coords[c]
         steiner.coords[c] = steiner.coords[c] / 1000.  # convert to km
-        steiner = steiner.sel({c: slice(cv.min(), cv.max())})
-
+        steiner = steiner.sel({c: slice(cv.min(), cv.max())}) # make sure within region of rain.
+    rain = rain.reindex(valid_time=steiner.valid_time) # where we have times.
     rain = xarray.where(steiner.notnull(), rain, steiner)  # mask rain by steiner
     ## now to compute the indices that Bowden et al computed.
     total_pixels = rain.notnull().sum(spatial_dims)  # number of non-missing pixels
@@ -122,7 +148,8 @@ def comp_bowden_indices(radar_file:pathlib.Path,
 
 def multi_comp_bowden_indices(radar_files: list[pathlib.Path],
                         to_rain:typing.Optional[tuple[float,float]] = None,
-                        dbz_ref_limits:typing.Optional[tuple[float,float]] = None) -> xarray.Dataset:
+                        dbz_ref_limits:typing.Optional[tuple[float,float]] = None,
+                              tolerance:pd.Timedelta = pd.Timedelta("5min")) -> xarray.Dataset:
     """"
     Compute indices used in Bowden et al, 2025:  https://doi.org/10.1029/2024JD041790
     :param radar_files - list of radar files
@@ -130,14 +157,14 @@ def multi_comp_bowden_indices(radar_files: list[pathlib.Path],
        Default is Melbourne values of  0.0271 & 0.65
     :param dbz_ref_limits -- dbz limits. Passed to read_zip.
       Default is 15.0 &55.
-    :spatial dims -- list of spatial dims. Default is ['x','y']
+    :tolerance -- tolerance for time match between steiner and reflectivity data. Default is 5 mins.
     """
 
 
 
     ds_list = []
     for radar_file in radar_files:
-        ds = comp_bowden_indices(radar_file, to_rain=to_rain, dbz_ref_limits=dbz_ref_limits)
+        ds = comp_bowden_indices(radar_file, to_rain=to_rain, dbz_ref_limits=dbz_ref_limits,tolerance=tolerance)
         ds_list.append(ds)
         my_logger.info(f"Done with {radar_file}. Memory {ausLib.memory_use()}")
 
@@ -193,6 +220,8 @@ if __name__ == "__main__":
     parser.add_argument('--to_rain', type=float, nargs=2,
                         help='Convert Reflectivity to rain using R=c[0]Z^c[1]. Default are Melbourne dist values',
                         default=[0.0271,0.65])
+    parser.add_argument('--tolerance', type=pd.Timedelta,
+                        help='tolerance for time match between steiner and reflectivity data',default=pd.Timedelta('5min'))
     #parser.add_argument('--region', nargs=4, type=float, help='Region to extract data for as x0 x1 y0 y1')
 
     ausLib.add_std_arguments(parser)
@@ -206,7 +235,9 @@ if __name__ == "__main__":
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.now('UTC').isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()],
-                       site=args.site, dbz_range=args.dbz_range,to_rain=args.to_rain)
+                       site=args.site,
+                       dbz_range=args.dbz_range,
+                       to_rain=args.to_rain)
 
 
 
@@ -245,7 +276,8 @@ if __name__ == "__main__":
                 continue
             bowden_indices = multi_comp_bowden_indices(zip_files,
                                                        dbz_ref_limits=args.dbz_range,
-                                                       to_rain=args.to_rain)
+                                                       to_rain=args.to_rain,
+                                                       tolerance=args.tolerance)
 
             # write the data out.
             ausLib.write_out(bowden_indices, outpath,  extra_attrs=extra_attrs)

@@ -627,8 +627,6 @@ def read_zip(path: pathlib.Path | str,
              coarsen_method: type_cm = 'mean',
              bounds_vars: tuple[str,str] = ('y_bounds', 'x_bounds'),
              dbz_ref_limits: typing.Optional[tuple[float, float]] = None,
-  #            coarsen_cv_max: typing.Optional[float] = None,
-  #     :param coarsen_cv_max: Maximum coefficient of variability (std/mean) for coarsened data.
              check_finite: bool = True,
              first_file: bool = False,
              region: typing.Optional[dict[str, slice]] = None,
@@ -910,6 +908,8 @@ def read_radar_zipfile(
     for key in ['combine', 'concat_dim', 'parallel']:
         if key in load_args:
             load_args.pop(key)
+    drop_vars = load_args.pop('drop_vars',[])
+    # as we are using hdf5netcdf reader drop_vars is not recognized  in open. So we need to drop these manually after opening.
 
     with zipfile.ZipFile(path) as zf:
         names = [n for n in zf.namelist() if fnmatch.fnmatch(n, file_pattern)]
@@ -920,14 +920,16 @@ def read_radar_zipfile(
             buf = io.BytesIO(raw)  # wrap as file-like
             try:
                 ds = xarray.open_dataset(buf, engine='h5netcdf', **load_args)
-                # check have not got zero len dims on region.
+                ds = ds.drop_vars(drop_vars,errors='ignore')
+
                 if region is not None:
                     ds = ds.sel(**region)
                     bad_dims = [rname for rname in region.keys() if ds.sizes[rname] == 0]
                     if len(bad_dims) > 0:
-                        datasets.clear()
                         ds.close()  # close any file managers attached to the aggregate dataset.
                         raise ValueError('Following dimensions have zero length: ' + ','.join(bad_dims))
+
+
                 datasets.append(ds.load())  # materialise before buf goes away
                 ds.close()
             except Exception as e:
