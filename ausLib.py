@@ -2,6 +2,7 @@
 
 
 import argparse
+import copy
 import errno
 import shutil
 import itertools
@@ -417,12 +418,12 @@ def dask_client(mode:typing.Literal['io','cpu'] = 'io',
     try:
         dask_sa = os.environ['DASK_SCHEDULER_ADDRESS']
         my_logger.warning(f"already got client at {dask_sa}")
-        client = dask.distributed.get_client(dask_sa, timeout='2s')
+        client = dask.distributed.get_client(dask_sa, timeout='4s')
         return client
-    except KeyError: # not got a client so make  one.
+    except( KeyError,OSError): # not got a client so make  one.
         ncores = os.cpu_count() or 1
         if max_cores is not None:
-            ncores = max([ncores,max_cores])
+            ncores = min([ncores,max_cores])
 
         if mode == "cpu": # cpu mode. Max number of workers each with 1 thread.
             default_workers = ncores
@@ -1937,8 +1938,8 @@ def std_fig_axs(fig_num,
         # add in EAus.
         mosaic[0].append('EAus')
 
+    per_subplot_kw = kwargs.pop('per_subplot_kw', {})
 
-    per_subplot_kw = {regn: dict() for regn in rgn_names}
     if add_projection:
         my_logger.info('Adding projection info')
 
@@ -1949,11 +1950,28 @@ def std_fig_axs(fig_num,
             radar_info = gen_radar_projection(longitude=site_data.site_lon,
                                               latitude=site_data.site_lat)
             proj = radar_projection(radar_info)
+            if name not in per_subplot_kw:
+                per_subplot_kw[name] = {} # make it an empty dict.
             per_subplot_kw[name].update(projection=proj)
-    args = dict(num=fig_num, clear=True, figsize=(7, 9), layout='constrained',
+
+    mosaic_args = dict(num=fig_num, clear=True, figsize=(7, 9),
                 empty_sentinel='BLANK',per_subplot_kw=per_subplot_kw )  # default args,
-    args.update(**kwargs)  # update with any passed in args
-    fig, axes = plt.subplot_mosaic(mosaic, **args)
+    for k,v in kwargs.items():# update with any passed in args
+        mosaic_args.update({k:v})
+
+    layout = mosaic_args.get('layout')
+
+    if (layout is not None) and ('gridspec_kw' in mosaic_args):
+        my_logger.warning(f'layout {layout} not compatible with gridspec_kw. Dropping layout')
+        mosaic_args.pop('layout') # drop it.
+    elif layout is None and ('gridspec_kw' not in mosaic_args): # not specified and no grid spec
+        mosaic_args['layout'] = 'constrained' # add in constrained layout
+    else:
+        pass # user specified it. Nothing to do.
+
+
+    my_logger.debug('mosaic_args: ' + str(mosaic_args))
+    fig, axes = plt.subplot_mosaic(mosaic,**mosaic_args)
     if reduce_spline:  # remove the top and right spines
         for ax in axes.values():
             ax.spines['top'].set_visible(False)
