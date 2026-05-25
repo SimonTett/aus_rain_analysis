@@ -80,28 +80,29 @@ if hostname.startswith('gadi'):  # aus super-computer
     data_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
     hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/v2026/")
     agcd_rain_dir = pathlib.Path("/g/data/zv2/agcd/v2-0-2/precip/total/r001/01month/") # where the AGCD data lives
+    era5_dir = pathlib.Path("/g/data/rt52/")
+    platform = 'gadi'
 elif hostname.startswith('ccrc'):  # CCRC desktop
     data_dir = pathlib.Path("/home/z3542688/OneDrive/data/aus_radar_analysis/radar")
     common_data = pathlib.Path("/home/z3542688/OneDrive/data/common_data")
-
+    platform = 'ccrc'
 elif hostname.lower().startswith('geos'):  # School of geosciences managed laptop/desktop
     data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
     hist_ref_dir = data_dir / "raw_radar_data/hist_gndrefl" # partial local copy of ref data
     radar_dir = data_dir / "raw_radar_data/level_2" # partial local copy of level 2 data.
+    era5_dir = data_dir/ f"ERA5_data" # local copy of ERA5_data.
+    platform = 'geos'
     my_logger.warning("agcd_rain_dir not defined. ")
 elif '.geos.' in hostname.lower(): # geos linux machines
     data_dir = pathlib.Path("/scratch/stett2/radar")
     common_data = pathlib.Path("/scratch/stett2/common_data")
+    platform='geos_linux'
     my_logger.warning("agcd_rain_dir not defined. ")
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
 data_dir.mkdir(exist_ok=True, parents=True)  # make it if need be!
 module_path = pathlib.Path(__file__).parent  # path to this module
-
-
-# dict to control logging
-
 
 timezone_finder = TimezoneFinder()  # instance of timezone_finder -- only want one,
 
@@ -1110,7 +1111,7 @@ def radar_projection(attrs: dict) -> ccrs.Projection:
 
 def add_long_lat_coords(data_set: xarray.Dataset) -> xarray.Dataset:
     """
-    Add long/lat coords to a data array.
+    Add long/lat coords to a data set.
     Must contain a proj variable which is used to compute the projection. From that
     the long/lat coords are computed.
     Args:
