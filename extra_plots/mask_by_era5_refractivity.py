@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
-
+import logging
 
 import ausLib
 
@@ -36,22 +36,35 @@ def era5_files(time:pd.Timestamp) -> pathlib.Path|list[pathlib.Path]:
             raise ValueError(f" {ausLib.era5_dir}.glob({gpattern}) failed to find any files.")
 
     else:
-        raise NotImplementedError(f"Do not know about {ausLib.platform}")
+        # find list of files. gadi keeps them for each year/month and grouped by var.
+        vars=['tplt','tplb','dctb','dndza','dndzn'] # all vars we need
+        era_file_list = []
+        for var in vars:
+            dir = ausLib.era5_dir/f'single-levels/reanalysis/{var}/{time.year}'
+            files = list(dir.glob(f'{var}_era5_oper_sfc_{time.year}{time.month:02d}01*.nc'))
+            era_file_list += files
+            logging.info(f"var: {var} files:{files}")
+
 
     return era_file_list
 
 
 
 
-
+_SAVE_SENTINAL=  object()
 
 parser = argparse.ArgumentParser(description='Mask radar data by ERA-5 reflectivty data and make plot.')
 parser.add_argument('station',choices=ausLib.site_numbers.keys(),help='Radar to use.')
 parser.add_argument('time', type=pd.Timestamp, help='Time to mask radar data and plot.')
+parser.add_argument('--save',nargs='?', type=pathlib.Path, help='save file.',
+                    const=_SAVE_SENTINAL, default=None,metavar="FILENAME")
 args = parser.parse_args()
 time: pd.Timestamp = args.time
 site_number = ausLib.site_numbers[args.station]
 
+save_file = args.save
+if save_file is _SAVE_SENTINAL:
+    save_file=pathlib.Path(f"{args.station}_{time.strftime('%Y_%m_%d_%H%M')}.png")
 radar_file = ausLib.hist_ref_dir / f'{site_number:02d}/{time.year}/{site_number:02d}_{time.strftime("%Y%m%d")}.gndrefl.zip'
 if not radar_file.exists():
     raise ValueError(f"{radar_file} not found.")
@@ -74,7 +87,7 @@ radar_stn_coords = {k.split("_")[0]: radar_data.proj.attrs[k] for k in radar_dat
 era_files = era5_files(time)
 long_stn = tuple(radar_stn_coords['longitude'] + d for d in (-2, 2))
 lat_stn = tuple(radar_stn_coords['latitude'] + d for d in (4, -4))
-era = xarray.open_mfdataset(era_files).sel(longitude=slice(*long_stn), latitude=slice(*lat_stn))
+era = xarray.open_mfdataset(era_files).sel(longitude=slice(*long_stn), latitude=slice(*lat_stn)).rename(time='valid_time')
 era_ref = era.sel(valid_time=time.strftime("%Y-%m-%d"))
 
 # mask where era_ref.tplt  & tplb >0 #
@@ -113,7 +126,7 @@ msk.plot(alpha=0.25,add_colorbar=False,cmap='binary',ax=ax_ref,vmin=0,vmax=1,lev
 
 
 ax_ref.set_title(f'Reflectivity')
-for ax,var in zip(axs.flat[1:],['dndza','dctb','duct_thick']):
+for ax,var in zip(axs.flat[1:],['dndzn','dctb','duct_thick']):
     da = era5_time[var]
     kw_plt =plot_kwrds.get(var,{})
     #print(var,kw_plt,int(da.notnull().sum()))
@@ -125,3 +138,5 @@ for axs in axs.flat:
     axs.coastlines()
 fig.suptitle(ref.valid_time.dt.strftime("%Y-%m-%d:%H%M").values)
 fig.show()
+if save_file:
+    fig.savefig(save_file,dpi=300)

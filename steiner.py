@@ -355,9 +355,10 @@ if __name__ == "__main__":
     client = ausLib.dask_client(mode='cpu',max_cores=ncores) # cpu mode rather than I/O mode.
     if warmup:
         warmup_steiner()
+    refl = xarray.open_dataset("/g/data/rq0/level_2/46/REFLECTIVITY/46_20150425_reflectivity.nc").rename(time='valid_time')
 
-    refl = ausLib.read_radar_zipfile(pathlib.Path(
-        r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar\raw_radar_data\hist_gndrefl\46\2015\46_20150125.gndrefl.zip"))
+    #refl = ausLib.read_radar_zipfile(pathlib.Path(
+    #    r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar\raw_radar_data\hist_gndrefl\46\2015\46_20150125.gndrefl.zip"))
     print("Starting steiner classification")
     start_time = datetime.datetime.now()
     steiner_class = xarray_steiner(refl.reflectivity,time_chunk=time_chunk,area_relation=0)
