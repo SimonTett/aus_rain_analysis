@@ -530,8 +530,10 @@ if __name__ == "__main__":
                 continue
             to_rain: ausLib.type_rain_conv = None
             if args.to_rain is not None:
-                to_rain = tuple(args.to_rain[0],args.to_rain[1])  # type checker moaning here.
-            ds = read_multi_zip_files(zip_files, dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
+                to_rain = tuple(args.to_rain)  # type checker moaning here.
+
+                ds = read_multi_zip_files(zip_files,
+                                          dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
                                       coarsen=coarsen, region=region,
                                       coarsen_method=args.coarsen_method,
                                       #coarsen_cv_max=args.cv_max,

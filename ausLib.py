@@ -1534,10 +1534,11 @@ def process_std_arguments(args: argparse.Namespace,
     if default is None:
         default = {}
     # specials for default
-    if log_file := args.log_file is None:
-        log_file = default.pop('log_file',None)
+    log_file = default.pop('log_file',None)
+    if args.log_file is not None:
+        log_file = args.log_file
 
-    my_logger = setup_log(args.verbose, args.log_file)
+    my_logger = setup_log(args.verbose, log_file)
     # log the args
     for name, value in vars(args).items():
         my_logger.info(f"Arg:{name} =  {value}")
