@@ -5,8 +5,8 @@
   "cpus": 1,
   "queue": "normalbw",
   "project": "wq02",
-  "storage": "gdata/rq0+gdata/hh5+gdata/ua8 +gdata/rt52",
+  "storage": "gdata/rq0+gdata/hh5+gdata/ua8+gdata/rt52",
   "setup_script": "/home/561/st7295/aus_rain_analysis/setup.sh",
-  "history_file": "/home/561/st7295/aus_rain_analysis/histories/process_anaprop.txt",
-  "log_base": TBD
+    "history_file": "/home/561/st7295/aus_rain_analysis/histories/process_era5_anaprop.txt",
+    "log_base":"/scratch/wq02/st7295/radar/era5_anaprop/logs/"
 }

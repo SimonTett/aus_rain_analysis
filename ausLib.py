@@ -1877,12 +1877,13 @@ def write_out(
     Write out data. Encoding and attributes are modified.
     :param data: data array or dataset to be written out
     :param time_unit: units of time.
-    :param outpath: path for where data to be written to
+    :param outpath: path where data is to be written to
     :param extra_attrs: extra attributes for the dataset
     :param time_dim: time dimension
     :return:
     """
     data.load() # just in case!
+    my_logger.debug(f"Loaded data")
     if extra_attrs is None:
         extra_attrs = {}
     if time_unit is None:
