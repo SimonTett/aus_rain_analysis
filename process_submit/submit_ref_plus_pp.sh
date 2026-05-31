@@ -39,6 +39,7 @@ for word in $result; do
   fi
 done
 echo "Submitted reflectivity processing jobs with jobids: $jobids" >&2
+echo "Outdir is ${outdir}" >&2
 # submit post-processing
 cmd="submit_post_process.sh ${outdir} --holdafter ${jobids} ${common_args}"
 pp_jobids=$($cmd)

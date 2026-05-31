@@ -2,7 +2,7 @@
 export HDF5_USE_FILE_LOCKING=FALSE # turn off file locking for HDF5 error. Reduces errors.
 export AUSRAIN=~st7295/aus_rain_analysis
 export AUSRAIN_CONFIG_DIR=${AUSRAIN}/config_files
-#module unload python3
+export AUSRAIN_DATA=/scratch/wq02/st7295/radar/
 module load python3/3.11.7
 module load intel-compiler/2021.10.0
 module load netcdf/4.7.3 # so have ncdump

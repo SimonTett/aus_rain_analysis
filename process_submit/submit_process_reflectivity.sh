@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # submit scripts to process reflectivity data and then (once all ran) submit post-processing
-# example useage:
+# example usage:
 # ./submit_process_reflectivity.sh Melbourne  --calibration melbourne --years 1997 2022
 # to_rain values -- Melbourne calibration: 0.0271 0.650
 #                    Cape Grim calibration: 0.0224 0.670
 #                    Brisbane calibration: 0.0256 0.688
+# Other options are:
+
 dbz_name=""
 year_start=1997
 year_end=2022
@@ -12,10 +14,27 @@ extra_args=''
 calibration='melbourne'
 name=''
 site=$1 ; shift
+
+
+if [[ -z "$site" ]]
+then
+    echo "Usage: $0 site  [extra_args]"
+    exit 1
+fi
+if [[ -z "$AUSRAIN" ]] ; then
+    echo "AUSRAIN environment variable not set. Please set it to the aus_rain_analysis directory."
+    exit 1
+fi
+
+if [[ -z "${AUSRAIN_DATA}" ]] ; then
+    echo "AUSRAIN_DATA environment variable not set. Please set it to where data produced lives."
+    exit 1
+fi
+
 while (( "$#" )); do
   case "$1" in
     --dbz_range)
-      if [ -n "$3" ] && [ ${3:0:1} != "-" ]; then
+      if [ -n "$3" ] && [ "${3:0:1}" != "-" ]; then
         shift
         dbz_name="${1}_${2}" # leave args to be be passed on.
         extra_args+=" --dbz_range $1 $2"
@@ -26,7 +45,7 @@ while (( "$#" )); do
       fi
       ;;
     --calibration)
-      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+      if [ -n "$2" ] && [ "${2:0:1}" != "-" ]; then
         calibration=${2}
         shift 2
       else
@@ -35,7 +54,7 @@ while (( "$#" )); do
       fi
       ;;
     --name)
-      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+      if [ -n "$2" ] && [ "${2:0:1}" != "-" ]; then
         name=${2}
         shift 2
       else
@@ -44,7 +63,7 @@ while (( "$#" )); do
       fi
       ;;
     --years)
-      if [ -n "$3" ] && [ ${3:0:1} != "-" ]; then
+      if [ -n "$3" ] && [ "${3:0:1}" != "-" ]; then
         shift
         year_start=${1}
         year_end=${2}
@@ -58,8 +77,13 @@ while (( "$#" )); do
     --return_dir)
       shift
       return_dir=True
+
       ;;
-    *)
+    --anaprop) # want anaprop filtering.
+      anaprop_name='anaprop'
+      extra_args+=" --anaprop ${AUSRAIN_DATA}/era5_anaprop/${site}_era5_anaprop_all"
+      ;;
+    *) # anything else just add it into extra_args
       extra_args+=" $1"
       shift
       ;;
@@ -70,22 +94,12 @@ done
 
 
 
-if [[ -z "$site" ]]
-then
-    echo "Usage: $0 site  [extra_args]"
-    exit 1
-fi
-if [[ -z "$AUSRAIN" ]]
-then
-    echo "AUSRAIN environment variable not set. Please set it to the aus_rain_analysis directory."
-    exit 1
-fi
 
 resample='30min 1h 2h 4h 8h'
 region="-125 125 125 -125" # region to extract
 coarse=4
 
-extra_args+=" --dask --min_fract_avg 0.75 --threshold 1.0 --extract_coords_csv ${AUSRAIN}/meta_data/${site}_close.csv"
+extra_args+=" --dask --min_fract_avg 0.75 --threshold 1.0 "
 base_submit_args=" --json_submit_file ${AUSRAIN}/config_files/process_reflectivity.json --submit"
 if [[ $calibration == "melbourne" ]] ; then
     extra_args+=" --to_rain 0.0271 0.650"
@@ -118,13 +132,18 @@ if [[ -z ${name} ]] ; then
     if [[ -n ${coarsen_name} ]] ;  then
       name+=_${coarsen_name}
     fi
+    if [[ -n ${anaprop_name} ]] ; then
+      name+=_${anaprop_name}
+    fi
 fi
 
+
+
 time_str=$(date +"%Y%m%d_%H%M%S")
-root_dir="/scratch/wq02/st7295/radar/summary"
+root_dir="${AUSRAIN_DATA}/summary"
 out_dir="${root_dir}/${name}"
 
-for year in $(seq ${year_start} ${year_end}); do # parallel jobs -- one for each year
+for year in $(seq "${year_start} ${year_end}"); do # parallel jobs -- one for each year
   run_log_file="${out_dir}/run_logs/${name}_${year}_${time_str}.log"
   pbs_log_file="${out_dir}/pbs_logs/${name}_${year}_${time_str}"
   job_name=ref_${year}_${name}
@@ -151,6 +170,6 @@ else
   result=""
 fi
 result+=" ${all_jobs}"
-echo $result # return list of all jobs submitted.
+echo "${result}" # return list of all jobs submitted.
 
 
