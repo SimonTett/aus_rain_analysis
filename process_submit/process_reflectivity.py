@@ -11,6 +11,8 @@ import pandas as pd
 import multiprocessing
 
 
+
+
 ##
 def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
              non_time_variables: typing.Union[typing.List[str], str],
@@ -54,7 +56,7 @@ def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
 
 ## summary_process def
 def summary_process(data_array: xarray.DataArray,
-                    mean_resample: typing.Union[typing.List[str], str] = None,
+                    mean_resample: typing.Union[typing.List[str], str,None] = None,
                     time_dim: str = 'time',
                     threshold: typing.Optional[float] = None,
                     base_name: typing.Optional[str] = None,
@@ -376,6 +378,22 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
     ds = ausLib.add_long_lat_coords(ds)
     return ds
 
+def mask_anaprop(radar_ds:xarray.Dataset,anaprop:xarray.DataArray) -> xarray.Dataset:
+    """
+    Mask radar_ds where anaprop is False. Returns a new dataset with the same variables as radar_ds but with timestamps removed where anaprop
+    :param radar_ds: dataset to mask by anaprop. Must have a time dimension
+    :param anaprop: dataarray containing potential anaprop (True= potential anaprop; False = not potential anaprop)
+
+    anaprop is interpolated by nearest neighbour time values to the times of the radar_ds
+    """
+    times =radar_ds.time.values
+    anaprop = anaprop.sel(time=times,method='nearest').assign_coords(time=times) # reindex anaprop to radar_ds times. Use nearest neighbour interpolation.
+    anaprop.load()
+    result = radar_ds.where(~anaprop, drop=True) # remove anaprop affected times
+    my_logger.info(f'Anaprop filter: # orig times: {len(radar_ds.time)}, now: {len(result.time)}')
+    return result
+
+
 
 ##
 if __name__ == "__main__":
@@ -386,7 +404,7 @@ if __name__ == "__main__":
     parser.add_argument('site', help='Radar site to process',
                         default='Melbourne', choices=site_numbers.keys())
     parser.add_argument('outdir', type=pathlib.Path,
-                        help='output directory. Will be created if it does not exist. If not set will be cwd()/site',
+                        help='output directory. Will be created if it does not exist. If not set will be cwd()/site ',
                         nargs='?')
     parser.add_argument('--indir', type=pathlib.Path, help='input directory',
                         default = ausLib.hist_ref_dir)
@@ -418,7 +436,7 @@ if __name__ == "__main__":
                         help='Threshold for reflectivity. Used in threshold vars', default=0.5)
     parser.add_argument('--extract_coords_csv',
                         help="""CSV file with coordinates (Longitude & Latitude) to extract data for.
-                        CSV file should be readable with usLib.read_gsdr_csv.
+                        CSV file should be readable with ausLib.read_gsdr_csv.
                         Data will be put in outdir/site_coord/filename""")
     parser.add_argument('--subsample', type=pd.Timedelta,
                         help='Timedelta to sub-sample to -- should be parsed by pd.Timedelta')
@@ -429,6 +447,8 @@ if __name__ == "__main__":
                              'from meta-data')
     parser.add_argument('--quantize_levels',type=float,nargs='+',
                         help='Levels to quantize too.')
+    parser.add_argument('--anaprop',type=pathlib.Path,
+                        help='Netcdf file containing anaprop data. anaprop variable should be anaprop. Will also modify outdir to include _anaprop if outdir not defined')
     ausLib.add_std_arguments(parser)
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # deal with the std arguments
@@ -457,7 +477,7 @@ if __name__ == "__main__":
         raise FileNotFoundError(f'Input directory {indir} does not exist')
     my_logger.info(f'resample periods are: {args.resample}')
 
-    ## deal with some args.  This coudl (eventually) go into process_std_args
+    ## deal with some args.  This could (eventually) go into process_std_args
     indir = args.indir # if use rainfall3 then this varies.
     glob = args.glob # if use rainfall3 then this varies.
     site_number = f'{ausLib.site_numbers[args.site]:d}'
@@ -471,6 +491,9 @@ if __name__ == "__main__":
     outdir = args.outdir
     if outdir is None:
         outdir = pathlib.Path.cwd()/args.site
+        if args.anaprop:
+            outdir = outdir.parent/(outdir.name+'_anaprop') # add _anaprop onto dir name
+
     outdir.mkdir(parents=True, exist_ok=True)
     my_logger.info(f'Output directory is {outdir}')
 
@@ -504,6 +527,13 @@ if __name__ == "__main__":
     if args.use_rainfields3:
         my_logger.info('Loading rainfields3 bias adjustment')
         raise NotImplementedError('Need to add in calibration values for rainfields3')
+    if args.anaprop:
+        ds_anaprop = xarray.open_dataset(args.anaprop)
+        if ds_anaprop.attrs['site'] != args.site:
+            raise ValueError(f"Site in anaprop file {ds_anaprop.attrs['site']} does not match site argument {args.site}")
+        anaprop =ds_anaprop['anaprop'] # Loading happens for the chunk we need when filtering is done.
+        # check site
+        my_logger.info(f'Loaded anaprop data from {args.anaprop} with {len(anaprop.time)} time steps')
     for year in args.years:
         my_logger.info(f'Processing year {year}')
         for month in args.months:
@@ -516,7 +546,7 @@ if __name__ == "__main__":
                 file = f'hist_gndrefl_{year:04d}_{month:02d}'
                 data_dir = indir / f'{year:04d}'
 
-            zip_files = sorted(data_dir.glob(pattern))
+            zip_files = sorted([pathlib.Path(p) for p in data_dir.glob(pattern)])
             if len(zip_files) == 0:
                 my_logger.info(f'No files found for   {data_dir}/{pattern} in {data_dir} {ausLib.memory_use()}')
                 continue
@@ -532,14 +562,21 @@ if __name__ == "__main__":
             if args.to_rain is not None:
                 to_rain = tuple(args.to_rain)  # type checker moaning here.
 
-                ds = read_multi_zip_files(zip_files,
-                                          dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
-                                      coarsen=coarsen, region=region,
-                                      coarsen_method=args.coarsen_method,
-                                      #coarsen_cv_max=args.cv_max,
-                                      to_rain=to_rain,
-                                      calibration=calib)
+            ds = read_multi_zip_files(zip_files,
+                                      dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
+                                  coarsen=coarsen, region=region,
+                                  coarsen_method=args.coarsen_method,
+                                  to_rain=to_rain,
+                                  calibration=calib)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
+
+            # handle anaprop
+            if args.anaprop:
+                orig_times = len(ds.time)
+                ds = mask_anaprop(ds,anaprop=anaprop)
+                my_logger.info(f'Filtered out anaprop data for {year}-{month} {ausLib.memory_use()}')
+
+            # compute summaries
             basename = 'reflectivity'
             if args.to_rain is not None:
                 basename = 'rain_rate'
@@ -562,7 +599,7 @@ if __name__ == "__main__":
                 ValueError(f'large sample resolution {min_res} mins')
             ausLib.write_out(summary_data, outpath, time_unit=time_unit, extra_attrs=extra_attrs)
             my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
-  
+
 
             if args.write_full:  # write out the full file.
                 full_file = outdir_full / file
