@@ -2,7 +2,6 @@
 
 
 import argparse
-import copy
 import errno
 import shutil
 import itertools
@@ -22,7 +21,13 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 import requests
-
+# make xarray warnings crash. AI generated
+import warnings
+warnings.filterwarnings(
+    "error",
+    category=UserWarning,
+    module=r"xarray(\.|$)"
+)
 
 # stuff for timezones!
 from timezonefinder import TimezoneFinder
@@ -394,15 +399,21 @@ def process_gsdr_record(
 def memory_use() -> str:
     """
     Report on memory use.
-    Returns: a string with the memory use in Gbytes or "Mem use unknown" if unable to load resource
+    Returns: a string with the memory use in Gbytes or "Mem use unknown" if unable to load resource  or psutil
      module.
 
     """
     try:
         import resource
-        mem = f"Mem = {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6} Gbytes"
-    except ModuleNotFoundError:
-        mem = 'Mem use unknown'
+        mem = f"Mem = {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.6f} Gbytes"
+    except ModuleNotFoundError: # try to use psutil
+        try:
+            import psutil
+            rss = psutil.Process(os.getpid()).memory_info().rss / 1e9
+            mem = f"Mem = {rss:.6f} Gbytes"
+        except ModuleNotFoundError: # failed to find psutil
+            my_logger.warning("Failed to get memory use. install resource or psutil to get memory use info.")
+            mem = 'Mem use unknown'
     return mem
 
 
@@ -930,6 +941,10 @@ def read_radar_zipfile(
                     if len(bad_dims) > 0:
                         ds.close()  # close any file managers attached to the aggregate dataset.
                         raise ValueError('Following dimensions have zero length: ' + ','.join(bad_dims))
+
+                if concat_dim not in ds.coords: # potentially fix time coords to avoid a UserWarning
+                    # add in concat_dim to the coords.
+                    ds = ds.set_coords(concat_dim).expand_dims(concat_dim)
 
 
                 datasets.append(ds.load())  # materialise before buf goes away
@@ -2051,8 +2066,8 @@ def comp_ratios(gev_parameters: xarray.Dataset, covariance: str | list[str] = 't
         da.append(ratio)
     da=xarray.concat(da,dim='parameter')
     return da
-
-def plot_radar_change(ax:matplotlib.pyplot.axes,
+import matplotlib.axes
+def plot_radar_change(ax:matplotlib.axes.Axes,
                       radar_site:pd.DataFrame,
                       trmm:bool = False,
                       site_start:bool = False) -> None:
@@ -2062,6 +2077,7 @@ def plot_radar_change(ax:matplotlib.pyplot.axes,
         ax: axis on which to plot
         radar_site: dataframe of radar site information. Each row corresponds to change at site
         trmm: If set True plot TRMM availability + orbit boost. GPM also plotted.
+        site_start: If True plot the start time(s) for site radars.
     Returns:
 
     """
@@ -2099,21 +2115,29 @@ def plot_radar_change(ax:matplotlib.pyplot.axes,
                 ax.axvline(x, color='blue', linestyle='--',linewidth=2)
 
 
-def fix_levels(radar_field:xarray.DataArray,levels:np.array) -> xarray.DataArray:
+def fix_levels(radar_field:xarray.DataArray,levels:np.dtype[float|int]) -> xarray.DataArray:
     """
-    Round radar levels (in dBZ) to specified levels.
+    Round radar levels (in dBZ) down to specified levels.
     Done so can run a case with fixed levels
     Afterwards the only values which are not NaN are those which are in the levels.
     Args:
         radar_field: xarray data array of the radar field
         levels: levels to use to map too.
     """
-    raise NotImplementedError("This function is not tested  yet")
-    # force levels to be monotonicly increasing
-    levels = np.sort(np.unique(levels))
 
-    conds = [ radar_field < level for level in levels[1:]] # array of fields. Will consume a lot of memory
+    # force levels to be monotonicly increasing
+    levels.sort()
+
+    conds = [ (radar_field >= levels[indx] ) & (radar_field < level) for indx,level in enumerate(levels[1:])] # array of fields. Will consume a lot of memory
+    conds.append(radar_field >= levels[-1]) # add in the final condition for the top level.
     truncated = np.select(conds,levels,default=levels[0])
+
+    truncated = xarray.DataArray(truncated,coords=radar_field.coords,dims=radar_field.dims,
+                                 attrs=radar_field.attrs,name=radar_field.name)
+    truncated = truncated.where(radar_field.notnull())
+    hist = 'Truncated using truncated_levels '+radar_field.attrs.get('history','')
+    truncated.attrs.update(truncated_levels=levels.tolist(),history=hist) # update the attrs
+
     return truncated
 
 
