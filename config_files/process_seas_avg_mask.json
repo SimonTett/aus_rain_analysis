@@ -1,6 +1,6 @@
 {
   "comment": "Configuration for process_seas_avg_mask",
-  "memory": "10GB",
+  "memory": "16GB",
   "time": "01:00:00",
   "cpus": 1,
   "queue": "normalbw",

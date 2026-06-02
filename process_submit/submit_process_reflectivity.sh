@@ -143,7 +143,7 @@ time_str=$(date +"%Y%m%d_%H%M%S")
 root_dir="${AUSRAIN_DATA}/summary"
 out_dir="${root_dir}/${name}"
 
-for year in $(seq "${year_start} ${year_end}"); do # parallel jobs -- one for each year
+for year in $(seq "${year_start}" "${year_end}"); do # parallel jobs -- one for each year
   run_log_file="${out_dir}/run_logs/${name}_${year}_${time_str}.log"
   pbs_log_file="${out_dir}/pbs_logs/${name}_${year}_${time_str}"
   job_name=ref_${year}_${name}

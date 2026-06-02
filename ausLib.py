@@ -80,29 +80,37 @@ reflectivity_to_rain =dict(
     Brisbane=(0.0256, 0.688)
 )
 hostname = platform.node()
+data_dir = os.environ.get("AUSRAIN_DATA")
+if data_dir is not None:
+    data_dir = pathlib.Path(data_dir)
+    if not data_dir.is_dir():
+        raise ValueError(f"{data_dir} is not a directory")
+else:
+    raise AttributeError("Set AUSRAIN_DATA in your setup")
+    
 if hostname.startswith('gadi'):  # aus super-computer
     radar_dir = pathlib.Path("/g/data/rq0/level_2/")
-    data_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
+    #data_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
     hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/v2026/")
     agcd_rain_dir = pathlib.Path("/g/data/zv2/agcd/v2-0-2/precip/total/r001/01month/") # where the AGCD data lives
     era5_dir = pathlib.Path("/g/data/rt52/era5")
-    platform = 'gadi'
+    platform_name = 'gadi'
 elif hostname.startswith('ccrc'):  # CCRC desktop
-    data_dir = pathlib.Path("/home/z3542688/OneDrive/data/aus_radar_analysis/radar")
+    #data_dir = pathlib.Path("/home/z3542688/OneDrive/data/aus_radar_analysis/radar")
     common_data = pathlib.Path("/home/z3542688/OneDrive/data/common_data")
-    platform = 'ccrc'
+    platform_name = 'ccrc'
 elif hostname.lower().startswith('geos'):  # School of geosciences managed laptop/desktop
-    data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
+    #data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
     hist_ref_dir = data_dir / "raw_radar_data/hist_gndrefl" # partial local copy of ref data
     radar_dir = data_dir / "raw_radar_data/level_2" # partial local copy of level 2 data.
     era5_dir = data_dir/ f"ERA5_data" # local copy of ERA5_data.
-    platform = 'geos'
+    platform_name = 'geos'
     my_logger.warning("agcd_rain_dir not defined. ")
 elif '.geos.' in hostname.lower(): # geos linux machines
-    data_dir = pathlib.Path("/scratch/stett2/radar")
+    #data_dir = pathlib.Path("/scratch/stett2/radar")
     common_data = pathlib.Path("/scratch/stett2/common_data")
-    platform='geos_linux'
+    platform_name='geos_linux'
     my_logger.warning("agcd_rain_dir not defined. ")
 else:
     raise NotImplementedError(f"Do not know where directories are for this machine:{hostname}")
@@ -131,11 +139,15 @@ def extract_rgn(radar_ds: xarray.Dataset) -> typing.Dict[str, slice]:
     Returns: dictionary with region.
     """
     # extract the region used from the meta-data though need to reverse  y
-    rgn = [v for v in radar_ds.attrs['program_args'] if v.startswith('region:')][0]
-    rgn = np.array(ast.literal_eval(rgn.split(':')[1].strip()))  # thanks chatgpt fot this
-    # convert to m from km
-    rgn *= 1000.
-    rgn = dict(x=slice(*rgn[0:2]), y=slice(*rgn[-1:-3:-1]))  # need to reverse the y index.
+    rgn = [v for v in radar_ds.attrs['program_args'] if v.startswith('region:')]
+    if rgn: # got a region
+        rgn=rgn[0]
+        rgn = np.array(ast.literal_eval(rgn.split(':')[1].strip()))  # thanks chatgpt fot this
+        # convert to m from km
+        rgn *= 1000.
+        rgn = dict(x=slice(*rgn[0:2]), y=slice(*rgn[-1:-3:-1]))  # need to reverse the y index.
+    else:
+        rgn={} # empty dict
 
     return rgn
 

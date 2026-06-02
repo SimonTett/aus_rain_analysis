@@ -116,7 +116,10 @@ if __name__ == '__main__':
     parser.add_argument('--years', nargs='+', help='years to use', type=int)
     parser.add_argument('--no_mask_file',type=pathlib.Path, help='File where no mask data written out')
     parser.add_argument('--radius', type=float, help='Radius to use for radar data. If not set then all data used.')
-    ausLib.add_std_arguments(parser,dask=False)  # add on the std args. Very I/O code so avoid dask
+    parser.add_argument("--drop",action=argparse.BooleanOptionalAction,
+                        default=False,help="Drop proj, x/y_bounds to cope with error in reflectivity processing")
+    ausLib.add_std_arguments(parser,dask=True)  # add on the std args.
+    
     args = parser.parse_args()
     # work out outut file.
     if args.output is None:
@@ -140,13 +143,26 @@ if __name__ == '__main__':
     for file in in_radar:
         if not file.exists():
             raise FileNotFoundError(f"Input file {file} not found")
-    radar = xarray.open_mfdataset(in_radar, parallel=True)
+    drop_vars=['proj','x_bounds','y_bounds'] # variables wanted only from fist file
+    radar = xarray.open_mfdataset(in_radar, parallel=True,drop_variables=drop_vars)
+    # get the variables from the first file we want.
+    
+    extra_vars = xarray.open_dataset(in_radar[0])
+    for variable in drop_vars:
+        da = extra_vars.get(variable)
+        if da  is not None:
+            da = da.squeeze(drop=True) # removing singleton vars i.e. time!
+            my_logger.debug(f"Adding {variable} to radar ")
+            radar[variable]= da
+    
+    # set up extra attributes. 
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.utcnow().isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()])
     # add in the original region to the extra_attrs/program_args
-    rgn = [v for v in radar.attrs['program_args'] if v.startswith('region:')][0]
-    extra_attrs['program_args'].append(rgn)
+    rgn = [v for v in radar.attrs['program_args'] if v.startswith('region:')]
+    if rgn:
+        extra_attrs['program_args'].append(rgn[0])
     if args.site:
         site = args.site
         extra_attrs.update(site=site)  # update the site
@@ -173,7 +189,7 @@ if __name__ == '__main__':
     if args.years:
         L = radar.time.dt.year.isin(args.years)
         radar = radar.where(L, drop=True)
-    my_logger.info(radar.proj.dims)
+   
     # Keep values where sample_resolution <=15 minutes (900 seconds)
     L=(radar.sample_resolution.dt.total_seconds() <= 900).load()
     radar = radar.where(L, drop=True)
@@ -200,6 +216,7 @@ if __name__ == '__main__':
         ValueError(f"Samples > max_samples for {L.sum()} cases")
 
     # seasonally group
+
     if args.season != 'monthly':
         radar = radar.resample(time='QS-DEC').map(group_data_set, group_dim='time').compute().load()
         max_samples_resamp = max_samples_resamp.resample(time='QS-DEC').sum().load()  # samples/season

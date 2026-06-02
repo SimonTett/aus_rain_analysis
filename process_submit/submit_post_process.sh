@@ -44,7 +44,7 @@ while (( "$#" )); do
 
       done
       ;;
-    --bootstrap) # bootstrap -- add to gev_args
+    --bootstrap_samples) # bootstrap -- add to gev_args
       gev_args+=$1; shift # handle -bootstrap
       gev_args+=$1; shift # how many samples are wanted
       ;;

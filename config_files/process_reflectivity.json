@@ -1,7 +1,8 @@
 {
   "comment": "Configuration for process_reflectivity.py",
   "memory": "25GB",
-  "time": "06:00:00",
+    "time": "06:00:00",
+    "mode": "io",
   "cpus": 4,
   "queue": "normalbw",
   "project": "wq02",

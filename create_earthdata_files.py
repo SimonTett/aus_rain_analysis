@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # run this before trying to get data from NASA earthdata.
 # code comes from
 # https://lb.gesdisc.eosdis.nasa.gov/meditor/notebookviewer/?notebookUrl=https://github.com/nasa/gesdisc-tutorials/blob/main/notebooks/How_to_Generate_Earthdata_Prerequisite_Files.ipynb

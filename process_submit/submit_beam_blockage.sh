@@ -13,10 +13,10 @@ pbs_log_dir="${process_dir}/pbs_logs"
 run_log_dir="${process_dir}/run_logs"
 job_name="block_${site}"
 log_file=block_${site}_${time_str}
-submit_opts=" --json_submit config_files/process_beam_blockage.json --log_base ${pbs_log_dir}/${log_file}"
+submit_opts=" --json_submit ${AUSRAIN_CONFIG_DIR}/process_beam_blockage.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
 submit_opts+=" --submit"
-cmd="./process_beam_blockage.py ${site} ${*} ${submit_opts}"
+cmd="process_beam_blockage.py ${site} ${*} ${submit_opts}"
 jobid=$($cmd)
 status=$?
 if [[ $status -ne 0 ]]; then

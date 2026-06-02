@@ -350,13 +350,10 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
     for zip_file in zip_files:
         dd = ausLib.read_zip(zip_file, coarsen=coarsen, coarsen_method=coarsen_method,
                       dbz_ref_limits=dbz_ref_limits,
-                      #coarsen_cv_max=coarsen_cv_max,
                       region=region,
                       drop_variables=drop_vars, concat_dim='valid_time',
-                      #parallel=True,
                       combine='nested',
-                      #chunks=dict(valid_time=6), engine='netcdf4',
-                             to_rain=to_rain,
+                      to_rain=to_rain,
                       calibration=calibration)
 
         ds.append(dd)
@@ -366,7 +363,7 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
     my_logger.debug(f'Concatenated data   {ausLib.memory_use()}')
     # merge seems to generate huge memory footprint so just copy across the data from fld_info
     ds = ds.drop_vars('n2', errors='ignore')
-    fld_info = fld_info.drop_vars('n2', errors='ignore')
+    fld_info = fld_info.drop_vars('n2', errors='ignore').rename(valid_time='time').sortby('time')
     for v in fld_info.data_vars:
         if v not in ds.data_vars:
             ds[v] = fld_info[v]
@@ -530,7 +527,7 @@ if __name__ == "__main__":
     if args.anaprop:
         ds_anaprop = xarray.open_dataset(args.anaprop)
         if ds_anaprop.attrs['site'] != args.site:
-            raise ValueError(f"Site in anaprop file {ds_anaprop.attrs['site']} does not match site argument {args.site}")
+            raise ValueError(f"Site: {ds_anaprop.attrs['site']} in anaprop file {args.anaprop} does not match site argument {args.site}")
         anaprop =ds_anaprop['anaprop'] # Loading happens for the chunk we need when filtering is done.
         # check site
         my_logger.info(f'Loaded anaprop data from {args.anaprop} with {len(anaprop.time)} time steps')
