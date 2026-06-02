@@ -35,18 +35,18 @@ while (( "$#" )); do
       fi
       ;;
     --covariates)
-      gev_args+=$1; shift # handle covariates.
+      gev_args+=" ${1}"; shift # handle covariates.
       while (( "$#" )); do
         if [[ $1 == -* ]]; then
           break # Exit the loop if another option is encountered
         fi
-        covariates+=" $1"; shift # Add the argument to covariates
+        gev_args+=" ${1}"; shift # Add the argument to gev_args
 
       done
       ;;
     --bootstrap_samples) # bootstrap -- add to gev_args
-      gev_args+=$1; shift # handle -bootstrap
-      gev_args+=$1; shift # how many samples are wanted
+      gev_args+=" ${1}" ; shift # handle -bootstrap
+      gev_args+=" ${1}"; shift # how many samples are wanted
       ;;
     --holdafter) # need to specially handle holdafter -- as gets passed through to the first submission
       hold_after=$1; shift
@@ -85,8 +85,10 @@ if [[ -n "${region_name}" ]]; then
   process_dir+=$region_name
   echo "Using region $region_name to modify process_dir and name" >&2
 fi
+mkdir -p ${process_dir} # make dir
 event_file="${process_dir}/events_seas_mean_${name}_${seas_str}.nc"
 gev_dir="${process_dir}/fits"
+mkdir -p ${gev_dir}
 pbs_log_dir="${process_dir}/pbs_logs"
 run_log_dir="${process_dir}/run_logs"
 time_str=$(date +"%Y%m%d_%H%M%S")

@@ -80,8 +80,9 @@ while (( "$#" )); do
 
       ;;
     --anaprop) # want anaprop filtering.
-      anaprop_name='anaprop'
-      extra_args+=" --anaprop ${AUSRAIN_DATA}/era5_anaprop/${site}_era5_anaprop_all"
+	shift
+	anaprop_name='anaprop'
+	extra_args+=" --anaprop ${AUSRAIN_DATA}/era5_anaprop/${site}_era5_anaprop_all.nc"
       ;;
     *) # anything else just add it into extra_args
       extra_args+=" $1"

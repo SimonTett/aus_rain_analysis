@@ -19,7 +19,7 @@ while (( "$#" )); do
         shift
         ;;
      *)
-      args+=" $1"
+      args+=" ${1}"
       shift
       ;;
   esac
@@ -41,7 +41,7 @@ done
 echo "Submitted reflectivity processing jobs with jobids: $jobids" >&2
 echo "Outdir is ${outdir}" >&2
 # submit post-processing
-cmd="submit_post_process.sh ${outdir} --holdafter ${jobids} ${args} ${common_args}  --bootstrap_samples 100 --covariates temperature dewpoint"
+cmd="submit_post_process.sh ${outdir} --holdafter ${jobids} ${common_args}  --bootstrap_samples 100 --covariates temperature dewpoint"
 pp_jobids=$($cmd)
 status=$?
 if [[ $status -ne 0 ]]; then
