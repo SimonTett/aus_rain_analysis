@@ -65,13 +65,16 @@ def do_gev_fit(dataset,
                name:typing.Optional[str]=None,
                extra_attrs:typing.Optional[dict]=None,
                use_dask:bool=False,
-               initial_params:typing.Optional[xarray.DataArray]=None
+               initial_params:typing.Optional[xarray.DataArray]=None,
+               dim:str = None
                ) -> xarray.Dataset:
     from R_python import gev_r # do this here as close to when we want it
     if rng is None:
         rng = np.random.default_rng(123456) # setup the random nuber generatpr oif not already provided
 
     vars_to_extract = ['max_value', 'count_cells']  # vars to extract from the dataset
+    if dim is None:
+        dim='EventTime'
     if cov is  None:
         cov = []  # no covariates
     if isinstance(cov, str):
@@ -97,10 +100,12 @@ def do_gev_fit(dataset,
 
     cov_rand = [ds[c] for c in cov]
 
-    wt = ds.count_cells
     mx = ds.max_value
+    wt = ds.count_cells#.broadcast_like(mx)
+
     my_logger.debug('Doing GEV fit')
-    fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=verbose,
+
+    fit = gev_r.xarray_gev(mx, cov=cov_rand, dim=dim, weights=wt, verbose=verbose,
                            recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs,
                            use_dask=use_dask, initial=initial_params)
     my_logger.debug('Done GEV fit')
@@ -162,7 +167,7 @@ def comp_radar_fit(
         return fit, bs_fit  # can now return the fit and bootstrap fit
 
     # need to compute the bootstrap fit.
-    my_logger.info(f"Calculating bootstrap for {name} {ausLib.memory_use()}")
+    my_logger.info(f"Calculating bootstrap for {name} with cov {cov} {ausLib.memory_use()}")
     # loop over bootstrap samples and then concat together at the end.
     # generating all the samples produces a very large mem object and requires data
     # to be moved around. So don't bother...
@@ -177,7 +182,8 @@ def comp_radar_fit(
         ds_bs = dataset.groupby('resample_prd',squeeze=False).map(sample_events2, rng=rng,
                                                dim='EventTime'). \
             drop_vars('EventTime').assign_coords(bootstrap_sample=samp)
-        bs_fit = do_gev_fit(ds_bs, cov=cov, rng=rng, n_samples=n_samples,
+
+        bs_fit = do_gev_fit(ds_bs, cov=cov, rng=rng, n_samples=n_samples,dim='index',
                      verbose=verbose, name=name,use_dask=use_dask, initial_params=initial_params)
         bs_sample_fits.append(bs_fit)
         my_logger.info(f'Done BS fit for sample {samp} {ausLib.memory_use()}')
@@ -212,8 +218,8 @@ def comp_summ_stats(fit, fit_cov, output_file, nsamples, cov_var, sample_dim):
         q_aic = (fit_cov.AIC - fit.AIC).quantile([0.1, 0.5, 0.9], dim=sample_dim).to_dataframe().unstack()
         print(f"AIC: {q_aic.round(-1)}", file=f)
         # Uncertainties from the covariance matrix
-        cov_mean = fit_cov.Cov.mean('sample', skipna=True)
-        p_mean = fit_cov.Parameters.mean('sample', skipna=True)
+        cov_mean = fit_cov.Cov.mean(sample_dim, skipna=True)
+        p_mean = fit_cov.Parameters.mean(sample_dim, skipna=True)
         if cov_mean.isnull().any():
             raise ValueError('Covariance matrix has NaNs')
         if p_mean.isnull().any():
@@ -226,7 +232,7 @@ def comp_summ_stats(fit, fit_cov, output_file, nsamples, cov_var, sample_dim):
         for p in ['location', 'scale']:
             dp = f'D{p}_{cov_var}anom'
             dfract = samp_params.sel(parameter=dp) / samp_params.sel(parameter=p)
-            q = dfract.quantile([0.1, 0.5, 0.9], dim=sample_dim).to_dataframe().unstack()
+            q = dfract.quantile([0.1, 0.5, 0.9], dim='sample').to_dataframe().unstack()
             print(f"   fract cov  {dp}: {q.round(3)}", file=f)
     my_logger.debug(f'Wrote summary file {output_file}')
 if __name__ == "__main__":
@@ -272,7 +278,7 @@ if __name__ == "__main__":
         ## defaults for submission.
     pbs_log_dir = output_dir / 'pbs_logs'
     run_log_dir = output_dir / 'run_logs'
-    log_file = 'gev_fits' + pd.Timestamp.utcnow().strftime('%Y_%m_%d_%H%M%S')
+    log_file = 'gev_fits' + pd.Timestamp.now('UTC') .strftime('%Y_%m_%d_%H%M%S')
     log_base_default = pbs_log_dir / log_file
     log_file_default = run_log_dir / f'{log_file}.log'
     job_name_default = f'gev_{output_dir.stem[0:10]}'
@@ -335,7 +341,7 @@ if __name__ == "__main__":
     # set up metadata.
     extra_attrs = radar_dataset.attrs.copy()
     extra_attrs.update(program_name=str(pathlib.Path(__file__).name),
-                       utc_time=pd.Timestamp.utcnow().isoformat(),
+                       utc_time=pd.Timestamp.now('UTC').isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()]
                        )
     if time_range is not None:
@@ -365,7 +371,7 @@ if __name__ == "__main__":
         radar_dataset[cov_var + 'anom'] = radar_dataset[cov_var] - mn_value  # make the anomaly and add it to the dataset.
         extra_attrs = radar_dataset.attrs.copy()
         extra_attrs.update(program_name=str(pathlib.Path(__file__).name),
-                       utc_time=pd.Timestamp.utcnow().isoformat(),
+                       utc_time=pd.Timestamp.now('UTC').isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()]
                        )
         extra_attrs.update({f'mean_{cov_var}': mn_value})
