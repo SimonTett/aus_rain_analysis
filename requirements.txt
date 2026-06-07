@@ -2,27 +2,29 @@
 # update with pip update -r requirements.txt
 xarray~=2026.04.0
 dask[distributed]~=2026.1.2
-scipy~=1.11
-pandas~=2.2.0
+numpy~=2.4
+scipy~=1.17
+pandas~=3.0
 ipython
-cartopy~=0.22
-cftime~=1.6
-numba~=0.65.1
-xarray-regrid[accel]
-bokeh # so we can monitor the dask cluster
+cartopy~=0.25
+cftime~=1.6.5
+#numba~=0.65.1
+xarray-regrid[accel]~=0.4.2
+bokeh~=3.8 # so we can monitor the dask cluster
 requests~=2.33.0
-timezonefinder~=6.4.1
+timezonefinder~=8.0
 matplotlib~=3.8.2
 numpy~=2.4.4
 pytz~=2024.1
-wradlib
-xradar
+wradlib~=2.0
+xradar~=0.12
 earthaccess~=0.9.0
+rasterio~=1.4.4
 flox
-rioxarray
-seaborn
+rioxarray~=0.17
+seaborn~=0.13
 python-dotenv # for environment variables
-lmoments3 # for python fitting
+lmoments3~=1.0.8 # for python fitting
 
 
 

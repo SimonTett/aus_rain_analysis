@@ -87,7 +87,7 @@ if [[ -n "${region_name}" ]]; then
 fi
 mkdir -p ${process_dir} # make dir
 event_file="${process_dir}/events_seas_mean_${name}_${seas_str}.nc"
-gev_dir="${process_dir}/fits"
+gev_dir="${process_dir}/new_fits"
 mkdir -p ${gev_dir}
 pbs_log_dir="${process_dir}/pbs_logs"
 run_log_dir="${process_dir}/run_logs"
@@ -144,7 +144,7 @@ log_file=process_gev_fits_${name}_${time_str}
 submit_opts=" --submit --json_submit  ${AUSRAIN_CONFIG_DIR}/process_gev_fits.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
 submit_opts+=" ${hold_after} "
-cmd="process_gev_fits.py ${event_file} --outdir ${gev_dir} --nsamples=100 ${gev_args} ${extra_args} ${submit_opts} "
+cmd="process_gev_fits.py ${event_file} --dask --mode cpu --outdir ${gev_dir} ${gev_args} ${extra_args} ${submit_opts} "
 jobid_gev=$($cmd)
 status=$?
 if [[ ${status} -eq 0 ]]; then

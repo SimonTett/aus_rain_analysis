@@ -421,8 +421,6 @@ if __name__ == "__main__":
     parser.add_argument('--dbz_range', nargs=2, type=float, default=[15., 55.],
                         help='range for dbz ref. '
                              'Values below are set to 0 when converting DBZ to linear units; above to missing')
-    #parser.add_argument('--cv_max', type=float, help='Maximum coefficient of variability for coarsened data',
-    #                    default=None)
     parser.add_argument('--write_full', action='store_true',
                         help='Write out full datasets after coarsening. Will be written out to site_full/filename')
     parser.add_argument('--region', nargs=4, type=float, help='Region to extract data for as x0 x1 y0 y1')

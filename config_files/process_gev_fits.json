@@ -1,14 +1,16 @@
 {
-  "comment": "Configuration for process_gev_fits.py",
-  "memory": "20GB",
-  "memory_comment": "**Probably** need a lot more memory when running with dask.",
-  "time": "06:00:00",
-  "time_comment": "Should take a wee bit under an hour  on 4 cores",
-  "cpus": 4,
-  "cpus_comment":"Number of CPUs to use. Only relevant if using dask.",
-  "queue": "normalbw",
-  "project": "wq02",
-  "storage": "gdata/rq0+gdata/hh5+gdata/ua8",
-  "setup_script": "/home/561/st7295/aus_rain_analysis/setup.sh",
-  "history_file": "/home/561/st7295/aus_rain_analysis/histories/process_gev_fits.txt"
+    "comment": "Configuration for process_gev_fits.py",
+    "memory": "20GB",
+    "memory_comment": "look to need 12-14 Gbytes",
+    "time": "02:00:00",
+    "time_comment": "Should take a wee bit over an hour  on 4 cores",
+    "cpus": 8,
+    "cpus_comment":"Number of CPUs to use. Only relevant if using dask. Asking for lots of memory so might as well have cores too",
+    "mode":"cpu",
+    "mode_comment":"Mode to use. cpu forr cpu heavy/io for io heavy. Code needs fixing to use this",
+    "queue": "normalbw",
+    "project": "wq02",
+    "storage": "gdata/rq0+gdata/hh5+gdata/ua8",
+    "setup_script": "/home/561/st7295/aus_rain_analysis/setup.sh",
+    "history_file": "/home/561/st7295/aus_rain_analysis/histories/process_gev_fits.txt"
 }

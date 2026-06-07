@@ -6,7 +6,7 @@
 # example of how to run this to generate all the monthly files.
 # for f in $(ls -1d /scratch/wq02/st7295/radar/summary/* | grep -v coord )
 # do echo $f
-# submit_seas_mean.sh  $f --season monthly -v -v
+# submit_seas_mean.sh  $f --dask --season monthly -v -v
 # done
 
 
@@ -28,7 +28,7 @@ log_file=process_seas_avg_mask_${name}_${time_str}
 submit_opts=" --submit"
 submit_opts+=" --json_submit ${AUSRAIN_CONFIG_DIR}/process_seas_avg_mask.json --log_base ${pbs_log_dir}/${log_file}"
 submit_opts+=" --log_file ${run_log_dir}/${log_file}.log --job_name ${job_name} "
-cmd="process_seas_avg_mask.py $* ${summary_dir} $* ${submit_opts} "
+cmd="process_seas_avg_mask.py ${summary_dir} $* ${submit_opts} "
 jobid_mean=$($cmd)
 status=$?
 if [[ $status -ne 0 ]]; then

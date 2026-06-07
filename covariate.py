@@ -337,21 +337,23 @@ class CovariateDistribution:
 
         logpdf = fdist.logpdf(y) # compute log pdf for all  observations even when not in  support.
         indx = np.isfinite(logpdf) # good values -- bad values outside support or guess is a long way from loc.
-        mx_value = -logpdf[indx].min() # smallest value; tke -ve as penalty gets applied to logpdf with - value
-        if( mx_value > penalty_out_support) and check_support: # big value and are checking support
-            my_logger.warning(f" -min(logpdf) = {mx_value:.3g} > {penalty_out_support:.3g}. Setting penalty_out_support to {mx_value*10:.3g}.")
-            penalty_out_support = mx_value*10
-        if mx_value > penalty_infinite_pdf:
-            my_logger.warning(f"-min(logpdf) = {mx_value:.3g}  > {penalty_infinite_pdf:.3g}. Setting penalty_infinite_pdf to {mx_value*10:.3g}.")
-            penalty_infinite_pdf = mx_value*10
-
+        if np.any(indx): # got some finite values so can test penalty values
+            mx_value = -logpdf[indx].min() # smallest value; take -ve as penalty gets applied to logpdf with - value
+            if( mx_value > penalty_out_support) and check_support: # big value and are checking support
+                my_logger.warning(f" -min(logpdf) = {mx_value:.3g} > {penalty_out_support:.3g}. Setting penalty_out_support to {mx_value*10:.3g}.")
+                penalty_out_support = mx_value*10
+            if mx_value > penalty_infinite_pdf:
+                my_logger.warning(f"-min(logpdf) = {mx_value:.3g}  > {penalty_infinite_pdf:.3g}. Setting penalty_infinite_pdf to {mx_value*10:.3g}.")
+                penalty_infinite_pdf = mx_value*10
+        # end checking that penalty values are OK
+        # add on penalty vaues
         logpdf[~indx] = -penalty_infinite_pdf
         logpdf[indx_outside] = -penalty_out_support # set values outside the support to a large penalty value
 
         if weights is None:
             mn_logpdf = logpdf.mean()
         else:
-            mn_logpdf = np.average(logpdf,weights=weights[~indx_outside]) # weighted average.
+            mn_logpdf = np.average(logpdf,weights=weights) # weighted average.
 
         mn_logpdf = -float(mn_logpdf)
 
