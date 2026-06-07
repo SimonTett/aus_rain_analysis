@@ -41,7 +41,7 @@ import typing
 import ast  # thanks chaptGPT co-pilot
 import numpy.random as random
 from matplotlib import dates
-
+import dask.distributed
 
 my_logger = logging.getLogger(__name__)  # for logging
 # dict of site names and numbers.
@@ -430,19 +430,23 @@ def memory_use() -> str:
 
 
 def dask_client(mode:typing.Literal['io','cpu'] = 'io',
-                max_cores:typing.Optional[int] = None) -> 'dask.distributed.Client':
+                max_cores:typing.Optional[int] = None,
+                timeout:str = '4s') -> dask.distributed.Client:
     """
     Start or connect to an existing dask client. Address for server stored in $DASK_SCHEDULER_ADDRESS
     :param mode -- one of io or cpu.
       io -- means io heavy so have n_workers=1 and n_threads=available cores.
       cpu -- cpu heavy so have n_workers - available cores. and n_threads = 1
+    :param max_cores maximum number of cores to use.
+    :param timeout -- timeout (as a string) for timeout getting existing client or starting new one.
     :return: dask.distributed.Client
     """
-    import dask.distributed
+
+
     try:
         dask_sa = os.environ['DASK_SCHEDULER_ADDRESS']
         my_logger.warning(f"already got client at {dask_sa}")
-        client = dask.distributed.get_client(dask_sa, timeout='4s')
+        client = dask.distributed.get_client(dask_sa, timeout=timeout)
         return client
     except( KeyError,OSError): # not got a client so make  one.
         ncores = os.cpu_count() or 1
@@ -460,7 +464,7 @@ def dask_client(mode:typing.Literal['io','cpu'] = 'io',
             processes = False
         else:
             raise  ValueError(f"mode={mode} not recognized. Should be one of io or cpu")
-        client = dask.distributed.Client(timeout='2s',
+        client = dask.distributed.Client(timeout=timeout,
                                          n_workers=default_workers,
                                          threads_per_worker=default_threads,
                                             processes=processes
