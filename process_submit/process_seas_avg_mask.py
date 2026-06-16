@@ -144,7 +144,7 @@ if __name__ == '__main__':
         if not file.exists():
             raise FileNotFoundError(f"Input file {file} not found")
     drop_vars=['proj','x_bounds','y_bounds'] # variables wanted only from fist file
-    radar = xarray.open_mfdataset(in_radar, parallel=True,drop_variables=drop_vars)
+    radar = xarray.open_mfdataset(in_radar, parallel=False,drop_variables=drop_vars) # having parallel  set True causes seg faults...
     # get the variables from the first file we want.
     
     extra_vars = xarray.open_dataset(in_radar[0])

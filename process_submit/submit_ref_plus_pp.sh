@@ -3,7 +3,7 @@
 # post-processing is submitted held after the reflectivity processing is complete.
 # all arguments are passed to submit_process_reflectivity.sh
 # example usage:
-# ./submit_ref_ann_pp.sh Melbourne --calibration melbourne --years 1997 2022 ---holdafter 1234
+# submit_ref_plus_pp.sh Melbourne --calibration melbourne --years 1997 2022 ---holdafter 1234
 # Check have AUSRAIN set
 if [[ -z "$AUSRAIN" ]]
 then

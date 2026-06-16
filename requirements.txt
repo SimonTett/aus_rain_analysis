@@ -1,8 +1,8 @@
 # requirements for python environment
 # update with pip update -r requirements.txt
-xarray~=2026.04.0
+numpy~=1.26.2
+xarray~=2026.04
 dask[distributed]~=2026.1.2
-numpy~=2.4
 scipy~=1.17
 pandas~=3.0
 ipython
@@ -14,7 +14,6 @@ bokeh~=3.8 # so we can monitor the dask cluster
 requests~=2.33.0
 timezonefinder~=8.0
 matplotlib~=3.8.2
-numpy~=2.4.4
 pytz~=2024.1
 wradlib~=2.0
 xradar~=0.12
