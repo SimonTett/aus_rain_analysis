@@ -514,6 +514,13 @@ class CovariateDistribution:
                                penalty_out_support=penalty_out_support,
                                penalty_infinite_pdf=penalty_infinite_pdf) # roll kwrd args into function
         resultObj = scipy.optimize.minimize(fn, initial_guess, args=args,**kwargs)
+        if not resultObj.success: # try again with different start values. Set intial value to zero.
+           # This might be better done through passing in a function to do something on failure
+            kwargs_try = kwargs.copy()
+            kwargs_try.update(method='CG',options=dict(maxiter=2000))
+            my_logger.warning(f"Initial optimization failed: {resultObj.message}. Trying again with initial guess of 0 and CG method.")
+            scaled_guess = initial_guess * 0.
+            resultObj = scipy.optimize.minimize(fn, scaled_guess, args=args, **kwargs_try)
         # Extract params
         # now work out the sum (not mean) of the log-likelihood at the fitted parameters for reporting
         neg_log_likelihood = resultObj.fun * len(y)
