@@ -209,6 +209,10 @@ if __name__ == "__main__":
                         )
     parser.add_argument('--bootstrap_samples', type=int, help='Number of event bootstraps to use', default=0)
     parser.add_argument('--covariates', nargs='+', default=['temperature'], help='List of covariates to use')
+    parser.add_argument('--penalty_infinite_pdf',type=float,default=None,
+                        help='Penalty for infinities in fitting')
+    parser.add_argument('--penalty_outside_support',type=float,default=None,
+                        help='Penalty for being outside support in fitting')
     # Names of covariate to use.
     ausLib.add_std_arguments(parser)  # add on the std args
     args = parser.parse_args()
@@ -297,7 +301,10 @@ if __name__ == "__main__":
     fit, fit_bs = comp_radar_fit(radar_dataset,
                                  bootstrap_samples=args.bootstrap_samples,
                                  name='fit_nocov', file=files['fit'], bootstrap_file=files.get('fit_bs'),
-                                 extra_attrs=extra_attrs, recreate_fit=args.overwrite, use_dask=use_dask
+                                 extra_attrs=extra_attrs, recreate_fit=args.overwrite, use_dask=use_dask,
+                                 penalty_infinite_pdf=args.penalty_infinite_pdf,
+                                 penalty_outside_support=args.penalty_outside_support,
+
                                  )
 
     my_logger.info(f"Computed no cov fits {ausLib.memory_use()}")  # memory use
@@ -307,20 +314,18 @@ if __name__ == "__main__":
         mn_value = float(radar_dataset[cov_var].mean())
         radar_dataset[cov_var + '_anom'] = radar_dataset[
                                               cov_var] - mn_value  # make the anomaly and add it to the dataset.
-        extra_attrs = radar_dataset.attrs.copy()
-        extra_attrs.update(program_name=str(pathlib.Path(__file__).name),
-                           utc_time=pd.Timestamp.now('UTC').isoformat(),
-                           program_args=[f'{k}: {v}' for k, v in vars(args).items()]
-                           )
-        extra_attrs.update({f'mean_{cov_var}': mn_value})
+        extra_attrs_cov = extra_attrs.copy()
+        extra_attrs_cov.update({f'mean_{cov_var}': mn_value})
 
         fit_cov, fit_cov_bs = comp_radar_fit(radar_dataset, cov=[cov_var + '_anom'],
                                              bootstrap_samples=args.bootstrap_samples,
-                                             extra_attrs=extra_attrs, name=f'fit_{cov_var}',
+                                             extra_attrs=extra_attrs_cov, name=f'fit_{cov_var}',
                                              file=files[f'fit_{cov_var}'],
                                              bootstrap_file=files.get(f'fit_{cov_var}_bs'),
                                              recreate_fit=args.overwrite,
-                                             use_dask=use_dask
+                                             use_dask=use_dask,
+                                             penalty_infinite_pdf=args.penalty_infinite_pdf,
+                                             penalty_outside_support=args.penalty_outside_support,
                                              )
         my_logger.info(f"Computed fits for {cov_var} {ausLib.memory_use()}")
         ## write out summary info

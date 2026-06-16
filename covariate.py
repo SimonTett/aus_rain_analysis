@@ -270,8 +270,8 @@ class CovariateDistribution:
         weights: typing.Optional[np.ndarray] = None,
         distribution: typing.Callable  = scipy.stats.norm ,
         check_support: bool = True,
-        penalty_out_support:float = 1e5,
-        penalty_infinite_pdf:float = 1e4
+        penalty_out_support:typing.Optional[float] = None, #1e5,
+        penalty_infinite_pdf:typing.Optional[float] = None
 
     ) -> float:
         """
@@ -286,18 +286,21 @@ class CovariateDistribution:
             :param weights: weights array.
             :param distribution -  distribution to be used.  Default is Normal.
             :param check_support - if True  y values outside support have logpdf set to value of penalty_out_support
-            :param penalty_out_support -- penalty value for values outside support when check_support is True
-            :param penalty_infinite_pdf -- penalty value for infinite values returned from logpdf
+            :param penalty_out_support -- penalty value for values outside support when check_support is True. Default is 1e5
+            :param penalty_infinite_pdf -- penalty value for infinite values returned from logpdf. Default is 1e4
 
             Both penalty_* values are checked against the largest finite value in the returned logpdf.
-               If smaller than ValueError is raised.
+               If smaller then penalty values are increased with a warning message/
 
 
         Returns:
             Negative mean  log-likelihood (scalar)
         """
 
-
+        if penalty_out_support is None:
+            penalty_out_support = 1e5
+        if penalty_infinite_pdf is None:
+            penalty_infinite_pdf = 1e4
 
 
         # extract params from concatenated array
@@ -376,6 +379,8 @@ class CovariateDistribution:
         check_support: bool = True,
         return_params: bool = False,
         raise_error: bool = True,
+        penalty_out_support: typing.Optional[float] = None,
+        penalty_infinite_pdf: typing.Optional[float] = None,
         **kwargs
     ) -> tuple["CovariateDistribution",dict]|tuple[np.ndarray,np.ndarray,np.ndarray,float,float,float]:
         """
@@ -395,9 +400,13 @@ class CovariateDistribution:
              If guess is  None, will use lmoments3 fit to get an initial guess for the  parameters (if supported for this distribution).
 
             weights: weights for each observation. Currently, not implemented.
-            check_support: Whether to apply  penalty for observations outside the distribution support -- not currently implemented
+            check_support: Whether to apply  penalty for observations outside the distribution support
             return_params: If True return only parameters (location, mu, shape) as numpy arrays,
               and AIC, nll & KS stat as floats. Here to support apply_ufunc.
+
+            raise_error -- if True raise errors otherwise warn.
+            penalty_infinite_pdf -- penalty for infinite values. Passed through to mean_nll.
+            penalty_out_support -- penalty for values outside support. Passed through to mean_nll.
 
             **kwargs: Additional options passed through to minimizer function.
             See scipy.optimize.minimize but includes
@@ -501,7 +510,9 @@ class CovariateDistribution:
         # Minimize negative log-likelihood
         args = ( y, lens, X_loc, X_mu)
         fn = functools.partial(CovariateDistribution.mean_nll,
-                 distribution=distribution,  check_support=check_support) # roll kwrd args into function
+                 distribution=distribution,  check_support=check_support,
+                               penalty_out_support=penalty_out_support,
+                               penalty_infinite_pdf=penalty_infinite_pdf) # roll kwrd args into function
         resultObj = scipy.optimize.minimize(fn, initial_guess, args=args,**kwargs)
         # Extract params
         # now work out the sum (not mean) of the log-likelihood at the fitted parameters for reporting
@@ -932,6 +943,8 @@ def xarray_dist_fit(
         weights: typing.Optional[xarray.DataArray] = None,
         use_dask: bool = False,
         raise_error:bool = True,
+        penalty_infinite_pdf: typing.Optional[float] = None,
+        penalty_outside_support: typing.Optional[float] = None,
         **kwargs
 ) -> xarray.Dataset:
     #
@@ -1023,9 +1036,11 @@ def xarray_dist_fit(
                         [] # KS result
                         ]
 
-
+    # set up kwargs passed to function.
     kwargs.update(distribution=distribution)
     kwargs.update(raise_error=raise_error)
+    kwargs.update(penalty_infinite_pdf=penalty_infinite_pdf)
+    kwargs.update(penalty_out_support=penalty_outside_support)
 
 
     if use_dask: # setup dask args
