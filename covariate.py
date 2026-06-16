@@ -477,6 +477,7 @@ class CovariateDistribution:
             initial_mu_coef[0] = np.log(first_guess_params['scale'] ) # Start with log of std dev as intercept guess
             guess["mu_coefficients"] = initial_mu_coef
 
+
             if 'c' in first_guess_params:
                 guess["c"] = np.atleast_1d(first_guess_params['c'])
                 # Start with movements3 shape as guess and ensure shape is 1D array for concatenation below
@@ -527,7 +528,7 @@ class CovariateDistribution:
             order = np.argsort(u)
             u_sorted = u[order]  # make it a uniform distribution
             ks_result = float(scipy.stats.kstest(u_sorted, scipy.stats.uniform.cdf).pvalue)
-        # did we sucessfully optimise?
+        # did we successfully optimize?
         if not resultObj.success:
             message = "Minimization failed: " + resultObj.message + ". Try providing a better initial guess or adjusting optimization options."
             if raise_error:
@@ -539,6 +540,8 @@ class CovariateDistribution:
                 loc_coefficients[:]=np.nan
                 mu_coefficients[:]=np.nan
                 dist_shape[:]=np.nan
+                cov_dist = CovariateDistribution(dist_shape, X_loc, X_mu, loc_coefficients, mu_coefficients,
+                                                 distribution=distribution)
                 my_logger.warning(message)
 
 
