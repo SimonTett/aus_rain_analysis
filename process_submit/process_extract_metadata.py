@@ -125,7 +125,7 @@ def read_ppi(file: pathlib.Path, level1_file: typing.Optional[pathlib.Path] = No
             value = level1.attrs.get(attrib, None)
             if value is not None and attrib == 'rapic_CLEARAIR':
                 value = (value.lower() == 'true') #
-            print(attrib,type(value))
+
             if isinstance(value,np.ndarray): # deal with arrays. Want index.
                 value = xarray.DataArray(value,coords={f'{attrib}_index':np.arange(len(value))})
 
