@@ -69,18 +69,19 @@ def read_ppi(file: pathlib.Path, level1_file: typing.Optional[pathlib.Path] = No
     global drop_variables
     vars_to_keep = ['azimuth', 'elevation', 'fixed_angle', 'corrected_reflectivity']
     ds_first = ausLib.read_radar_zipfile(file, first_file=True,
-                                         drop_variables=drop_variables)  # just extract metadata from the first file.
+                                         drop_variables=drop_variables,concat_dim='time')  # just extract metadata from the first file.
     ref = ds_first['corrected_reflectivity']
     calib_off = xarray.DataArray(float(ref.attrs.pop('calibration_offset', np.nan))).assign_attrs(ref.attrs)
     ds_first = ds_first.drop_vars('corrected_reflectivity').assign(calibration_offset=calib_off)
     # check nothing has time in its dims
     has_time = [v for v in ds_first.data_vars if ('time' in ds_first[v].dims
                                                   and v not in vars_to_keep)]
-    has_sweep = [v for v in ds_first.data_vars if ('sweep' in ds_first[v].dims and v not in vars_to_keep)]
+
     if len(has_time) > 0:
         my_logger.warning(f'Variables {has_time} have time in their dimensions.  Adding to drop_var and dropping. ')
         drop_variables += has_time
         ds_first = ds_first.drop_vars(has_time)  # drop any variables that have time in their dims.
+    has_sweep = [v for v in ds_first.data_vars if ('sweep' in ds_first[v].dims and v not in vars_to_keep)]
     if len(has_sweep) > 0:
         my_logger.warning(f'Variables {has_sweep} have sweep in their dimensions.  Adding to drop_var and dropping. ')
         drop_variables += has_sweep
@@ -120,10 +121,14 @@ def read_ppi(file: pathlib.Path, level1_file: typing.Optional[pathlib.Path] = No
     # now deal with level_1 data.
     if level1_file is not None:
         level1 = ausLib.read_radar_zipfile(level1_file, first_file=True, group='dataset1/data1/how',file_pattern='*.h5')
-        for attrib in ['rapic_VIDRES', 'rapic_CLEARAIR', 'rapic_NOISETHRESH']:
+        for attrib in ['rapic_VIDRES', 'rapic_CLEARAIR', 'rapic_NOISETHRESH',"rapic_DBZLVL" ]:
             value = level1.attrs.get(attrib, None)
             if value is not None and attrib == 'rapic_CLEARAIR':
                 value = (value.lower() == 'true') #
+            print(attrib,type(value))
+            if isinstance(value,np.ndarray): # deal with arrays. Want index.
+                value = xarray.DataArray(value,coords={f'{attrib}_index':np.arange(len(value))})
+
             ds_first[attrib] = value
         ds_first['level1_file'] = str(level1_file)
         my_logger.debug(f'Read data from level1 file {level1_file}')
