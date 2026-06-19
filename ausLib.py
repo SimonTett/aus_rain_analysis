@@ -51,8 +51,12 @@ site_numbers = dict(Adelaide=46, Melbourne=2, Wtakone=52, Sydney=3, Brisbane=50,
 
 site_names = dict(zip(site_numbers.values(), site_numbers.keys()))  # reverse lookup
 
-# sites where do not use all data. date is start of data.
-non_default_dates=dict(Gladstone='20051201',Melbourne='20031201',Wtakone='20141201')
+# sites where do not use all data. Filter fns for that
+filters=dict(
+    Adelaide=lambda time: time.dt.year.isin([2015, 2016]),
+    Wtakone = lambda time: time < np.datetime64("2014-12-01"),
+    Melbourne = lambda time: time < np.datetime64('2003-12-01'),
+) # fns applied to time co-ords in the events. Where True data will be removed
 all_sites=list(site_numbers.keys())
 
 region_names = dict(Tropics=['Cairns', 'Mornington'],
@@ -939,6 +943,8 @@ def read_radar_zipfile(
             load_args.pop(key)
     drop_vars = load_args.pop('drop_vars',[])
     # as we are using hdf5netcdf reader drop_vars is not recognized  in open. So we need to drop these manually after opening.
+    if 'phony_dims' not in load_args:
+        load_args['phony_dims'] = 'sort'
 
     with zipfile.ZipFile(path) as zf:
         names = [n for n in zf.namelist() if fnmatch.fnmatch(n, file_pattern)]
@@ -958,17 +964,18 @@ def read_radar_zipfile(
                         ds.close()  # close any file managers attached to the aggregate dataset.
                         raise ValueError('Following dimensions have zero length: ' + ','.join(bad_dims))
 
-                if concat_dim not in ds.coords: # potentially fix time coords to avoid a UserWarning
+                if (concat_dim not in ds.coords) and (concat_dim in ds.dims): # potentially fix time coords to avoid a UserWarning
                     # add in concat_dim to the coords.
                     ds = ds.set_coords(concat_dim).expand_dims(concat_dim)
 
 
                 datasets.append(ds.load())  # materialise before buf goes away
                 ds.close()
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 my_logger.warning(f"Error reading {name} from {path}: {e} -- skipping")
 
     if not datasets: # nothing found
+        my_logger.warning(f'No data found in {path}')
         return None
     datasets = xarray.concat(datasets, concat_dim)  #
 
@@ -981,6 +988,7 @@ def read_radar_zipfile(
 
     if not first_file:
         my_logger.debug(f'read in {len(datasets[concat_dim])} times from {path} {memory_use()}')
+
     return datasets
 
 
@@ -2124,11 +2132,7 @@ def plot_radar_change(ax:matplotlib.axes.Axes,
         for k,v in renames.items():
             if usite.startswith(k):
                 usite = v
-        start_time = non_default_dates.get(usite)
-        if start_time is not None:
-            x = pd.Timestamp(start_time).replace(tzinfo=None)
-            if x_limits[0] <= x <= x_limits[1]:
-                ax.axvline(x, color='blue', linestyle='--',linewidth=2)
+
 
 
 def fix_levels(radar_field:xarray.DataArray,levels:np.dtype[float|int]) -> xarray.DataArray:
