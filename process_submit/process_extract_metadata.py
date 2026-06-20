@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-# extract meta data from PPI files.
-import sys
+# extract metadata from PPI files.
+
 import typing
 
 import xradar  # this should happen early so that radar magic can happen!
@@ -11,7 +11,6 @@ import argparse
 import ausLib
 import pathlib
 import pandas as pd
-import dask
 import numpy as np
 import re
 
@@ -31,6 +30,63 @@ def month_sort(path: pathlib.Path) -> str:
     yyyymm = path.name.split('_')[1][0:6]
     return yyyymm
 
+
+def extract_convert(ds:xarray.Dataset,
+                    attribs:typing.Optional[list[str]]=None)-> dict[str,typing.Union[xarray.DataArray,float]]:
+    """
+    Extract and converted attributes from xarray dataset
+    Args:
+        ds: dataset to extract attributes from
+        attribs: list of attributes to extract. If none, all attributes are extracted.
+        time_attrs: list of attributes which are time attributes.
+
+    Returns: dict of values.
+
+    """
+    result = dict()
+    if attribs is None:
+        attribs = list(ds.attrs.keys())
+    names_bool = ['rapic_CLEARAIR'] # attribute names which are logical and if not set should be true
+    for name in attribs:
+        value = ds.attrs.get(name, None)
+        if value is not None and name in names_bool:
+            value = (value.lower() == 'true')  #
+        result[name] = value
+        if isinstance(value, np.ndarray):  # deal with arrays. Want index.
+            value = xarray.DataArray(value, coords={f'{name}_index': np.arange(len(value))})
+        result[name] = value
+    return result
+
+def read_level1_meta(file: pathlib.Path) -> xarray.Dataset:
+    """
+    read metadata from level 1 pvol.zip file and convert to a xarray dataset.
+    :param file: path to the file. Should be a level1 pvol.zip file.
+    :return: xarray dataset with metadata.
+    """
+    # Want all data in /how, /where, dataset1/how & dataset1/data1/how
+    if file.suffixes != ['.pvol','.zip']:
+        raise ValueError(f"File {file} is not a level1 pvol zip file")
+    dt = ausLib.read_radar_zipfile(file, first_file=True, datatree=True,file_pattern='*.h5')
+
+
+    result = extract_convert(dt['dataset1/data1/how'].to_dataset(),
+                        attribs=['rapic_VIDRES', 'rapic_DBZCOR', 'rapic_CLEARAIR', 'rapic_NOISETHRESH', "rapic_DBZLVL"])
+
+    result.update(extract_convert(dt['/how'].to_dataset(),
+                                  attribs=["beamwH", "beamwV","rapic_AZCORR","rapic_ELCORR",
+                                           "beamwidth","wavelength","antgainH"]))
+    result.update(extract_convert(dt['/where'].to_dataset()))
+    result.update(extract_convert(dt['dataset1/how'].to_dataset()))
+    result.update(extract_convert(dt['dataset1/where'].to_dataset()))
+    result.update(extract_convert(dt['dataset1/what'].to_dataset(), attribs=['startdate', 'starttime']))
+    time = pd.to_datetime(result.pop('startdate') + result.pop('starttime')).to_datetime64()
+
+    result['level1_file'] = str(file)
+    ds = xarray.Dataset(result).expand_dims(time=[time]) # assign time coord to dataset.
+    ds['time'] = ds.time.dt.round("D")
+    my_logger.debug(f'Read data from level1 file {file}')
+
+    return ds
 
 def iso_to_timedelta64(iso_string: str) -> np.timedelta64:
     # Parse the ISO string
@@ -56,17 +112,16 @@ def iso_to_timedelta64(iso_string: str) -> np.timedelta64:
 # list of variables to drop,
 drop_variables = ['time_coverage_start', 'time_coverage_end',
                   'time_reference']  # variables to be dropped from the dataset. This is a global variable. It is updated while running.
-
-
-def read_ppi(file: pathlib.Path, level1_file: typing.Optional[pathlib.Path] = None) -> xarray.Dataset:
+def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
     """
-    read meta-data from ppi zip file
-    :param file: zip file to be extracted and first file to be read in from
-    :param level1_file: level1 file to be read in from -- optional.
-    If provided then rapic_VIDRES, rapic_CLEARAIR & rapic_NOISETHRESH will be extracted and added to the meta-data
+    read metadata from ppi zip file
+    :param file:  path to file to be extracted and the first file to be read in from
     :return:  metadata as xarray dataset
     """
-    global drop_variables
+    # check that the file is a ppi file.
+    if not (file.suffix == '.zip' and file.stem.endswith('_ppi')):
+        raise ValueError(f"File {file} is not a ppi zip file")
+    global drop_variables # variables dropped from the dataset.
     vars_to_keep = ['azimuth', 'elevation', 'fixed_angle', 'corrected_reflectivity']
     ds_first = ausLib.read_radar_zipfile(file, first_file=True,
                                          drop_variables=drop_variables,concat_dim='time')  # just extract metadata from the first file.
@@ -112,27 +167,18 @@ def read_ppi(file: pathlib.Path, level1_file: typing.Optional[pathlib.Path] = No
     variables += ['time']
     ds_first = ds_first.drop_vars(variables, errors='ignore').assign(data_vars)
     # convert attributes to data variables
-    attrs_want = ['instrument_name', 'time_coverage_resolution']
-    attrs_to_vars = {k: ds_first.attrs[k] for k in attrs_want if k in ds_first.attrs.keys()}
-    attrs_to_vars['time_coverage_resolution'] = iso_to_timedelta64(ds_first.attrs['time_coverage_resolution'])
+    attrs_want = ['instrument_name', 'time_coverage_resolution','time_coverage_duration']
+    attrs_to_vars = {k: ds_first.attrs.pop(k)for k in attrs_want}
+    for k in ['time_coverage_resolution','time_coverage_duration']: # time things
+        v=attrs_to_vars.get(k)
+        attrs_to_vars[k] = iso_to_timedelta64(v) if v is not None else None
+
     ds_first = ds_first.assign(**attrs_to_vars)
-    ds_first['file'] = str(file)
+    ds_first['ppi_file'] = str(file)
     my_logger.debug(f'Read data from file {file}')
-    # now deal with level_1 data.
-    if level1_file is not None:
-        level1 = ausLib.read_radar_zipfile(level1_file, first_file=True, group='dataset1/data1/how',file_pattern='*.h5')
-        for attrib in ['rapic_VIDRES', 'rapic_CLEARAIR', 'rapic_NOISETHRESH',"rapic_DBZLVL" ]:
-            value = level1.attrs.get(attrib, None)
-            if value is not None and attrib == 'rapic_CLEARAIR':
-                value = (value.lower() == 'true') #
 
-            if isinstance(value,np.ndarray): # deal with arrays. Want index.
-                value = xarray.DataArray(value,coords={f'{attrib}_index':np.arange(len(value))})
-
-            ds_first[attrib] = value
-        ds_first['level1_file'] = str(level1_file)
-        my_logger.debug(f'Read data from level1 file {level1_file}')
     ds_first = ds_first.expand_dims(time=[min_time.values])
+    ds_first['time'] = ds_first.time.dt.round("D")
     return ds_first
 
 
@@ -147,7 +193,7 @@ if __name__ == "__main__":
                         help='output dir for metadata. If not provided worked out from site')
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args Very I/O intensive. Can't see DASK helping.
     args = parser.parse_args()
-    my_logger = ausLib.process_std_arguments(args)  # setup the std stuff
+    my_logger = ausLib.process_std_arguments(args)  # set up the std stuff
 
     site = args.site
 
@@ -159,7 +205,8 @@ if __name__ == "__main__":
         my_logger.info(f"Arg:{name} =  {value}")
 
     site_number = f'{ausLib.site_numbers[args.site]:d}'
-    indir = pathlib.Path(f'/g/data/rq0/level_1b/{site_number}/ppi')
+    indir = pathlib.Path(f'/g/data/rq0/level_1/odim_pvol/{site_number}')
+    indir_ppi = pathlib.Path(f'/g/data/rq0/level_1b/{site_number}/ppi')
     my_logger.info(f'Input directory is {indir}')
     if not indir.exists():
         raise FileNotFoundError(f'Input directory {indir} does not exist')
@@ -176,32 +223,33 @@ if __name__ == "__main__":
             my_logger.warning(f'Output file {outfile} exists and will not be overwritten. Set --overwrite. Skipping.')
             continue
 
-        pattern = f'{site_number}_{year:04d}*_ppi.zip'
-        data_dir = indir / f'{year:04d}'
+        pattern = f'{site_number}_{year:04d}*.pvol.zip' # level 1 info
+        data_dir = indir / f'{year:04d}/vol'
+        data_dir_ppi = indir_ppi / f'{year:04d}'
+        if not data_dir.exists():
+            my_logger.warning(f'Directory {data_dir} does not exist. Skipping')
+            continue
         zip_files = sorted(data_dir.glob(pattern))  #, key=month_sort)
         if len(zip_files) == 0:
             my_logger.info(f'No files found for  pattern {pattern} in {data_dir} {ausLib.memory_use()}')
             continue
         my_logger.info(f'Found {len(zip_files)} files for pattern {pattern} {ausLib.memory_use()} ')
         # these are all daily files. But we want the first one from each month.
-        files = []
-        ukeys = []
-        for k, g in itertools.groupby(zip_files, key=month_sort):
-            files.append(list(g)[0])  # just want the first file from each month.
-            ukeys.append(k)
+        files = [list(g)[0] for k, g in itertools.groupby(zip_files, key=month_sort)]
+        # now to build a year's worth of files.(though only one per month)
         dataset = []
         for f in files:
             my_logger.debug(f'Processing {f}')
-            # generate the filename for the level 1 file so we can extract some metadata from that file.
-            parts = f.parts
-            lev1 = list(parts[0:4]) + ['level_1', 'odim_pvol', parts[5], parts[7], 'vol']
-            lev1 += [parts[-1].replace('_ppi.zip', '.pvol.zip')]
-            lev1 = pathlib.Path(*lev1)
-            if not lev1.exists():
-                lev1 = None
-
-            ds = read_ppi(f,level1_file=lev1)
+            ds = read_level1_meta(f)  # read the level 1 file to get the rapic and other useful attributes
+            # work out the ppi file.
+            ppi_file =indir_ppi/f.name.replace('.pvol.zip','_ppi.zip')
+            if ppi_file.exists():  # merge in the ppi file if it exists.
+                ds2 = read_ppi_meta(ppi_file)
+                ds = xarray.merge([ds,ds2]) # merge the datasets.
+            else:
+                my_logger.warning(f'No ppi file {ppi_file} found for {f} ')
             dataset += [ds]
-
-        dd = xarray.concat(dataset, 'time')
+        # now processed a year worth of files.2
+        # concat them all together and write out
+        dd = xarray.concat(dataset, 'time',data_vars='all')
         ausLib.write_out(dd, outfile, extra_attrs=extra_attrs)

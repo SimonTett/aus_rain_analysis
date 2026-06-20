@@ -911,8 +911,9 @@ def read_radar_zipfile(
         first_file: bool = False,
         region: typing.Optional[typing.Dict[str, slice]] = None,
         file_pattern: str = '*.nc',
+        datatree:bool = False,
         **load_kwargs
-) -> typing.Optional[xarray.Dataset]:
+) -> typing.Optional[typing.Union[xarray.Dataset,xarray.DataTree]]:
     """
     Read netcdf data from a zipfile containing lots of netcdf files
     Args:
@@ -934,7 +935,10 @@ def read_radar_zipfile(
     """
 
     my_logger.debug(f'Unzipping and reading in data {memory_use()} for {path}')
+    if datatree and not first_file:
+        raise NotImplementedError('Datatree not yet implemented for muli file read')
     datasets=[]
+
 
     load_args = load_kwargs.copy()
     # drop things that don't work with load!
@@ -944,7 +948,7 @@ def read_radar_zipfile(
     drop_vars = load_args.pop('drop_vars',[])
     # as we are using hdf5netcdf reader drop_vars is not recognized  in open. So we need to drop these manually after opening.
     if 'phony_dims' not in load_args:
-        load_args['phony_dims'] = 'sort'
+        load_args['phony_dims'] = 'sort' # needed to stop warnings from xarray.open_dataset
 
     with zipfile.ZipFile(path) as zf:
         names = [n for n in zf.namelist() if fnmatch.fnmatch(n, file_pattern)]
@@ -954,8 +958,13 @@ def read_radar_zipfile(
             raw = zf.read(name)  # decompress into bytes
             buf = io.BytesIO(raw)  # wrap as file-like
             try:
-                ds = xarray.open_dataset(buf, engine='h5netcdf', **load_args)
-                ds = ds.drop_vars(drop_vars,errors='ignore')
+                if datatree:
+                    dtree = xarray.load_datatree(buf, engine='h5netcdf', **load_args)
+                    dtree.close()
+                    return dtree # read it in and
+                else:
+                    ds = xarray.open_dataset(buf, engine='h5netcdf', **load_args)
+                    ds = ds.drop_vars(drop_vars,errors='ignore')
 
                 if region is not None:
                     ds = ds.sel(**region)
@@ -963,8 +972,7 @@ def read_radar_zipfile(
                     if len(bad_dims) > 0:
                         ds.close()  # close any file managers attached to the aggregate dataset.
                         raise ValueError('Following dimensions have zero length: ' + ','.join(bad_dims))
-
-                if (concat_dim not in ds.coords) and (concat_dim in ds.dims): # potentially fix time coords to avoid a UserWarning
+                if (concat_dim not in ds.coords): # potentially fix time coords to avoid a UserWarning
                     # add in concat_dim to the coords.
                     ds = ds.set_coords(concat_dim).expand_dims(concat_dim)
 
@@ -977,14 +985,14 @@ def read_radar_zipfile(
     if not datasets: # nothing found
         my_logger.warning(f'No data found in {path}')
         return None
-    datasets = xarray.concat(datasets, concat_dim)  #
+    datasets = xarray.concat(datasets, concat_dim,data_vars='all')  #
 
 
     # fix y_bounds which is in reverse order from x_bounds.
     var = 'y_bounds'
     if var in ds.data_vars:
         v = datasets[var]
-        datasets[var] = xarray.concat([v.isel(n2=1).assign_coords(n2=0), v.isel(n2=0).assign_coords(n2=1)], dim='n2')
+        datasets[var] = xarray.concat([v.isel(n2=1).assign_coords(n2=0), v.isel(n2=0).assign_coords(n2=1)], dim='n2',data_vars='all')
 
     if not first_file:
         my_logger.debug(f'read in {len(datasets[concat_dim])} times from {path} {memory_use()}')
@@ -2159,6 +2167,7 @@ def fix_levels(radar_field:xarray.DataArray,levels:np.dtype[float|int]) -> xarra
     truncated.attrs.update(truncated_levels=levels.tolist(),history=hist) # update the attrs
 
     return truncated
+
 
 
 
