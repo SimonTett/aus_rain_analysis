@@ -26,6 +26,7 @@ python-dotenv # for environment variables
 lmoments3~=1.0.8 # for python fitting
 openpyxl
 psutil
+zarr~=2.18
 
 
 

@@ -22,11 +22,11 @@ def empty_ds(example_da: xarray.DataArray, resample_prd: typing.List[str],
     """
     Return an empty dataset
     :param resample_prd: list of resample periods
-    :param example_da:
-    :param non_time_variables:
-    :param vars_time:
+    :param example_da: Template dataArray to use for generating the empty dataset.
+    :param non_time_variables: Variables that are floats so can be filled with Nan
+    :param vars_time:Variables that are times and should be filled with NaT
     :param no_resample_vars -- list of variables that should not have a dimension resample_prd
-    :return: empty dataset.
+    :return: dataset containing empty variables.
     """
     # deal with singleton vars
     if isinstance(non_time_variables, str):
@@ -68,7 +68,7 @@ def summary_process(data_array: xarray.DataArray,
 
     Args:
         data_array: dataArray to be processed. 
-        mean_resample: the resample period(s) to generate means.
+        mean_resample: the resample period(s) to generate means. If not provided then resample prd is 1h
         base_name: basename to be used. If not provided then long_name in attrs of data_array will be used. 
         time_dim: the name of the time dimension
         threshold: the threshold above which var is used in *_thresh dataArrays. 
@@ -98,7 +98,7 @@ def summary_process(data_array: xarray.DataArray,
 
     time_bounds = [data_array[time_dim].min().values, data_array[time_dim].max().values]
     # if subsampling gen times
-    if subsample:  # want to sub-sample the data.
+    if subsample:  # want to subsample the data.
         my_logger.info(f'Resampling to {subsample} time_bounds:{time_bounds} len: {len(data_array[time_dim])}')
         times = pd.date_range(start=time_bounds[0], end=time_bounds[1],
                               freq=subsample, inclusive='both')  # times wanted
@@ -118,7 +118,7 @@ def summary_process(data_array: xarray.DataArray,
     if base_name is None:
         base_name = data_array.attrs.get('long_name')
         if base_name is None:  # raise an error
-            raise ValueError('base_name not provided and not in dat_array.attrs["long_name"]')
+            raise ValueError('base_name not provided and not in data_array.attrs["long_name"]')
 
     # set up empty result
     vars_to_gen = [f"max_{base_name}", f"median_{base_name}", f"mean_raw_{base_name}",
@@ -296,7 +296,7 @@ def fix_spatial_units(ds: xarray.Dataset):
     :return: Nada
     """
     for c in ['x', 'y', 'x_bounds', 'y_bounds']:  # convert all co-ords to m from km,
-        if c not in ds.variables:  # don't have the variable so skip further processing
+        if c not in ds.variables:  # don't have the variable, so skip further processing
             continue
         try:
             unit = ds[c].attrs['units']
@@ -315,46 +315,287 @@ def fix_spatial_units(ds: xarray.Dataset):
     return ds
 
 
+def quantize_to_levels(values, levels):
+    """
+    Quantize values to levels. Nan values are returned as NaN.
+    Args:
+        values: Array of values to quantize.
+        levels: Array of levels to quantize to.
+
+    Returns:
+
+    """
+    levels = np.asarray(levels, dtype=float)
+    levels = np.sort(levels)
+
+    missing = np.isnan(values)
+
+    idx = np.searchsorted(levels, values, side="right") - 1
+    idx = np.clip(idx, 0, len(levels) - 1)
+
+    out = levels[idx]
+    out = np.where(missing, np.nan, out)
+
+    return out
+
+
+def xarray_quantize(dataArray:xarray.DataArray, levels:np.ndarray) -> xarray.DataArray:
+    """
+
+    Args:
+        dataArray: dataArray to be quantized
+        levels: levels to quantize to
+
+    Returns: Quantized dataArray
+
+    Uses apply_ufunc to quantize the dataArray to the specified level using the quantize_to_levels function, which finds the nearest level for each value in the dataArray.
+    Output array has the same shape as the input dataArray and retains its attributes.
+
+    """
+    quant = xarray.apply_ufunc(
+        quantize_to_levels,
+        dataArray,
+        kwargs={"levels": levels},
+        dask="parallelized",
+        output_dtypes=[float],
+        keep_attrs=True,
+    )
+    hist = quant.attrs.get("history", "")
+    hist += " Quantized using quantize_to_levels"
+    quant.attrs.update(history=hist,levels=levels.tolist())
+    return quant
+
+
+
+def read_radar_zip_file(path: pathlib.Path | str,
+                        reflectivity_var:str = 'reflectivity',
+                 concat_dim: str = 'valid_time',
+                 first_file: bool = False,
+                 region: typing.Optional[dict[str, slice]] = None,
+                 **load_kwargs
+                 ) -> typing.Optional[xarray.Dataset]:
+        """
+        Read radar zip file and do some sanity checks.
+
+        :param path: path to zip file to be read in
+        :param reflectivity_var: Variable name for reflectivity.
+        :param concat_dim: Dimension over which to concatenate
+        :param first_file: Passed to ausLib.read_radar_zipfile
+        :param region -- region to select from.
+        :param load_kwargs: kwargs for loading in read_radar_zipfile
+
+        :return:dataset or None
+        """
+        if isinstance(path, str):
+            path = pathlib.Path(path)  # convert to a path
+
+        if not path.exists():
+            raise ValueError(f"{path} does not exist")
+        radar_dataset = ausLib.read_radar_zipfile(path, first_file=first_file,
+                                           concat_dim=concat_dim, region=region,
+                                           **load_kwargs)
+
+        # drop cases where entire field is missing
+        if radar_dataset is None:  # no data retrieved.
+            my_logger.warning(f'No data for {path}')
+            return None
+        if reflectivity_var not in radar_dataset.variables:
+            raise KeyError(f"{reflectivity_var} not in radar dataset")
+        ref = radar_dataset[reflectivity_var]
+        L = ref.isnull().all(['x', 'y'])
+        if L.sum() > 0:
+            bad_times = L[concat_dim][L]
+            my_logger.warning(f'All data missing for times: {bad_times.values[[0, -1]]}')
+            for time in bad_times:
+                my_logger.debug(f'All data missing for time {time}')
+            radar_dataset = radar_dataset.where(~L, drop=True)
+        if len(radar_dataset) == 0:
+            my_logger.warning(f'No data for {path}')
+            return None
+
+        # do some checks and count missing data for reflectivity
+        with xarray.set_options(keep_attrs=True):
+            units = ausLib.lc_none(ref.attrs, 'units')
+            if units != 'dbz':
+                raise  ValueError(f"Expected units to dbz not {units}")
+            std_name = ausLib.lc_none(ref.attrs, 'standard_name')
+            if std_name != 'equivalent_reflectivity_factor':
+                ValueError(f'Std name for reflectivity is {std_name} not equivalent_reflectivity_factor')
+            # count number of missing values but only for reflectivity data
+            miss_var = 'count_' + str(reflectivity_var) + '_missing'
+            vars_non_time = set(list(ref.dims)) - {concat_dim}
+            mv = ref.isnull()
+            mv = mv.sum(vars_non_time)
+            mv = mv.assign_attrs(units='', extra='Count of missing values')
+            radar_dataset[miss_var] = mv
+
+        radar_dataset = fix_spatial_units(radar_dataset)
+
+
+        return radar_dataset # and return it.
+
+def process_radar_file(radar_dataset:xarray.Dataset,
+                       to_rain:tuple[float,float],
+                       reflectivity_var:str = 'reflectivity',
+                       time_dim:str = 'valid_time',
+                       calibration: typing.Optional[float] = None,
+                       quantize_levels:typing.Optional[np.ndarray] = None,
+                       dbz_ref_limits: typing.Optional[tuple[float, float]] = None,
+                       coarsen: typing.Optional[dict[str, int]] = None,
+                       coarsen_method: ausLib.type_cm = 'mean',
+                       bounds_vars: tuple[str,str] = ('y_bounds', 'x_bounds'),
+                       check_finite:bool = True) -> xarray.Dataset:
+
+    """
+    Process data retrieved from a radar zipfile. Converts reflectivity to rain rate and coarsens the data if requested.
+    Args:
+        radar_dataset: dataset to be processed
+        to_rain: convert reflectivity to rain using these co-efficients.
+        reflectivity_var: Name of reflectivity variability
+        time_dim:: Name of time dimension
+        calibration:  Apply calibration correction. Value is subtracted from reflectivity.
+          Values below -32 dbz are set to -32dbz. If radar_dataset has a calibration_estimate attribute, using calibration will generate an error.
+        dbz_ref_limits: limits for dbz. Values below bottom are set 0 when converting to rain. Values above top are set to nan.
+        coarsen:  dict of coarsening dims
+        coarsen_method: How to coarsen (mean or median)
+        bounds_vars:  Names of bounds variables. These get coarsened too.
+
+        Order of processing is:
+        1) Quantize reflectivity to levels if provided.
+        2) Calibration
+        3) Set values above dbz_ref_limits[1] to np.nan
+        4) Work out msk for values < dbz_ref_limits[0]
+        5) Convert reflectivity to rain and use msk to set values to 0.
+        6) Coarsening
+
+
+
+
+
+    Returns: dataset  containing reflectivity converted to rain.
+
+    """
+    # check reflectivity var is OK
+    ref = radar_dataset[reflectivity_var]
+    radar_dataset  = radar_dataset.drop_vars(reflectivity_var)
+    units = ref.attrs['units']
+    std_name = ref.attrs['standard_name']
+    if not (units == 'dBZ' and  std_name == 'equivalent_reflectivity_factor'):
+        my_logger.warning(f"Reflectivity var {reflectivity_var} has units {units} and std_name {std_name}")
+        raise ValueError(f"Units should be dbz and std_name equivalent_reflectivity_factor not {units} and {std_name}")
+
+    if quantize_levels is not None: # quantize levels?
+        # will need to undo calibration and put it back in after quantization.
+        # Note this will not get back the original data as some clipping may have been done to the reflectivity data.
+        applied_calibration = radar_dataset.attrs.get('calibration_estimate', None)
+        if applied_calibration is not None:
+            applied_calibration= float(applied_calibration)
+            ref = ref + applied_calibration # undo calibration so we quantize the original values.
+            my_logger.debug(f'Undid calibration of {applied_calibration} for quantization')
+        ref = xarray_quantize(ref, quantize_levels)
+        if applied_calibration is not None:
+            ref = ref - applied_calibration # reapply calibration after quantization.
+            ref.attrs['applied_calibration'] = applied_calibration
+        my_logger.debug(f'Quantized {reflectivity_var} to levels {quantize_levels}')
+
+    if calibration is not None:  # apply calibration adjustment if provided.
+        if radar_dataset.get('calibration_estimate', None) is not None:
+            raise ValueError(f'Cannot apply calibration correction when calibration_estimate is already set in dataset. '
+                             f'Remove calibration_estimate from dataset or set calibration to None')
+        ref = ref - calibration
+        ref.attrs['applied_calibration'] = calibration
+        my_logger.debug(f'Applied calibration correction of {calibration} to {reflectivity_var}')
+        ref = (ref - calibration).clip(-32.,None) # apply calibration correct and clip, at the lower end, to -32
+        ref  = ref.assign_attrs(calibration=calibration)
+        raise NotImplementedError('Calibration not yet tested')
+        my_logger.debug(f'Applied calibration correction of {calibration} to {reflectivity_var} and clipped at -32 dbz')
+
+
+
+    # Work out places below and above thresholds and set values above upper threshold to nan.
+    L0 = None
+    if (dbz_ref_limits is not None) :
+        L0 = ref < dbz_ref_limits[0]
+        L1 = ref > dbz_ref_limits[1]
+        vars_non_time = set(list(L1.dims)) - {time_dim}
+        miss_var = f'count_{reflectivity_var}_high'
+        radar_dataset[miss_var] = L1.sum(vars_non_time). \
+            assign_attrs(units='', extra='Count of values set missing as > thresh',
+                         threshold_dbz=dbz_ref_limits[1])  # fraction of values > thresh
+
+        if L1.sum() > 0:  # got some values above the max thresh
+            ref = ref.where(~L1, other=np.nan)  # above threshold nan
+            my_logger.debug(f'Set {L1.values.sum():,} values above {dbz_ref_limits[1]} to missing for {reflectivity_var}')
+    #ref = 10 ** (ref / 10.)  # convert from DBZ to Z
+    #ref.attrs['units'] = 'mm**6/m**3' # in case we want to make rain conversion optional.
+    ref = np.log10(to_rain[0])+ (ref/10 * to_rain[1])   # convert to log rain rate. /10 becase reflectivity in decibels. log_10 of the scaling.
+    ref = 10**ref # from log rain to rain rate. Hopefully slightly faster, and more accurate, than doing conversion to Z then doing power law conversion.
+    ref.attrs.update(units='mm/h', standard_name='rainfall_rate',
+                     long_name='Rainfall_rate computed from ' +  ref.attrs.get('long_name', ''))
+    my_logger.debug(f'Converted {reflectivity_var} to rain rate using {to_rain}')
+    if L0 is not None:
+        ref = ref.where(~L0, other=0.0).assign_attrs( zero_dbz=dbz_ref_limits[0])  # below threshold 0
+        my_logger.debug(f'Set {L0.values.sum():,} values below  {dbz_ref_limits[0]} to 0 ')
+
+    radar_dataset[reflectivity_var] = ref # put it back in. coarsen will now handle it
+    if coarsen is not None:  # coarsen the data
+        radar_dataset = ausLib.coarsen_ds(radar_dataset, coarsen, bounds_vars=bounds_vars,
+                                   coarsen_method=coarsen_method, check_finite=check_finite)
+    # fix names -- having converted reflectivity to  rain_rate
+    variables = [v for v in radar_dataset.data_vars if reflectivity_var in v]
+    for v in variables:
+        newname = str(v).replace(reflectivity_var, 'rain_rate')
+        da_name = str(radar_dataset[v].name).replace(reflectivity_var, 'rain_rate')
+        radar_dataset[newname] = radar_dataset[v].rename(da_name)
+        my_logger.debug(f'Renamed {v} to {newname} with name {da_name}')
+    radar_dataset = radar_dataset.drop_vars(variables).compute()
+
+
+    return radar_dataset
 
 ##
 def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
+                         to_rain:tuple[float,float],
                          coarsen: typing.Optional[typing.Dict[str, int]] = None,
                          coarsen_method: ausLib.type_cm = 'mean',
                          dbz_ref_limits: typing.Optional[typing.Tuple[float, float]] = None,
-                         #coarsen_cv_max: typing.Optional[float] = None,
                          region: typing.Optional[typing.Dict[str, slice]] = None,
-                         to_rain: ausLib.type_rain_conv = None,
-                         calibration: typing.Optional[pd.DataFrame] = None,
+                         calibration: typing.Optional[float] = None,
+                         quantize_levels:typing.Optional[np.ndarray] = None,
                          ) -> xarray.Dataset:
     """
 
-    :param zip_files:
-    :param coarsen:
-    :param coarsen_method:
-    :param dbz_ref_limits:
-    :param coarsen_cv_max:
-    :param region:
+    :param zip_files:list of zip files to process and convert reflectivity to rain
+    :param to_rain: tuple of powerlaw conversion. Conversion is rain_rate = to_rain[0]*Z**to_rain[1].
+        see process_radar_file for details of how this is applied to reflectivity in dBZ.
+    :param coarsen: coarsening dict.  for each coord provide number of samples to aggregate over.
+    :param coarsen_method: method to use when coarsening
+      See process_radar_file for details of how this is applied to reflectivity in dBZ.
+    :param dbz_ref_limits: If provided a tuple of lower  and upper limits.
+    See process_radar_file for details of how this is applied to reflectivity in dBZ.
+    :param region: region in m to extract from each zip file. See read_radar_zip_file for details of how this is applied
     :param to_rain:
     :param calibration:
     :return:
     """
+
     # read in first file to get helpful co-ord info. The more we read the slower we go.
-    drop_vars_first = ['error', 'reflectivity', 'doppler_velocity',
-                       'count_rain_rate_missing']  # variables not to read for meta info
-    drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj', 'doppler_velocity',
-                 'count_rain_rate_missing']  # variables not to read for data
+    drop_vars_first = ['error', 'reflectivity', 'doppler_velocity']  # variables not to read for meta info
+    drop_vars = ['error', 'x_bounds', 'y_bounds', 'proj', 'doppler_velocity']  # variables not to read for data
     fld_info = ausLib.read_zip(zip_files[0], drop_variables=drop_vars_first, coarsen=coarsen,
-                        first_file=True, parallel=True, region=region)
+                        first_file=True, parallel=True, region=region).rename(valid_time='ancil_time')
 
     ds = []
     for zip_file in zip_files:
-        dd = ausLib.read_zip(zip_file, coarsen=coarsen, coarsen_method=coarsen_method,
-                      dbz_ref_limits=dbz_ref_limits,
-                      region=region,
-                      drop_variables=drop_vars, concat_dim='valid_time',
-                      combine='nested',
-                      to_rain=to_rain,
-                      calibration=calibration)
+        dd = read_radar_zip_file(zip_file, region=region,
+                                 drop_variables=drop_vars, concat_dim='valid_time', combine='nested')
+        # This will load all the data.
+        if dd is None: # nothing back
+            continue
+        # process the data read in.
+        dd = process_radar_file(dd, to_rain, quantize_levels=quantize_levels,coarsen=coarsen,coarsen_method=coarsen_method,
+                                dbz_ref_limits=dbz_ref_limits, calibration=calibration,check_finite=True)
+
 
         ds.append(dd)
     my_logger.info(f'Read in {len(ds)} files {ausLib.memory_use()}')
@@ -362,17 +603,21 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
 
     my_logger.debug(f'Concatenated data   {ausLib.memory_use()}')
     # merge seems to generate huge memory footprint so just copy across the data from fld_info
+
     ds = ds.drop_vars('n2', errors='ignore')
-    fld_info = fld_info.drop_vars('n2', errors='ignore').rename(valid_time='time').sortby('time')
+    fld_info = fld_info.drop_vars('n2', errors='ignore')#.rename(valid_time='time').sortby('time')
     for v in fld_info.data_vars:
         if v not in ds.data_vars:
             ds[v] = fld_info[v]
             my_logger.debug(f'Added variable {v} to ds')
         else:
             my_logger.debug(f'Variable {v} already in ds')
-    ds = fix_spatial_units(ds).compute()
+
     # add in the long/lat coords
     ds = ausLib.add_long_lat_coords(ds)
+    for c in ['longitude', 'latitude']:
+        ds[c]= ds[c].expand_dims(dim='ancil_time', axis=0).assign_coords(ancil_time=ds.ancil_time.values)
+
     return ds
 
 def mask_anaprop(radar_ds:xarray.Dataset,anaprop:xarray.DataArray) -> xarray.Dataset:
@@ -400,6 +645,7 @@ if __name__ == "__main__":
     ## the next three args could be standard and processed by the std processing.
     parser.add_argument('site', help='Radar site to process',
                         default='Melbourne', choices=site_numbers.keys())
+    parser.add_argument('to_rain', type=float, nargs=2, help='Convert Reflectivity to rain using R=c[0]Z^c[1]')
     parser.add_argument('outdir', type=pathlib.Path,
                         help='output directory. Will be created if it does not exist. If not set will be cwd()/site ',
                         nargs='?')
@@ -428,15 +674,49 @@ if __name__ == "__main__":
                         help='Minimum fraction of data present when generating averages',
                         default=1.0)
     parser.add_argument('--threshold', type=float,
-                        help='Threshold for reflectivity. Used in threshold vars', default=0.5)
+                        help='Threshold for reflectivity. Used in threshold vars', default=0.5) # TODO remove
     parser.add_argument('--extract_coords_csv',
                         help="""CSV file with coordinates (Longitude & Latitude) to extract data for.
                         CSV file should be readable with ausLib.read_gsdr_csv.
                         Data will be put in outdir/site_coord/filename""")
     parser.add_argument('--subsample', type=pd.Timedelta,
                         help='Timedelta to sub-sample to -- should be parsed by pd.Timedelta')
-    parser.add_argument('--to_rain', type=float, nargs=2, help='Convert Reflectivity to rain using R=c[0]Z^c[1]')
+
     parser.add_argument('--max_sample_resolution', type=pd.Timedelta, help='Maximum sample resolution.')
+    parser.add_argument('--use_rainfields3', action='store_true',
+                        help='Use rainfields3 data rather than hist. Will need calibration values '
+                             'from meta-data')
+    parser.add_argument('--metadata_file', type=pathlib.Path,
+                        help='Path to a metadata file. Used when --quantize_levels is supplied with no levels.')
+    parser.add_argument('--quantize_levels', type=float, nargs='*', default=None, metavar='LEVEL',
+                        help='Levels to quantize to. If supplied with no LEVEL values, infer levels from --metadata_file.')
+    parser.add_argument('--anaprop',type=pathlib.Path,
+                        help='Netcdf file containing anaprop data. anaprop variable should be anaprop. Will also modify outdir to include _anaprop if outdir not defined')
+
+    ausLib.add_std_arguments(parser)
+    args = parser.parse_args()
+    metadata = None
+
+    if args.metadata_file is not None:
+        if not args.metadata_file.exists():
+            parser.error(f"Metadata file {args.metadata_file} does not exist")
+        if args.metadata_file.suffix != '.nc':
+            parser.error(f"Metadata file {args.metadata_file} is not a netcdf file")
+        metadata = xarray.open_dataset(args.metadata_file)
+
+    if args.quantize_levels == [] and metadata is  None:
+            parser.error("--quantize_levels with no LEVEL values requires --metadata_file")
+
+    elif args.quantize_levels is not None:
+        quantize_levels = sorted(set(args.quantize_levels))
+
+    else:
+        quantize_levels = args.quantize_levels # should be empty list if nothing supplied;
+        # None if --quantize_levels with no LEVEL values called.
+
+
+
+
     parser.add_argument('--use_rainfields3', action='store_true',
                         help='Use rainfields3 data rather than hist. Will need calibration values '
                              'from meta-data')
@@ -444,6 +724,7 @@ if __name__ == "__main__":
                         help='Levels to quantize too.')
     parser.add_argument('--anaprop',type=pathlib.Path,
                         help='Netcdf file containing anaprop data. anaprop variable should be anaprop. Will also modify outdir to include _anaprop if outdir not defined')
+
     ausLib.add_std_arguments(parser)
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # deal with the std arguments
@@ -455,12 +736,13 @@ if __name__ == "__main__":
     extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                        utc_time=pd.Timestamp.now('UTC').isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()],
-                       site=args.site, dbz_range=args.dbz_range, min_fract_avg=args.min_fract_avg)
-    if args.to_rain is not None:
-        extra_attrs.update(to_rain=args.to_rain)
+                       site=args.site, dbz_range=args.dbz_range, min_fract_avg=args.min_fract_avg,
+                       to_rain = args.to_rain)
+
     if args.coarsen is not None:
         extra_attrs.update(coarsen=args.coarsen, coarsen_method=args.coarsen_method)
 
+    to_rain = tuple(args.to_rain)
     site_number = f'{site_numbers[args.site]:d}'
     indir = args.indir/ site_number
     if args.use_rainfields3:
@@ -553,9 +835,16 @@ if __name__ == "__main__":
             if (not args.overwrite) and outpath.exists():
                 my_logger.warning(f'{outpath} exists  skipping processing. Use --overwrite')
                 continue
-            to_rain: ausLib.type_rain_conv = None
-            if args.to_rain is not None:
-                to_rain = tuple(args.to_rain)  # type checker moaning here.
+
+
+            if quantize_levels is not None: # handle quantization.
+                if quantize_levels is []:  # empty list means infer from metadata file.
+                    ql = metadata['rapic_DBZLVL'].sel(time=ds.time, method='nearest', tolerance=pd.Timedelta('1M'))
+                    use_quantize_levels = sorted(set(ql.values.tolist() + [-32.0]))
+                    my_logger.debug(
+                        f'Quantizing to levels {quantize_levels} inferred from metadata file {args.metadata_file}')
+                else: # fixed level so just use them
+                    use_quantize_levels = quantize_levels
 
             ds = read_multi_zip_files(zip_files,
                                       dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
@@ -571,10 +860,12 @@ if __name__ == "__main__":
                 ds = mask_anaprop(ds,anaprop=anaprop)
                 my_logger.info(f'Filtered out anaprop data for {year}-{month} {ausLib.memory_use()}')
 
+
+
+
             # compute summaries
-            basename = 'reflectivity'
-            if args.to_rain is not None:
-                basename = 'rain_rate'
+
+            basename = 'rain_rate'
             summary_data = summary_process(ds[basename], mean_resample=args.resample,
                                            threshold=args.threshold,
                                            base_name=basename,

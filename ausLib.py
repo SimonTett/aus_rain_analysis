@@ -581,7 +581,6 @@ def lc_none(
 def coarsen_ds(
         ds: xarray.Dataset,
         coarsen: typing.Dict[str, int],
-        speckle_vars: typing.Tuple[str] = (),
         check_finite: bool = False,
         coarsen_method: typing.Literal['mean', 'median'] = 'mean',
         bounds_vars: tuple[str,str] = ('y_bounds', 'x_bounds'),
@@ -593,7 +592,6 @@ def coarsen_ds(
     :param coarsen: dict controlling coarsening
     :param coarsen_method -- how to coarsen. Either mean or median.
     :param bounds_vars: Tuple of variables that are bounds. They are coarsened by taking the min and max.
-    :param speckle_vars: Tuple of variables that will have speckle computations done on them and included in the result.
     :return: coarsened dataset If speckle set will include variables with _speckle appended to the name.
     """
     if coarsen_method not in ['mean', 'median']:
@@ -608,7 +606,7 @@ def coarsen_ds(
         if (unit is not None) and (unit == 'dbz'):
             fail_vars += [var]
     if len(fail_vars) > 0:
-        raise ValueError(f'Vars {fail_vars} are still in dBZ. Converted to linear units before coarsening')
+        raise ValueError(f'Vars {fail_vars} are still in dBZ. Convert to linear units before coarsening')
 
     # handle bounds vars
     bounds = dict()
@@ -630,10 +628,6 @@ def coarsen_ds(
         result = coarse.median()
     else:
         raise ValueError(f"Unknown coarsen method {coarsen_method}")
-    for var in speckle_vars:
-        speckle = ds[var].coarsen(**coarsen).std()
-        speckle = speckle.rename(var + '_speckle')
-        result = result.merge(speckle)
     result = result.merge(xarray.Dataset(bounds))  # overwrite bounds.
     for v in vars_to_leave:
         result[v] = ds[v]
@@ -728,7 +722,7 @@ def read_zip(path: pathlib.Path | str,
                 my_logger.warning(f'Removed duplicates for {var} on {d} from {path}')
 
         result[var] = v
-        my_logger.debug(f'Sorted variable {var} dims')
+    my_logger.debug(f'Sorted variables {list(result.keys())} ')
     radar_dataset = xarray.Dataset(result)
 
     # do some specials for reflectivity
@@ -912,6 +906,7 @@ def read_radar_zipfile(
         region: typing.Optional[typing.Dict[str, slice]] = None,
         file_pattern: str = '*.nc',
         datatree:bool = False,
+        sort_coords:bool = True,
         **load_kwargs
 ) -> typing.Optional[typing.Union[xarray.Dataset,xarray.DataTree]]:
     """
@@ -923,6 +918,8 @@ def read_radar_zipfile(
       :param first_file: If True only read in the first file
       :param region -- region to extract data from
       :param file_pattern: pattern to match files default is *.nc
+      :param datatree -- If true read in data as a datatree.
+      :param sort_coords -- If true sort co-ords to be monotonically increasing.
     :param **load_kwargs: kwargs to be passed to xarray.open_mfdataset
     Returns: xarray dataset or None if nothing successfully read.
 
@@ -965,6 +962,22 @@ def read_radar_zipfile(
                 else:
                     ds = xarray.open_dataset(buf, engine='h5netcdf', **load_args)
                     ds = ds.drop_vars(drop_vars,errors='ignore')
+                    if sort_coords:
+                        # sort variables so all dimensions so are monotonically increasing.
+                        result = dict()
+                        for variab in list(ds.data_vars):
+                            v = ds[variab]
+                            for d in list(v.dims):
+                                nd = v[d].size
+                                v = v.sortby(d).drop_duplicates(d)  # sort and remove duplicates for this dim.
+                                if v[d].size != nd:
+                                    my_logger.warning(f'Removed duplicates for {variab} on {d} from {path}')
+
+                            result[variab] = v
+                            my_logger.debug(f'Sorted variable {variab} dims')
+                        ds = xarray.Dataset(result).assign_attrs(ds.attrs)
+
+
 
                 if region is not None:
                     ds = ds.sel(**region)
@@ -1174,7 +1187,7 @@ def add_long_lat_coords(data_set: xarray.Dataset) -> xarray.Dataset:
     result = data_set.copy()
     for v in vars_xy:
         result[v] = result[v].assign_coords(longitude=(['x', 'y'], coords[:, :, 0]),
-                                            latitude=(['x', 'y'], coords[:, :, 1])
+                                            latitude=(['x', 'y'], coords[:, :, 1]),
                                             )
 
     return result
