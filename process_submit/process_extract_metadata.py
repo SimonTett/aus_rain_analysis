@@ -122,7 +122,7 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
     if not (file.suffix == '.zip' and file.stem.endswith('_ppi')):
         raise ValueError(f"File {file} is not a ppi zip file")
     global drop_variables # variables dropped from the dataset.
-    vars_to_keep = ['azimuth', 'elevation', 'fixed_angle', 'corrected_reflectivity']
+    vars_to_keep = ['azimuth', 'elevation', 'fixed_angle']
     ds_first = ausLib.read_radar_zipfile(file, first_file=True,
                                          drop_variables=drop_variables,concat_dim='time')  # just extract metadata from the first file.
     ref = ds_first['corrected_reflectivity']
@@ -144,26 +144,33 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
     # convert coords to data vars
     coords = list(set(ds_first.dims) - {'time', 'sweep'})
     ds_first = ds_first.reset_index(coords).reset_coords(coords)
-    # store the unique azimuths and elevations and drop time. Then add a new time var from the min time.
+    # store the  azimuths and elevations and drop time. Then add a new time var from the min time.
     min_time = ds_first.time.min()
     variables = coords
     variables += vars_to_keep
-    # remove corrected_reflectivity from the list of variables to be kept.
-    variables.remove('corrected_reflectivity')
     data_vars = dict()
     for v in variables:
+        name = v
+        #  rename fixed_angle to elevation for consistency,
+        if v == 'fixed_angle':
+            name = 'elevation'
         try:
             values = np.unique(ds_first[v])
-            if len(values) > 1:
-                da = xarray.DataArray(values, coords={f'{v}_index': values})
+            if len(values) > 1: # store the min and max values, and count for each variable.
+                da_min = ds_first[v].min()
+                da_max = ds_first[v].max()
+                ds_count = xarray.DataArray(len(values))
+                ds_first.drop_vars([v])
+                data_vars[f'{name}_min'] = da_min
+                data_vars[f'{name}_max'] = da_max
+                data_vars[f'{name}_count'] = ds_count
             else:
                 da = xarray.DataArray(values[0])
-            data_vars[v] = da
+                data_vars[v] = da
         except KeyError:  # variable not in dataset.
             pass
-    #  rename fixed_angle to elevation for consistency,
-    if 'fixed_angle' in data_vars.keys():
-        data_vars['elevation'] = data_vars.pop('fixed_angle').rename({'fixed_angle_index': 'elevation_index'})
+
+
     variables += ['time']
     ds_first = ds_first.drop_vars(variables, errors='ignore').assign(data_vars)
     # convert attributes to data variables
@@ -177,7 +184,7 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
     ds_first['ppi_file'] = str(file)
     my_logger.debug(f'Read data from file {file}')
 
-    ds_first = ds_first.expand_dims(time=[min_time.values])
+    ds_first = ds_first.expand_dims(time=[min_time.values]) # add on time
     ds_first['time'] = ds_first.time.dt.round("D")
     return ds_first
 
@@ -185,7 +192,7 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
 if __name__ == "__main__":
     multiprocessing.freeze_support()  # needed for obscure reasons I don't get!
 
-    parser = argparse.ArgumentParser(description='Extract meta-data from PPI files')
+    parser = argparse.ArgumentParser(description='Extract meta-data from level 1 and, if they exist, ppi files')
     parser.add_argument('site', help='Radar site to process', choices=ausLib.site_numbers.keys())
     parser.add_argument('--years', nargs='+', type=int, help='List of years to process',
                         default=range(1990, 2030))
@@ -205,6 +212,7 @@ if __name__ == "__main__":
         my_logger.info(f"Arg:{name} =  {value}")
 
     site_number = f'{ausLib.site_numbers[args.site]:d}'
+    indir = ausLib
     indir = pathlib.Path(f'/g/data/rq0/level_1/odim_pvol/{site_number}')
     indir_ppi = pathlib.Path(f'/g/data/rq0/level_1b/{site_number}/ppi')
     my_logger.info(f'Input directory is {indir}')
@@ -234,9 +242,10 @@ if __name__ == "__main__":
             my_logger.info(f'No files found for  pattern {pattern} in {data_dir} {ausLib.memory_use()}')
             continue
         my_logger.info(f'Found {len(zip_files)} files for pattern {pattern} {ausLib.memory_use()} ')
-        # these are all daily files. But we want the first one from each month.
-        files = [list(g)[0] for k, g in itertools.groupby(zip_files, key=month_sort)]
-        # now to build a year's worth of files.(though only one per month)
+        # these are all daily files. But we want every 5th day from a month. So group by month and take every 5th.
+        files = [list(g)[0] for k, g in itertools.groupby(zip_files, key=month_sort)] # first day of the month
+        files = zip_files[::5]  # every 5th day
+        # now to build a year's worth of files.
         dataset = []
         for f in files:
             my_logger.debug(f'Processing {f}')
@@ -249,7 +258,7 @@ if __name__ == "__main__":
             else:
                 my_logger.warning(f'No ppi file {ppi_file} found for {f} ')
             dataset += [ds]
-        # now processed a year worth of files.2
+        # now processed a year worth of files.
         # concat them all together and write out
         dd = xarray.concat(dataset, 'time',data_vars='all')
         ausLib.write_out(dd, outfile, extra_attrs=extra_attrs)

@@ -1,4 +1,4 @@
-# Library for australian analysis.
+# Library for Australian analysis.
 
 
 import argparse
@@ -96,6 +96,9 @@ if hostname.startswith('gadi'):  # aus super-computer
     radar_dir = pathlib.Path("/g/data/rq0/level_2/")
     #data_dir = pathlib.Path("/scratch/wq02/st7295/radar/")
     hist_ref_dir = pathlib.Path("/g/data/rq0/hist_gndrefl/v2026/")
+    rainfields3_dir = pathlib.Path("/g/data/rq0/rainfields3")
+    level1_dir = pathlib.Path("/g/data/rq0/level_1/odim_pvol")
+    level1b_dir = pathlib.Path("/g/data/rq0/level_1b")
     agcd_rain_dir = pathlib.Path("/g/data/zv2/agcd/v2-0-2/precip/total/r001/01month/") # where the AGCD data lives
     era5_dir = pathlib.Path("/g/data/rt52/era5")
     platform_name = 'gadi'
@@ -106,8 +109,12 @@ elif hostname.startswith('ccrc'):  # CCRC desktop
 elif hostname.lower().startswith('geos'):  # School of geosciences managed laptop/desktop
     #data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
-    hist_ref_dir = data_dir / "raw_radar_data/hist_gndrefl" # partial local copy of ref data
-    radar_dir = data_dir / "raw_radar_data/level_2" # partial local copy of level 2 data.
+    raw_radar_dir = data_dir / "raw_radar_data"
+    hist_ref_dir = raw_radar_dir/"hist_gndrefl" # partial local copy of ref data
+    radar_dir = raw_radar_dir/"level_2" # partial local copy of level 2 data.
+    rainfields3_dir = raw_radar_dir/"rainfields3" # partial local copy of rainfields3 data.
+    level1_dir = raw_radar_dir/"level_1/odim_pvol" # partial local copy of level 1 data.
+    level1b_dir = raw_radar_dir/"level_1b" # partial local copy of level 1b data.
     era5_dir = data_dir/ f"ERA5_data" # local copy of ERA5_data.
     platform_name = 'geos'
     my_logger.warning("agcd_rain_dir not defined. ")
@@ -974,7 +981,7 @@ def read_radar_zipfile(
                                     my_logger.warning(f'Removed duplicates for {variab} on {d} from {path}')
 
                             result[variab] = v
-                            my_logger.debug(f'Sorted variable {variab} dims')
+
                         ds = xarray.Dataset(result).assign_attrs(ds.attrs)
 
 
@@ -1818,113 +1825,113 @@ def sample_events2(
 
     return ds
 
-
-def comp_radar_fit(
-        dataset: xarray.Dataset,
-        cov: typing.Optional[list[str] | str] = None,
-        n_samples: int = 100,
-        bootstrap_samples: int = 0,
-        rng_seed: int = 123456,
-        file: typing.Optional[pathlib.Path] = None,
-        bootstrap_file: typing.Optional[pathlib.Path] = None,
-        recreate_fit: bool = False,
-        name: typing.Optional[str] = None,
-        extra_attrs: typing.Optional[dict] = None,
-        use_dask: bool = False
-) -> tuple[xarray.Dataset, typing.Optional[xarray.Dataset]]:
-    """
-    Compute the GEV fits for radar data. This is a wrapper around the R code to do the fits.
-    Args:
-
-        dataset: dataset
-        cov: List of covariate names. Extracted from dataset.
-        n_samples: number of samples for random selection
-        bootstrap_samples:  Number of samples for bootstrap calculation. If 0 no bootstrap is done.
-        rng_seed: seed for random number generator
-        file: file for output
-        bootstrap_file: file for bootstrap output
-        recreate_fit: if True recreate the fit
-        name:  name of dataset. _bs will be appended for bootstrap fit
-        extra_attrs: any extra attributes to be added
-        use_dask: If True use dask for the computation.
-
-    Returns:fit
-
-    """
-    # doing this at run time as R is not always available.
-
-    from R_python import gev_r
-    if isinstance(cov, str):
-        cov = [cov]  # convert it to a list.
-    if (file is not None) and file.exists() and (
-            not recreate_fit):  # got a file specified, it exists and we are not recreating fit
-        fit = xarray.load_dataset(file)  # just load the dataset
-        if (bootstrap_file is not None) and bootstrap_file.exists() and (
-                not recreate_fit):  # got a file specified, it exists and we are not recreating fit
-            bs_fit = xarray.load_dataset(bootstrap_file).mean('sample')  # just load the dataset
-            return fit, bs_fit  # can now return the fit and bootstrap fit
-
-    # normal stuff
-    rng = random.default_rng(rng_seed)
-    rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
-    coord = dict(sample=np.arange(0, n_samples))
-    ds = dataset.drop_vars('Observed_temperature', errors='ignore').isel(quantv=rand_index). \
-        rename(dict(quantv='sample')).assign_coords(**coord)
-    if use_dask:
-        my_logger.debug(f'Chunking data for best est  {memory_use()}')
-        samp_chunk = max(n_samples // 10, 1)
-        ds = ds.chunk(sample=samp_chunk, resample_prd=1, EventTime=-1)  # parallelize over sample
-        print(ds.chunksizes)
-        #ds = ds.compute()
-        my_logger.debug(f'Rechunked data for best est  {memory_use()}')
-    cov_rand = None
-    if cov is not None:
-        cov_rand = [ds[c] for c in cov]
-
-    wt = ds.count_cells
-    mx = ds.max_value
-    my_logger.debug('Doing GEV fit')
-    fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=True,
-                           recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs,
-                           use_dask=use_dask
-                           )
-    my_logger.debug('Done GEV fit')
-
-    if bootstrap_samples > 0:
-        my_logger.info(f"Calculating bootstrap for {name} {memory_use()}")
-        # loop over bootstrap samples and then concat together at the end.
-        # generating all the samples produces a very large mem object and requires data
-        # to be moved around. So don't bother...
-
-        ds_bs = ds.groupby('resample_prd').map(sample_events2,
-                                               rng=rng, nsamples=bootstrap_samples,
-                                               dim='EventTime'
-                                               ).drop_vars('EventTime')
-        if use_dask:
-            # chunking. Assuming running on small number of cores.  Say 10.
-            # so we want min number of chucks to give abotu 10.
-            bs_samp = max(bootstrap_samples // 10, 1)
-            samp_chunk = max(n_samples // 10, 1)
-            ds_bs = ds_bs.unify_chunks().chunk(
-                sample=samp_chunk, bootstrap_sample=-1,
-                resample_prd=1, index=-1
-            )  # parallelize and needs tuning
-            my_logger.debug(f'Rechunked data for bs calcs {memory_use()}')
-
-        cov_rand = None
-        if cov is not None:
-            cov_rand = [ds_bs[c] for c in cov]
-        my_logger.debug('Doing BS GEV fit')
-        bs_fit = gev_r.xarray_gev(ds_bs.max_value, cov=cov_rand, dim='index', weights=ds_bs.count_cells, verbose=True,
-                                  recreate_fit=recreate_fit, file=bootstrap_file, name=name + '_bs',
-                                  extra_attrs=extra_attrs, use_dask=use_dask
-                                  ).mean('sample')
-        my_logger.debug(f"Computed Bootstrap fits {memory_use()}")
-
-    else:
-        bs_fit = None
-
-    return fit, bs_fit
+# no longer used.
+# def comp_radar_fit(
+#         dataset: xarray.Dataset,
+#         cov: typing.Optional[list[str] | str] = None,
+#         n_samples: int = 100,
+#         bootstrap_samples: int = 0,
+#         rng_seed: int = 123456,
+#         file: typing.Optional[pathlib.Path] = None,
+#         bootstrap_file: typing.Optional[pathlib.Path] = None,
+#         recreate_fit: bool = False,
+#         name: typing.Optional[str] = None,
+#         extra_attrs: typing.Optional[dict] = None,
+#         use_dask: bool = False
+# ) -> tuple[xarray.Dataset, typing.Optional[xarray.Dataset]]:
+#     """
+#     Compute the GEV fits for radar data. This is a wrapper around the R code to do the fits.
+#     Args:
+#
+#         dataset: dataset
+#         cov: List of covariate names. Extracted from dataset.
+#         n_samples: number of samples for random selection
+#         bootstrap_samples:  Number of samples for bootstrap calculation. If 0 no bootstrap is done.
+#         rng_seed: seed for random number generator
+#         file: file for output
+#         bootstrap_file: file for bootstrap output
+#         recreate_fit: if True recreate the fit
+#         name:  name of dataset. _bs will be appended for bootstrap fit
+#         extra_attrs: any extra attributes to be added
+#         use_dask: If True use dask for the computation.
+#
+#     Returns:fit
+#
+#     """
+#     # doing this at run time as R is not always available.
+#
+#     from R_python import gev_r
+#     if isinstance(cov, str):
+#         cov = [cov]  # convert it to a list.
+#     if (file is not None) and file.exists() and (
+#             not recreate_fit):  # got a file specified, it exists and we are not recreating fit
+#         fit = xarray.load_dataset(file)  # just load the dataset
+#         if (bootstrap_file is not None) and bootstrap_file.exists() and (
+#                 not recreate_fit):  # got a file specified, it exists and we are not recreating fit
+#             bs_fit = xarray.load_dataset(bootstrap_file).mean('sample')  # just load the dataset
+#             return fit, bs_fit  # can now return the fit and bootstrap fit
+#
+#     # normal stuff
+#     rng = random.default_rng(rng_seed)
+#     rand_index = rng.integers(1, len(dataset.quantv) - 2, size=n_samples)  # don't want the min or max quantiles
+#     coord = dict(sample=np.arange(0, n_samples))
+#     ds = dataset.drop_vars('Observed_temperature', errors='ignore').isel(quantv=rand_index). \
+#         rename(dict(quantv='sample')).assign_coords(**coord)
+#     if use_dask:
+#         my_logger.debug(f'Chunking data for best est  {memory_use()}')
+#         samp_chunk = max(n_samples // 10, 1)
+#         ds = ds.chunk(sample=samp_chunk, resample_prd=1, EventTime=-1)  # parallelize over sample
+#         print(ds.chunksizes)
+#         #ds = ds.compute()
+#         my_logger.debug(f'Rechunked data for best est  {memory_use()}')
+#     cov_rand = None
+#     if cov is not None:
+#         cov_rand = [ds[c] for c in cov]
+#
+#     wt = ds.count_cells
+#     mx = ds.max_value
+#     my_logger.debug('Doing GEV fit')
+#     fit = gev_r.xarray_gev(mx, cov=cov_rand, dim='EventTime', weights=wt, verbose=True,
+#                            recreate_fit=recreate_fit, file=file, name=name, extra_attrs=extra_attrs,
+#                            use_dask=use_dask
+#                            )
+#     my_logger.debug('Done GEV fit')
+#
+#     if bootstrap_samples > 0:
+#         my_logger.info(f"Calculating bootstrap for {name} {memory_use()}")
+#         # loop over bootstrap samples and then concat together at the end.
+#         # generating all the samples produces a very large mem object and requires data
+#         # to be moved around. So don't bother...
+#
+#         ds_bs = ds.groupby('resample_prd').map(sample_events2,
+#                                                rng=rng, nsamples=bootstrap_samples,
+#                                                dim='EventTime'
+#                                                ).drop_vars('EventTime')
+#         if use_dask:
+#             # chunking. Assuming running on small number of cores.  Say 10.
+#             # so we want min number of chucks to give abotu 10.
+#             bs_samp = max(bootstrap_samples // 10, 1)
+#             samp_chunk = max(n_samples // 10, 1)
+#             ds_bs = ds_bs.unify_chunks().chunk(
+#                 sample=samp_chunk, bootstrap_sample=-1,
+#                 resample_prd=1, index=-1
+#             )  # parallelize and needs tuning
+#             my_logger.debug(f'Rechunked data for bs calcs {memory_use()}')
+#
+#         cov_rand = None
+#         if cov is not None:
+#             cov_rand = [ds_bs[c] for c in cov]
+#         my_logger.debug('Doing BS GEV fit')
+#         bs_fit = gev_r.xarray_gev(ds_bs.max_value, cov=cov_rand, dim='index', weights=ds_bs.count_cells, verbose=True,
+#                                   recreate_fit=recreate_fit, file=bootstrap_file, name=name + '_bs',
+#                                   extra_attrs=extra_attrs, use_dask=use_dask
+#                                   ).mean('sample')
+#         my_logger.debug(f"Computed Bootstrap fits {memory_use()}")
+#
+#     else:
+#         bs_fit = None
+#
+#     return fit, bs_fit
 
 
 def write_out(
@@ -1958,8 +1965,8 @@ def write_out(
     outpath.parent.mkdir(exist_ok=True, parents=True)
     data.to_netcdf(outpath, unlimited_dims=time_dim)
     if not outpath.exists():
-        my_logger.error(f'Failed to write data {outpath}')
-    my_logger.info(f'Wrote data to {outpath}')
+        raise ValueError(f'Failed to write data {outpath}')
+    my_logger.debug(f'Wrote data to {outpath}')
 
 import matplotlib
 def std_fig_axs(fig_num,
