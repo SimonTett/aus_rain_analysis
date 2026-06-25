@@ -1,32 +1,44 @@
 # requirements for python environment
+# install with pip install -r requirements.txt
 # update with pip update -r requirements.txt
-numpy~=1.26.4
-xarray~=2026.04
-dask[distributed]~=2026.1.2
-scipy~=1.17
-pandas~=2.2.3
+# requirements for python environment
+
+
+# Core constraint from super-computer environment:
+numpy==1.26.4  # keep strictly on 1.26.4
+netCDF4==1.7.4
+cftime>=1.6.4
+# Numerical / analysis stack compatible with numpy 1.26
+scipy==1.17.1
+pandas==2.2.3
+xarray==2026.4.0
+dask[distributed]==2026.6.0
+
+
 ipython
 cartopy~=0.25
-cftime~=1.6.5
-#numba~=0.65.1
 xarray-regrid[accel]~=0.4.2
-bokeh~=3.8 # so we can monitor the dask cluster
+bokeh~=3.8  # so we can monitor the dask cluster
 requests~=2.33.0
 timezonefinder~=8.0
-matplotlib~=3.8.2
+matplotlib==3.8.4
 pytz~=2024.1
-wradlib~=2.0
-xradar~=0.12
+wradlib==2.9.1
+xradar==0.12.0
 earthaccess~=0.9.0
 rasterio~=1.4.4
 flox
 rioxarray~=0.17
 seaborn~=0.13
-python-dotenv # for environment variables
-lmoments3~=1.0.8 # for python fitting
+python-dotenv  # for environment variables
+lmoments3~=1.0.8  # for python fitting
 openpyxl
 psutil
 zarr~=2.18
+numcodecs<0.16  # needed for zarr v2
+
+# If you *don’t* install gdal via conda, uncomment the next line:
+# gdal
 
 
 

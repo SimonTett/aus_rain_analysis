@@ -25,6 +25,7 @@ import unittest
 
 import numpy as np
 import numpy.testing as npt
+import pandas as pd
 import xarray
 import xarray.testing
 
@@ -176,6 +177,7 @@ class TestProcessReflectivity(unittest.TestCase):
 
 
         cls.sample_zip =ausLib.hist_ref_dir/"46/2021/46_20210101.gndrefl.zip"
+        cls.sample_rainfield3 = ausLib.rainfields3_dir/"46/2024/46_20240101.gndrefl.zip"
 
         cls.sample_levels = np.array([0.0, 1.0, 2.0], dtype=float)
         cls.example_da = xarray.DataArray(
@@ -266,27 +268,95 @@ class TestProcessReflectivity(unittest.TestCase):
         # Process a cached raw dataset so repeated test runs avoid ZIP IO.
         with use_cached_radar_reader():
             raw = process_reflectivity.read_radar_zip_file(self.sample_zip,concat_dim='valid_time')
+
+        ds = process_reflectivity.process_radar_file(raw, (0.0272, 0.653), dbz_ref_limits=(0, 55.), check_finite=True)
+        # expect to have more nans than raw as get nans from values > upper dbz_ref_limits
+        expected_count_nan = int(raw.reflectivity.isnull().sum() + (raw.reflectivity > 55.0).sum())
+        expected_count_zero = int((raw.reflectivity < 0.0).sum())
+        count_nan = int(ds.rain_rate.isnull().sum())
+        count_zero = int((ds.rain_rate<=0.0).sum())
+        self.assertEqual(expected_count_nan, count_nan)
+        self.assertEqual(expected_count_zero, count_zero)
+
+        # check that the rain rate is in the expected range.
+        # max rain should be 0.0272*(10**5.5)**0.653
+        max_rain = 0.0272 * ((10 ** 5.5) ** 0.653)  # this is about 100 mm/hr
+        min_rain = 0.0272 # min rain possible is 0.0272*1/16 boxes
+        max_value = ds.rain_rate.max()
+        self.assertTrue(max_value <= max_rain)
+        self.assertTrue(ds.rain_rate.min() == 0)
+        # min_value > 0 should be >= 0.0272 b as lower limit is 0 dBZ.
+        min_value = ds.rain_rate.where(ds.rain_rate > 0).min()
+        self.assertTrue(min_value >= min_rain)
+        print(
+            f"min_value: {min_value:.3f} min_rain {min_rain:.3f} max_value: {max_value:.1f} max_rain {max_rain:.1f} mm/hr")
+
         ds = process_reflectivity.process_radar_file(raw, (0.0272, 0.653), dbz_ref_limits=(0, 55.), check_finite=True, coarsen=dict(x=4, y=4))
         # Expect to have 150 x 150 points after coarsening from 500m to 2km over 150x150km box
         self.assertEqual(ds.x.size, 150)
         self.assertEqual(ds.y.size, 150)
-        # max rain should be 0.0272*(10**5.5)**0.653
-        max_rain =  0.0272*((10**5.5)**0.653) # this is about 100 mm/hr
-        min_rain = 0.0272/16 # min rain possible is 0.0272*1/16 boxes
-        max_value = ds.rain_rate.max()
-        self.assertTrue(max_value<=max_rain)
-        self.assertTrue(ds.rain_rate.min()==0)
-        # min_value > 0 should be > 0.0272*1
+        min_rain = 0.0272 / 16  # min rain possible is 0.0272*1/16 boxes
         min_value = ds.rain_rate.where(ds.rain_rate > 0).min()
-        self.assertTrue(min_value>=min_rain)
-        print(f"min_value: {min_value:.3f} min_rain {min_rain:.3f} max_value: {max_value:.1f} max_rain {max_rain:.1f} mm/hr")
-        # check quantize  works. WIll put in a silly one so everything gets set to 0 or 10.
-        qlevels = np.array([0,10])
+        self.assertTrue(min_value >= min_rain)
+
+        # check quantize  works. WIll put in a silly one so everything gets set to 0  10 or 40.
+        qlevels = np.array([0,10,40])
         ds2 = process_reflectivity.process_radar_file(raw, (0.0272, 0.653), check_finite=True, quantize_levels=qlevels)
         # convert levels to rain rate.
+        qlevels = np.unique(np.append(qlevels, -32))
         qq=qlevels-float(raw.attrs['calibration_estimate']) # quantisation happens in uncorrected data. Calibration_est removed from data
+        qq = np.clip(qq,-32.,None)
         qrain = np.append((10**(np.log10(0.0272)+(qq/10)*0.653)),np.nan)
         npt.assert_array_equal(np.unique(ds2.rain_rate), qrain)
+        # now deal with quantization from metadata. More tricky. Get 2020's Adelaide calibration.
+        files = (ausLib.data_dir / 'site_data/Adelaide_metadata').glob('Adelaide_202*_metadata.nc')
+        files = sorted(files)
+        metadata = xarray.open_mfdataset(files,combine='nested',concat_dim='time',coords='minimal')
+        qlevels = metadata['rapic_DBZLVL'].load()
+        ds3 = process_reflectivity.process_radar_file(raw, (0.0272, 0.653), check_finite=True, quantize_levels=qlevels)
+        # work out expected values.
+        qlev_base = qlevels.sel(time=raw.valid_time.values[0], method='nearest',tolerance=pd.Timedelta('16D'))
+        qlev = qlev_base[qlev_base.notnull()]
+        qlev = np.append(qlev - float(raw.attrs['calibration_estimate']),-32.0)
+        qrain = 10**(np.log10(0.0272)+(qlev/10)*0.653)
+        unique_rain = np.unique(ds3.rain_rate)
+        unique_rain = unique_rain[np.isfinite(unique_rain)] # remove nans
+        in_expected = np.isin(unique_rain,qrain)
+        for v in unique_rain[~in_expected]:
+            print(f"unexpected rain value {v} ")
+            idx_close = np.abs(v-qrain).argmin()
+            print(f"closest match is {float(qrain[idx_close])} at index {int(idx_close)} abs diff: {float(np.abs(v-qrain[idx_close]))}")
+
+        self.assertTrue(np.all(in_expected))
+
+        # test with calibration value. Should fail.
+        with self.assertRaises(ValueError):
+            ds = process_reflectivity.process_radar_file(raw, (0.0272, 0.653), dbz_ref_limits=(15, 55.), check_finite=True,
+                                                         coarsen=dict(x=4, y=4),calibration=2.0)
+        # read in a rainfields3 file and test correction works.
+        with use_cached_radar_reader():
+            raw_rf3 = process_reflectivity.read_radar_zip_file(self.sample_rainfield3,concat_dim='valid_time')
+        calib = float(metadata.calibration_offset.sel(time=raw_rf3.valid_time.values[0], method='nearest',tolerance=pd.Timedelta('16D')))
+        ds = process_reflectivity.process_radar_file(raw_rf3, (0.0272, 0.653), dbz_ref_limits=(15., 55.),
+                                                     calibration=calib,check_finite=True, coarsen=dict(x=4, y=4))
+        # Check  No calibration differs by a factor of 10**(calib*0.653) for all values. Zeros will stay zero.
+        # need to adjust the dBZ limits for the tests to take account of the calibration so we have an easy comparison.
+        ds_check = process_reflectivity.process_radar_file(raw_rf3, (0.0272, 0.653), dbz_ref_limits=(15+calib, 55.+calib),
+                                                     check_finite=True, coarsen=dict(x=4, y=4))
+        scale = 10.**(-calib*0.653/10.0)
+        xarray.testing.assert_allclose(ds.rain_rate,ds_check.rain_rate*scale)
+        # check get same results with metadata.
+
+        ds2 = process_reflectivity.process_radar_file(raw_rf3, (0.0272, 0.653), dbz_ref_limits=(15., 55.),
+                                                     calibration=metadata.calibration_offset,check_finite=True, coarsen=dict(x=4, y=4))
+        xarray.testing.assert_allclose(ds.rain_rate,ds2.rain_rate)
+
+
+
+
+
+
+
 
 
 
@@ -322,6 +392,13 @@ class TestProcessReflectivity(unittest.TestCase):
 
 
     def test_summary_process(self):
+        import warnings
+
+        warnings.filterwarnings("error", category=RuntimeWarning,
+                                module=r"^xarray(\.|$)",
+                                   #module=r"^wradlib(\.|$)",
+                                )
+
         # read in several files to check that the summary process works
         zip_files = sorted(self.sample_zip.parent.glob("*202101*.zip")) # a whole month of data.
         # get example dataset -- just for first time.
