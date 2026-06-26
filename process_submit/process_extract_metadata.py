@@ -247,11 +247,11 @@ if __name__ == "__main__":
         files = zip_files[::5]  # every 5th day
         # now to build a year's worth of files.
         dataset = []
-        for f in files:
+        for f in zip_files: # all days.
             my_logger.debug(f'Processing {f}')
             ds = read_level1_meta(f)  # read the level 1 file to get the rapic and other useful attributes
             # work out the ppi file.
-            ppi_file =indir_ppi/f.name.replace('.pvol.zip','_ppi.zip')
+            ppi_file =indir_ppi/f'{year:04d}'/f.name.replace('.pvol.zip','_ppi.zip')
             if ppi_file.exists():  # merge in the ppi file if it exists.
                 ds2 = read_ppi_meta(ppi_file)
                 ds = xarray.merge([ds,ds2]) # merge the datasets.
@@ -260,5 +260,6 @@ if __name__ == "__main__":
             dataset += [ds]
         # now processed a year worth of files.
         # concat them all together and write out
-        dd = xarray.concat(dataset, 'time',data_vars='all')
+        # sometimes haveno data present or it is missing.
+        dd = xarray.concat(dataset, 'time',data_vars='all',coords='minimal')
         ausLib.write_out(dd, outfile, extra_attrs=extra_attrs)
