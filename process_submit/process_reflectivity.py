@@ -438,8 +438,8 @@ def process_radar_file(radar_dataset:xarray.Dataset,
                        to_rain:tuple[float,float],
                        reflectivity_var:str = 'reflectivity',
                        time_dim:str = 'valid_time',
-                       calibration: typing.Optional[float] = None,
-                       quantize_levels:typing.Optional[np.ndarray] = None,
+                       calibration: typing.Union[float,xarray.DataArray] = None,
+                       quantize_levels:typing.Union[np.ndarray,xarray.DataArray,None] = None,
                        dbz_ref_limits: typing.Optional[tuple[float, float]] = None,
                        coarsen: typing.Optional[dict[str, int]] = None,
                        coarsen_method: ausLib.type_cm = 'mean',
@@ -453,7 +453,7 @@ def process_radar_file(radar_dataset:xarray.Dataset,
         to_rain: convert reflectivity to rain using these co-efficients.
         reflectivity_var: Name of reflectivity variability
         time_dim:: Name of time dimension
-        calibration:  Apply calibration correction. Value is subtracted from reflectivity.
+        calibration:  Apply calibration correction. Value is **subtracted** from reflectivity. If a dataArray is provided, then values close to time are used.
           Values below -32 dbz are set to -32dbz. If radar_dataset has a calibration_estimate attribute, using calibration will generate an error.
         dbz_ref_limits: limits for dbz. Values below bottom are set 0 when converting to rain. Values above top are set to nan.
         coarsen:  dict of coarsening dims
@@ -484,35 +484,48 @@ def process_radar_file(radar_dataset:xarray.Dataset,
         my_logger.warning(f"Reflectivity var {reflectivity_var} has units {units} and std_name {std_name}")
         raise ValueError(f"Units should be dbz and std_name equivalent_reflectivity_factor not {units} and {std_name}")
 
+    # add calibration info (if present) to reflectivity. calibration needed if quantizing data.
+    calibration_estimate = radar_dataset.attrs.get('calibration_estimate')
+    if calibration_estimate is not None:
+        calibration_estimate = float(calibration_estimate)
+    ref.attrs['calibration']=calibration_estimate # store calibration.
+
+
     if quantize_levels is not None: # quantize levels?
-        # will need to undo calibration and put it back in after quantization.
-        # Note this will not get back the original data as some clipping may have been done to the reflectivity data.
-        applied_calibration = radar_dataset.attrs.get('calibration_estimate', None)
-        if applied_calibration is not None:
-            applied_calibration= float(applied_calibration)
-            ref = ref + applied_calibration # undo calibration so we quantize the original values.
-            my_logger.debug(f'Undid calibration of {applied_calibration} for quantization')
+        # Note this will not get back the original data as some clipping may have been done to the reflectivity data. And data is interpolated.
+        if isinstance(quantize_levels, xarray.DataArray):  # if a dataArray and so time varying, then extract the levels from it.
+            quantize_levels = quantize_levels.sel(time=ref[time_dim].values[0], method='nearest',
+                                                  tolerance=pd.Timedelta('16D'))
+            quantize_levels = quantize_levels[quantize_levels.notnull()].values
+
+
+        # modify levels by correction and then apply clip to -32.
+        quantize_levels = np.append(quantize_levels, -32.)
+        if calibration_estimate is not None: # modify levels by correction and then clip at lower end to -32 dBZ
+            quantize_levels = quantize_levels - calibration_estimate
+        quantize_levels = np.clip(quantize_levels, -32., None)
+        quantize_levels = np.unique(quantize_levels)
+
         ref = xarray_quantize(ref, quantize_levels)
-        if applied_calibration is not None:
-            ref = ref - applied_calibration # reapply calibration after quantization.
-            ref.attrs['applied_calibration'] = applied_calibration
-        my_logger.debug(f'Quantized {reflectivity_var} to levels {quantize_levels}')
+
+        my_logger.debug(f'Quantized {reflectivity_var} to levels {quantize_levels} using calibration  {calibration_estimate}')
 
     if calibration is not None:  # apply calibration adjustment if provided.
-        if radar_dataset.get('calibration_estimate', None) is not None:
-            raise ValueError(f'Cannot apply calibration correction when calibration_estimate is already set in dataset. '
+        if calibration_estimate is not None:
+            raise ValueError(f'Cannot apply calibration correction when calibration_estimate {calibration_estimate} is already set in dataset. '
                              f'Remove calibration_estimate from dataset or set calibration to None')
-        ref = ref - calibration
-        ref.attrs['applied_calibration'] = calibration
+        if isinstance(calibration, xarray.DataArray):  # if a dataArray and so time varying, then extract the levels from it.
+            calibration = float(calibration.sel(time=ref[time_dim].values[0], method='nearest',
+                                                  tolerance=pd.Timedelta('16D')))
+        ref = (ref - calibration).clip(-32., None)  # apply calibration and clip, at the lower end, to -32
         my_logger.debug(f'Applied calibration correction of {calibration} to {reflectivity_var}')
-        ref = (ref - calibration).clip(-32.,None) # apply calibration correct and clip, at the lower end, to -32
         ref  = ref.assign_attrs(calibration=calibration)
-        raise NotImplementedError('Calibration not yet tested')
+        #raise NotImplementedError('Calibration not yet tested')
         my_logger.debug(f'Applied calibration correction of {calibration} to {reflectivity_var} and clipped at -32 dbz')
 
 
 
-    # Work out places below and above thresholds and set values above upper threshold to nan.
+    # Work out places below and above thresholds and set values above the upper threshold to nan.
     L0 = None
     if (dbz_ref_limits is not None) :
         L0 = ref < dbz_ref_limits[0]
@@ -528,7 +541,7 @@ def process_radar_file(radar_dataset:xarray.Dataset,
             my_logger.debug(f'Set {L1.values.sum():,} values above {dbz_ref_limits[1]} to missing for {reflectivity_var}')
     #ref = 10 ** (ref / 10.)  # convert from DBZ to Z
     #ref.attrs['units'] = 'mm**6/m**3' # in case we want to make rain conversion optional.
-    ref = np.log10(to_rain[0])+ (ref/10 * to_rain[1])   # convert to log rain rate. /10 becase reflectivity in decibels. log_10 of the scaling.
+    ref = np.log10(to_rain[0])+ (ref/10 * to_rain[1])   # convert to log rain rate. /10 because reflectivity in decibels. log_10 of the scaling.
     ref = 10**ref # from log rain to rain rate. Hopefully slightly faster, and more accurate, than doing conversion to Z then doing power law conversion.
     ref.attrs.update(units='mm/h', standard_name='rainfall_rate',
                      long_name='Rainfall_rate computed from ' +  ref.attrs.get('long_name', ''))
@@ -547,7 +560,7 @@ def process_radar_file(radar_dataset:xarray.Dataset,
         newname = str(v).replace(reflectivity_var, 'rain_rate')
         da_name = str(radar_dataset[v].name).replace(reflectivity_var, 'rain_rate')
         radar_dataset[newname] = radar_dataset[v].rename(da_name)
-        my_logger.debug(f'Renamed {v} to {newname} with name {da_name}')
+        my_logger.debug(f'Renamed {v} to {newname}')
     radar_dataset = radar_dataset.drop_vars(variables).compute()
 
 
@@ -560,8 +573,8 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                          coarsen_method: ausLib.type_cm = 'mean',
                          dbz_ref_limits: typing.Optional[typing.Tuple[float, float]] = None,
                          region: typing.Optional[typing.Dict[str, slice]] = None,
-                         calibration: typing.Optional[float] = None,
-                         quantize_levels:typing.Optional[np.ndarray] = None,
+                         calibration: typing.Union[float,xarray.DataArray,None] = None,
+                         quantize_levels:typing.Union[np.ndarray,xarray.DataArray,None] = None,
                          ) -> xarray.Dataset:
     """
 
@@ -586,6 +599,8 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
                         first_file=True, parallel=True, region=region).rename(valid_time='ancil_time')
 
     ds = []
+
+
     for zip_file in zip_files:
         dd = read_radar_zip_file(zip_file, region=region,
                                  drop_variables=drop_vars, concat_dim='valid_time', combine='nested')
@@ -598,6 +613,7 @@ def read_multi_zip_files(zip_files: typing.List[pathlib.Path],
 
 
         ds.append(dd)
+        my_logger.info(f"Read in {zip_file} {len(dd.valid_time)} files {ausLib.memory_use()}")
     my_logger.info(f'Read in {len(ds)} files {ausLib.memory_use()}')
     ds = xarray.concat(ds, dim='valid_time').rename(valid_time='time').sortby('time')
 
@@ -649,10 +665,7 @@ if __name__ == "__main__":
     parser.add_argument('outdir', type=pathlib.Path,
                         help='output directory. Will be created if it does not exist. If not set will be cwd()/site ',
                         nargs='?')
-    parser.add_argument('--indir', type=pathlib.Path, help='input directory',
-                        default = ausLib.hist_ref_dir)
-
-
+    parser.add_argument('--indir', type=pathlib.Path, help='input directory. If not provided will point to appropriate directory'),
     parser.add_argument('--years', nargs='+', type=int, help='List of years to process',
                         default=range(2020, 2023))
     parser.add_argument('--months', nargs='+', type=int, help='list of months to process', default=range(1, 13))
@@ -666,7 +679,7 @@ if __name__ == "__main__":
                         choices=['mean', 'median'])
     parser.add_argument('--dbz_range', nargs=2, type=float, default=[15., 55.],
                         help='range for dbz ref. '
-                             'Values below are set to 0 when converting DBZ to linear units; above to missing')
+                             'Values below are set to 0 when converting DBZ to rainfall; above to missing')
     parser.add_argument('--write_full', action='store_true',
                         help='Write out full datasets after coarsening. Will be written out to site_full/filename')
     parser.add_argument('--region', nargs=4, type=float, help='Region to extract data for as x0 x1 y0 y1')
@@ -683,11 +696,10 @@ if __name__ == "__main__":
                         help='Timedelta to sub-sample to -- should be parsed by pd.Timedelta')
 
     parser.add_argument('--max_sample_resolution', type=pd.Timedelta, help='Maximum sample resolution.')
-    parser.add_argument('--use_rainfields3', action='store_true',
-                        help='Use rainfields3 data rather than hist. Will need calibration values '
-                             'from meta-data')
+    parser.add_argument('--rainfields3', action='store_true',
+                        help='Use rainfields3 data rather than hist. Will need calibration values from meta-data and has different direct pattern')
     parser.add_argument('--metadata_file', type=pathlib.Path,
-                        help='Path to a metadata file. Used when --quantize_levels is supplied with no levels.')
+                        help='Path to a metadata file. Used when --quantize_levels is supplied with no levels and also provides calibration values.')
     parser.add_argument('--quantize_levels', type=float, nargs='*', default=None, metavar='LEVEL',
                         help='Levels to quantize to. If supplied with no LEVEL values, infer levels from --metadata_file.')
     parser.add_argument('--anaprop',type=pathlib.Path,
@@ -695,41 +707,46 @@ if __name__ == "__main__":
 
     ausLib.add_std_arguments(parser)
     args = parser.parse_args()
+    my_logger = ausLib.process_std_arguments(args)  # deal with the std arguments
+
+    # set up indir if not provided
+    site_number = f'{site_numbers[args.site]:d}'
+    indir = args.indir
+    if indir is None and args.rainfields3 :  # gadie path is different for rainfields3
+        indir = ausLib.rainfields3_dir/site_number
+    elif indir is None:
+        indir = ausLib.hist_ref_dir/site_number
+    else:
+       pass # using provided folder
+
+    if not indir.exists():
+        raise FileNotFoundError(f'Input directory {indir} does not exist')
+
+    my_logger.info(f'Input directory is {indir}')
+    time_unit = 'minutes since 1970-01-01'  # units for time in output files
+
     metadata = None
 
     if args.metadata_file is not None:
         if not args.metadata_file.exists():
-            parser.error(f"Metadata file {args.metadata_file} does not exist")
-        if args.metadata_file.suffix != '.nc':
-            parser.error(f"Metadata file {args.metadata_file} is not a netcdf file")
-        metadata = xarray.open_dataset(args.metadata_file)
+            raise FileNotFoundError(f'Metadata file {args.metadata_file} does not exist')
+        metadata = xarray.open_dataset(args.metadata_file) # let xarray deal with errors etc. File nto existing better handled sep.
 
+    # deal with quantize levels
     if args.quantize_levels == [] and metadata is  None:
             parser.error("--quantize_levels with no LEVEL values requires --metadata_file")
 
     elif args.quantize_levels is not None:
-        quantize_levels = sorted(set(args.quantize_levels))
-
+        quantize_levels:np.ndarray = np.array(np.unique(args.quantize_levels))
+    elif metadata is not None:
+        quantize_levels:xarray.DataArray =metadata['rapic_DBZLVL'].load() # now have qunatize_levels
     else:
-        quantize_levels = args.quantize_levels # should be empty list if nothing supplied;
-        # None if --quantize_levels with no LEVEL values called.
+        quantize_levels = None
 
+    # i rainfields3 need metadata as use that to apply calibration.
+    if args.rainfields3 and metadata is None:
+        raise ValueError('Need metadata file with calibration when using rainfields3')
 
-
-
-    parser.add_argument('--use_rainfields3', action='store_true',
-                        help='Use rainfields3 data rather than hist. Will need calibration values '
-                             'from meta-data')
-    parser.add_argument('--quantize_levels',type=float,nargs='+',
-                        help='Levels to quantize too.')
-    parser.add_argument('--anaprop',type=pathlib.Path,
-                        help='Netcdf file containing anaprop data. anaprop variable should be anaprop. Will also modify outdir to include _anaprop if outdir not defined')
-
-    ausLib.add_std_arguments(parser)
-    args = parser.parse_args()
-    my_logger = ausLib.process_std_arguments(args)  # deal with the std arguments
-
-    time_unit = 'minutes since 1970-01-01'  # units for time in output files
 
     # print out all the arguments and add them to attributes of the final dataset.
 
@@ -737,33 +754,16 @@ if __name__ == "__main__":
                        utc_time=pd.Timestamp.now('UTC').isoformat(),
                        program_args=[f'{k}: {v}' for k, v in vars(args).items()],
                        site=args.site, dbz_range=args.dbz_range, min_fract_avg=args.min_fract_avg,
-                       to_rain = args.to_rain)
+                       to_rain = args.to_rain,indir=indir.as_posix())
 
     if args.coarsen is not None:
         extra_attrs.update(coarsen=args.coarsen, coarsen_method=args.coarsen_method)
 
     to_rain = tuple(args.to_rain)
-    site_number = f'{site_numbers[args.site]:d}'
-    indir = args.indir/ site_number
-    if args.use_rainfields3:
-        indir = pathlib.Path('/g/data/rq0/rainfields3') / site_number
-    my_logger.info(f'Input directory is {indir}')
+    dbz_ref_limits:tuple[float,float] = float(args.dbz_range[0]),float(args.dbz_range[1])
 
-    if not indir.exists():
-        my_logger.warning('Input directory {indir} does not exist')
-        raise FileNotFoundError(f'Input directory {indir} does not exist')
+
     my_logger.info(f'resample periods are: {args.resample}')
-
-    ## deal with some args.  This could (eventually) go into process_std_args
-    indir = args.indir # if use rainfall3 then this varies.
-    glob = args.glob # if use rainfall3 then this varies.
-    site_number = f'{ausLib.site_numbers[args.site]:d}'
-
-    indir = indir/site_number # work out directory for input data. Depends on site_number.
-    my_logger.info(f'Input directory is {indir}')
-    if not indir.exists():
-        my_logger.warning('Input directory {indir} does not exist')
-        raise FileNotFoundError(f'Input directory {indir} does not exist')
 
     outdir = args.outdir
     if outdir is None:
@@ -800,10 +800,11 @@ if __name__ == "__main__":
         my_logger.info(f'Region is {region}')
     else:
         region = None
-    calib = None
-    if args.use_rainfields3:
+    calibration = None
+    if args.rainfields3:
         my_logger.info('Loading rainfields3 bias adjustment')
-        raise NotImplementedError('Need to add in calibration values for rainfields3')
+        calibration = metadata.calibration_offset.load() # load the calibration info.
+
     if args.anaprop:
         ds_anaprop = xarray.open_dataset(args.anaprop)
         if ds_anaprop.attrs['site'] != args.site:
@@ -815,43 +816,34 @@ if __name__ == "__main__":
         my_logger.info(f'Processing year {year}')
         for month in args.months:
             pattern = f'{site_number}_{year:04d}{month:02d}' + args.glob
-            if args.use_rainfields3:
-                file = f'rainfields3_gndrefl_{year:04d}_{month:02d}'
+            if args.rainfields3:
+                file = f'rainfields3_gndrefl_{year:04d}_{month:02d}_rain.nc'
                 data_dir = indir / f'{year:04d}' / 'gndrefl'
-                raise NotImplementedError('Need to add in calibration values for rainfields3')
+
             else:
-                file = f'hist_gndrefl_{year:04d}_{month:02d}'
+                file = f'hist_gndrefl_{year:04d}_{month:02d}_rain.nc'
                 data_dir = indir / f'{year:04d}'
+
+
 
             zip_files = sorted([pathlib.Path(p) for p in data_dir.glob(pattern)])
             if len(zip_files) == 0:
                 my_logger.info(f'No files found for   {data_dir}/{pattern} in {data_dir} {ausLib.memory_use()}')
                 continue
             my_logger.info(f'Found {len(zip_files)} files for {data_dir}{pattern} {ausLib.memory_use()} ')
-            if args.to_rain:
-                file += '_rain'
-            file += '.nc'
+
             outpath = outdir / file
             if (not args.overwrite) and outpath.exists():
                 my_logger.warning(f'{outpath} exists  skipping processing. Use --overwrite')
                 continue
 
 
-            if quantize_levels is not None: # handle quantization.
-                if quantize_levels is []:  # empty list means infer from metadata file.
-                    ql = metadata['rapic_DBZLVL'].sel(time=ds.time, method='nearest', tolerance=pd.Timedelta('1M'))
-                    use_quantize_levels = sorted(set(ql.values.tolist() + [-32.0]))
-                    my_logger.debug(
-                        f'Quantizing to levels {quantize_levels} inferred from metadata file {args.metadata_file}')
-                else: # fixed level so just use them
-                    use_quantize_levels = quantize_levels
-
-            ds = read_multi_zip_files(zip_files,
-                                      dbz_ref_limits=(args.dbz_range[0], args.dbz_range[1]),
+            ds = read_multi_zip_files(zip_files,to_rain,
+                                      dbz_ref_limits=dbz_ref_limits,
+                                      quantize_levels=quantize_levels,
                                   coarsen=coarsen, region=region,
                                   coarsen_method=args.coarsen_method,
-                                  to_rain=to_rain,
-                                  calibration=calib)
+                                  calibration=calibration)
             my_logger.info(f'Loaded data for {year}-{month} {ausLib.memory_use()}')
 
             # handle anaprop
@@ -884,13 +876,13 @@ if __name__ == "__main__":
             elif min_res > 15:
                 ValueError(f'large sample resolution {min_res} mins')
             ausLib.write_out(summary_data, outpath, time_unit=time_unit, extra_attrs=extra_attrs)
-            my_logger.info(f'Writing summary data to {outpath} {ausLib.memory_use()}')
+            my_logger.info(f'Wrote summary data to {outpath} {ausLib.memory_use()}')
 
 
             if args.write_full:  # write out the full file.
                 full_file = outdir_full / file
                 ausLib.write_out(ds, full_file, time_unit=time_unit, extra_attrs=extra_attrs)
-                my_logger.info(f'wrote full data to {full_file} {ausLib.memory_use()}')
+                my_logger.info(f'Wrote full data to {full_file} {ausLib.memory_use()}')
 
             if args.extract_coords_csv:  # write out co-ords
                 coord_file = out_coord_dir / file
@@ -899,4 +891,4 @@ if __name__ == "__main__":
                 att = attr_var.drop_vars(['longitude', 'latitude', 'y_bounds', 'x_bounds']).squeeze('time', drop=True)
                 masked_ds = att.merge(coord_da).drop_dims(['x', 'y'])  # drop the time dimension and merge in the coord
                 ausLib.write_out(masked_ds, coord_file, time_unit=time_unit, extra_attrs=extra_attrs)
-                my_logger.info(f'wrote coord data to {coord_file} {ausLib.memory_use()}')
+                my_logger.info(f'Wrote coord data to {coord_file} {ausLib.memory_use()}')

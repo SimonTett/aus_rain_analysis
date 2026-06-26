@@ -5,7 +5,7 @@
 # to_rain values -- Melbourne calibration: 0.0271 0.650
 #                    Cape Grim calibration: 0.0224 0.670
 #                    Brisbane calibration: 0.0256 0.688
-# Other options are:
+# Other options are passed straight through to process_reflectivity.py. See that script for details.
 
 dbz_name=""
 year_start=1997
@@ -97,17 +97,18 @@ done
 
 
 resample='30min 1h 2h 4h 8h'
-region="-125 125 125 -125" # region to extract
+#region="-125 125 125 -125" # region to extract. Not needed as data is limited to within 125km of site.
 coarse=4
 
 extra_args+=" --dask --min_fract_avg 0.75 --threshold 1.0 "
 base_submit_args=" --json_submit_file ${AUSRAIN}/config_files/process_reflectivity.json --submit"
+to_rain=""
 if [[ $calibration == "melbourne" ]] ; then
-    extra_args+=" --to_rain 0.0271 0.650"
+    to_rain=" --to_rain 0.0271 0.650"
 elif [[ $calibration == "Grim" ]] ; then
-    extra_args+=" --to_rain 0.0224 0.670"
+    to_rain=" --to_rain 0.0224 0.670"
 elif [[ $calibration == "brisbane" ]] ; then
-    extra_args+=" --to_rain 0.0256 0.688"
+    to_rain=" --to_rain 0.0256 0.688"
 else
     echo "Unknown calibration $calibration"
     exit 1
