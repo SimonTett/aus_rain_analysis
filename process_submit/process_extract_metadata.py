@@ -3,9 +3,8 @@
 
 import typing
 
-import xradar  # this should happen early so that radar magic can happen!
+#import xradar  # this should happen early so that radar magic can happen!
 import xarray
-import itertools
 import multiprocessing
 import argparse
 import ausLib
@@ -30,64 +29,6 @@ def month_sort(path: pathlib.Path) -> str:
     yyyymm = path.name.split('_')[1][0:6]
     return yyyymm
 
-
-def extract_convert(ds:xarray.Dataset,
-                    attribs:typing.Optional[list[str]]=None)-> dict[str,typing.Union[xarray.DataArray,float]]:
-    """
-    Extract and converted attributes from xarray dataset
-    Args:
-        ds: dataset to extract attributes from
-        attribs: list of attributes to extract. If none, all attributes are extracted.
-        time_attrs: list of attributes which are time attributes.
-
-    Returns: dict of values.
-
-    """
-    result = dict()
-    if attribs is None:
-        attribs = list(ds.attrs.keys())
-    names_bool = ['rapic_CLEARAIR'] # attribute names which are logical and if not set should be true
-    for name in attribs:
-        value = ds.attrs.get(name, None)
-        if value is not None and name in names_bool:
-            value = (value.lower() == 'true')  #
-        result[name] = value
-        if isinstance(value, np.ndarray):  # deal with arrays. Want index.
-            value = xarray.DataArray(value, coords={f'{name}_index': np.arange(len(value))})
-        result[name] = value
-    return result
-
-def read_level1_meta(file: pathlib.Path) -> xarray.Dataset:
-    """
-    read metadata from level 1 pvol.zip file and convert to a xarray dataset.
-    :param file: path to the file. Should be a level1 pvol.zip file.
-    :return: xarray dataset with metadata.
-    """
-    # Want all data in /how, /where, dataset1/how & dataset1/data1/how
-    if file.suffixes != ['.pvol','.zip']:
-        raise ValueError(f"File {file} is not a level1 pvol zip file")
-    dt = ausLib.read_radar_zipfile(file, first_file=True, datatree=True,file_pattern='*.h5')
-
-
-    result = extract_convert(dt['dataset1/data1/how'].to_dataset(),
-                        attribs=['rapic_VIDRES', 'rapic_DBZCOR', 'rapic_CLEARAIR', 'rapic_NOISETHRESH', "rapic_DBZLVL"])
-
-    result.update(extract_convert(dt['/how'].to_dataset(),
-                                  attribs=["beamwH", "beamwV","rapic_AZCORR","rapic_ELCORR",
-                                           "beamwidth","wavelength","antgainH"]))
-    result.update(extract_convert(dt['/where'].to_dataset()))
-    result.update(extract_convert(dt['dataset1/how'].to_dataset()))
-    result.update(extract_convert(dt['dataset1/where'].to_dataset()))
-    result.update(extract_convert(dt['dataset1/what'].to_dataset(), attribs=['startdate', 'starttime']))
-    time = pd.to_datetime(result.pop('startdate') + result.pop('starttime')).to_datetime64()
-
-    result['level1_file'] = str(file)
-    ds = xarray.Dataset(result).expand_dims(time=[time]) # assign time coord to dataset.
-    ds['time'] = ds.time.dt.round("D")
-    my_logger.debug(f'Read data from level1 file {file}')
-
-    return ds
-
 def iso_to_timedelta64(iso_string: str) -> np.timedelta64:
     # Parse the ISO string
     match = re.match(r'P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?', iso_string)
@@ -108,6 +49,98 @@ def iso_to_timedelta64(iso_string: str) -> np.timedelta64:
 
     return timedelta
 
+def extract_convert(attributes:dict,
+                    keys:typing.Optional[list[str]]=None,
+                    time_range_attribs:typing.Optional[list[str]]=None,
+                    bool_attribs:typing.Optional[list[str]] =None,
+                    index_attribs:typing.Optional[list[str] ]= None)-> dict[str,typing.Union[xarray.DataArray,float]]:
+    """
+    Extract and convert attributes from xarray dataset
+    Args:
+        attributes: dict to extract attributes from
+        keys: list of attributes to extract. If none, all attributes are extracted.
+        time_range_attribs: list of attributes to be converted to time range.
+        bool_attribs: list of attributes to be converted to bool.
+        index_attribs: list of attributes to be kept as 2d arrays
+
+    Returns: dict of values.
+
+    """
+    if bool_attribs is None:
+        bool_attribs = []
+    if index_attribs is None:
+        index_attribs = []
+    if time_range_attribs is None:
+        time_range_attribs = []
+    result = dict()
+    if keys is None:
+        keys = list(attributes.keys())
+    for name in keys:
+        value = attributes.get(name, None)
+
+        if name in bool_attribs:
+            if value is None:
+                value = False
+            else:
+                value = value.lower() == 'true'
+            result[name] = value
+        elif (name in time_range_attribs) and (value is None or isinstance(value,str)):
+            if value is None:
+                result[name] = np.timedelta64(0, 's')
+            else:
+                result[name] = iso_to_timedelta64(value)
+        elif isinstance(value, (np.ndarray,list)):  # deal with arrays. May want index.
+            if len(value) > 1: # got a numpy array or list.
+                if isinstance(value,list):
+                    value = [float(v) for v in value] # convert potn strings to floats.
+                count = len(value)
+                mx = np.max(value)
+                mn = np.min(value)
+                result[name+"_count"] = count
+                result[name+"_min"] = mn
+                result[name+"_max"] = mx
+                if name in index_attribs:
+                    result[name] = xarray.DataArray(value,
+                                                    coords={f'{name}_index': np.arange(count)})
+            else:
+                result[name] = float(value[0])
+        else:
+            result[name] = value
+    # end loop over attribs
+    return result
+
+def read_level1_meta(file: pathlib.Path) -> xarray.Dataset:
+    """
+    read metadata from level 1 pvol.zip file and convert to a xarray dataset.
+    :param file: path to the file. Should be a level1 pvol.zip file.
+    :return: xarray dataset with metadata.
+    """
+    # Want all data in /how, /where, dataset1/how & dataset1/data1/how
+    if file.suffixes != ['.pvol','.zip']:
+        raise ValueError(f"File {file} is not a level1 pvol zip file")
+    dt = ausLib.read_radar_zipfile(file, first_file=True, datatree=True,file_pattern='*.h5')
+
+    bool_attribs = ['rapic_CLEARAIR']
+    result = extract_convert(dt['dataset1/data1/how'].attrs,
+                        keys=['rapic_VIDRES', 'rapic_DBZCOR', 'rapic_CLEARAIR', 'rapic_NOISETHRESH', "rapic_DBZLVL"],
+                             index_attribs=['rapic_DBZLVL'],bool_attribs=bool_attribs)
+
+    result.update(extract_convert(dt['/how'].attrs,
+                                  keys=["beamwH", "beamwV","rapic_AZCORR","rapic_ELCORR",
+                                           "beamwidth","wavelength","antgainH"]))
+    result.update(extract_convert(dt['/where'].attrs))
+    result.update(extract_convert(dt['dataset1/how'].attrs))
+    result.update(extract_convert(dt['dataset1/where'].attrs))
+    result.update(extract_convert(dt['dataset1/what'].attrs,
+                                  keys=['startdate', 'starttime']))
+    time = pd.to_datetime(result.pop('startdate') + result.pop('starttime')).to_datetime64()
+
+    result['level1_file'] = str(file)
+    ds = xarray.Dataset(result).expand_dims(time=[time]) # assign time coord to dataset.
+    ds['time'] = ds.time.dt.round("D")
+    my_logger.debug(f'Read data from level1 file {file}')
+
+    return ds
 
 # list of variables to drop,
 drop_variables = ['time_coverage_start', 'time_coverage_end',
@@ -122,71 +155,47 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
     if not (file.suffix == '.zip' and file.stem.endswith('_ppi')):
         raise ValueError(f"File {file} is not a ppi zip file")
     global drop_variables # variables dropped from the dataset.
-    vars_to_keep = ['azimuth', 'elevation', 'fixed_angle']
+    vars_to_keep = ['azimuth', 'fixed_angle','elevation']
     ds_first = ausLib.read_radar_zipfile(file, first_file=True,
                                          drop_variables=drop_variables,concat_dim='time')  # just extract metadata from the first file.
-    ref = ds_first['corrected_reflectivity']
+    # do want to read corrected_reflectivity as want its attributes, so don't drop it.
+    ref_var = 'corrected_reflectivity'
+    ref = ds_first[ref_var]
+    ds_first = ds_first.drop_vars([ref_var])# drop here BEFORE drop_dims check below means corrected_reflectivity is not dropped.
+    # We just want its attributes, though.
     calib_off = xarray.DataArray(float(ref.attrs.pop('calibration_offset', np.nan))).assign_attrs(ref.attrs)
-    ds_first = ds_first.drop_vars('corrected_reflectivity').assign(calibration_offset=calib_off)
-    # check nothing has time in its dims
-    has_time = [v for v in ds_first.data_vars if ('time' in ds_first[v].dims
-                                                  and v not in vars_to_keep)]
+    # Find vars that have time or sweep in their dims and drop them in future reads.
+    drop_dims = {'time', 'sweep'}  # variable get dropped if they have these dims and are not in vars_to_keep
+    drop_vars = [v for v in ds_first.data_vars if
+                 (drop_dims.intersection(set(ds_first[v].dims)) and v not in vars_to_keep)]
 
-    if len(has_time) > 0:
-        my_logger.warning(f'Variables {has_time} have time in their dimensions.  Adding to drop_var and dropping. ')
-        drop_variables += has_time
-        ds_first = ds_first.drop_vars(has_time)  # drop any variables that have time in their dims.
-    has_sweep = [v for v in ds_first.data_vars if ('sweep' in ds_first[v].dims and v not in vars_to_keep)]
-    if len(has_sweep) > 0:
-        my_logger.warning(f'Variables {has_sweep} have sweep in their dimensions.  Adding to drop_var and dropping. ')
-        drop_variables += has_sweep
-        ds_first = ds_first.drop_vars(has_sweep)
-    # convert coords to data vars
-    coords = list(set(ds_first.dims) - {'time', 'sweep'})
-    ds_first = ds_first.reset_index(coords).reset_coords(coords)
-    # store the  azimuths and elevations and drop time. Then add a new time var from the min time.
+    if len(drop_vars) > 0:
+        my_logger.warning(
+            f'Variables {drop_vars} have one or more of {drop_dims} in their dimensions.  Adding to drop_variables  ')
+        drop_variables += drop_vars
+    # use extract_convert to flatten vars_to_keep into a dict.
+    values_dict = {v:np.atleast_1d(ds_first[v].isel(time=0).values) for v in vars_to_keep}
+    values_dict['elevation'] = values_dict.pop('fixed_angle') # rename fixed_angle to elevation for consistency overwriting exising elevation
+    result = extract_convert(values_dict,index_attribs=['elevation'],)
+    # add in relevant attributes
+    attrs_to_vars = extract_convert(ds_first.attrs,
+                                    keys=['instrument_name', 'time_coverage_resolution', 'time_coverage_duration','instrument_id',
+                                          'origin_altitude','origin_latitude','origin_longitude'],
+                                    time_range_attribs=['time_coverage_resolution', 'time_coverage_duration'],
+                                    )
+    result.update(attrs_to_vars) # add to result
+    # extract the calibration_offset
+
+    result['calibration_offset'] = calib_off
+    # add a new time var from the min time.
     min_time = ds_first.time.min()
-    variables = coords
-    variables += vars_to_keep
-    data_vars = dict()
-    for v in variables:
-        name = v
-        #  rename fixed_angle to elevation for consistency,
-        if v == 'fixed_angle':
-            name = 'elevation'
-        try:
-            values = np.unique(ds_first[v])
-            if len(values) > 1: # store the min and max values, and count for each variable.
-                da_min = ds_first[v].min()
-                da_max = ds_first[v].max()
-                ds_count = xarray.DataArray(len(values))
-                ds_first.drop_vars([v])
-                data_vars[f'{name}_min'] = da_min
-                data_vars[f'{name}_max'] = da_max
-                data_vars[f'{name}_count'] = ds_count
-            else:
-                da = xarray.DataArray(values[0])
-                data_vars[v] = da
-        except KeyError:  # variable not in dataset.
-            pass
+    result['ppi_file'] = str(file)
 
+    result = xarray.Dataset(result).expand_dims(time=[min_time.dt.round("D").values])#
 
-    variables += ['time']
-    ds_first = ds_first.drop_vars(variables, errors='ignore').assign(data_vars)
-    # convert attributes to data variables
-    attrs_want = ['instrument_name', 'time_coverage_resolution','time_coverage_duration']
-    attrs_to_vars = {k: ds_first.attrs.pop(k)for k in attrs_want}
-    for k in ['time_coverage_resolution','time_coverage_duration']: # time things
-        v=attrs_to_vars.get(k)
-        attrs_to_vars[k] = iso_to_timedelta64(v) if v is not None else None
-
-    ds_first = ds_first.assign(**attrs_to_vars)
-    ds_first['ppi_file'] = str(file)
     my_logger.debug(f'Read data from file {file}')
 
-    ds_first = ds_first.expand_dims(time=[min_time.values]) # add on time
-    ds_first['time'] = ds_first.time.dt.round("D")
-    return ds_first
+    return result
 
 
 if __name__ == "__main__":
@@ -198,6 +207,7 @@ if __name__ == "__main__":
                         default=range(1990, 2030))
     parser.add_argument('--outdir', type=pathlib.Path,
                         help='output dir for metadata. If not provided worked out from site')
+    parser.add_argument('--glob',  help='glob pattern for level1 data.',default='*.pvol.zip')
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args Very I/O intensive. Can't see DASK helping.
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # set up the std stuff
@@ -212,9 +222,8 @@ if __name__ == "__main__":
         my_logger.info(f"Arg:{name} =  {value}")
 
     site_number = f'{ausLib.site_numbers[args.site]:d}'
-    indir = ausLib
-    indir = pathlib.Path(f'/g/data/rq0/level_1/odim_pvol/{site_number}')
-    indir_ppi = pathlib.Path(f'/g/data/rq0/level_1b/{site_number}/ppi')
+    indir = ausLib.level1_dir / f'{site_number}'
+    indir_ppi = ausLib.level1b_dir / f'{site_number}/ppi'
     my_logger.info(f'Input directory is {indir}')
     if not indir.exists():
         raise FileNotFoundError(f'Input directory {indir} does not exist')
@@ -231,7 +240,7 @@ if __name__ == "__main__":
             my_logger.warning(f'Output file {outfile} exists and will not be overwritten. Set --overwrite. Skipping.')
             continue
 
-        pattern = f'{site_number}_{year:04d}*.pvol.zip' # level 1 info
+        pattern = f'{site_number}_{year:04d}{args.glob}' # level 1 info
         data_dir = indir / f'{year:04d}/vol'
         data_dir_ppi = indir_ppi / f'{year:04d}'
         if not data_dir.exists():
@@ -242,12 +251,11 @@ if __name__ == "__main__":
             my_logger.info(f'No files found for  pattern {pattern} in {data_dir} {ausLib.memory_use()}')
             continue
         my_logger.info(f'Found {len(zip_files)} files for pattern {pattern} {ausLib.memory_use()} ')
-        # these are all daily files. But we want every 5th day from a month. So group by month and take every 5th.
-        files = [list(g)[0] for k, g in itertools.groupby(zip_files, key=month_sort)] # first day of the month
-        files = zip_files[::5]  # every 5th day
+        # these are all daily files. But we want every 5th day
+        # files = [list(g)[0] for k, g in itertools.groupby(zip_files, key=month_sort)] # first day of the month. Legacy
         # now to build a year's worth of files.
         dataset = []
-        for f in zip_files: # all days.
+        for f in zip_files[::5]: # every 5th day
             my_logger.debug(f'Processing {f}')
             ds = read_level1_meta(f)  # read the level 1 file to get the rapic and other useful attributes
             # work out the ppi file.
@@ -257,9 +265,10 @@ if __name__ == "__main__":
                 ds = xarray.merge([ds,ds2]) # merge the datasets.
             else:
                 my_logger.warning(f'No ppi file {ppi_file} found for {f} ')
+
             dataset += [ds]
-        # now processed a year worth of files.
+        # now processed a years' worth of files.
         # concat them all together and write out
-        # sometimes haveno data present or it is missing.
+        # sometimes have no data present or it is missing.
         dd = xarray.concat(dataset, 'time',data_vars='all',coords='minimal')
         ausLib.write_out(dd, outfile, extra_attrs=extra_attrs)

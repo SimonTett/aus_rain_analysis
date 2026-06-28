@@ -13,6 +13,7 @@ scipy==1.17.1
 pandas==2.2.3
 xarray==2026.4.0
 dask[distributed]==2026.6.0
+bottleneck==1.6.0
 
 
 ipython
