@@ -105,7 +105,7 @@ class TestProcessExtractMetadata(unittest.TestCase):
                             "--years","2021", "--outdir",tmpdir,"--glob","0101.pvol.zip"],check=True)
 
             self.assertEqual(result.returncode,0)
-            output_file = pathlib.Path("test_output") / "Adelaide_2021_metadata.nc"
+            output_file = pathlib.Path(tmpdir) / "Adelaide_2021_metadata.nc"
             self.assertTrue(output_file.exists())
             ds = xarray.load_dataset(output_file)
             ds.close()
