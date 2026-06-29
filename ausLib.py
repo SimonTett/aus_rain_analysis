@@ -109,7 +109,7 @@ elif hostname.startswith('ccrc'):  # CCRC desktop
 elif hostname.lower().startswith('geos'):  # School of geosciences managed laptop/desktop
     #data_dir = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\aus_radar_analysis\radar")
     common_data = pathlib.Path(r"C:\Users\stett2\OneDrive - University of Edinburgh\data\common_data")
-    raw_radar_dir = data_dir / "raw_radar_data"
+    raw_radar_dir = data_dir / "raw_radar"
     hist_ref_dir = raw_radar_dir/"hist_gndrefl" # partial local copy of ref data
     radar_dir = raw_radar_dir/"level_2" # partial local copy of level 2 data.
     rainfields3_dir = raw_radar_dir/"rainfields3" # partial local copy of rainfields3 data.
@@ -726,7 +726,7 @@ def read_zip(path: pathlib.Path | str,
             nd = v[d].size
             v = v.sortby(d).drop_duplicates(d)  # sort and remove duplicates for this dim.
             if v[d].size != nd:
-                my_logger.warning(f'Removed duplicates for {var} on {d} from {path}')
+                my_logger.warning(f'Removed duplicates for {var} on {d} from {path} size was {nd} and is now {v[d].size}')
 
         result[var] = v
     my_logger.debug(f'Sorted variables {list(result.keys())} ')
@@ -913,9 +913,10 @@ def read_radar_zipfile(
         region: typing.Optional[typing.Dict[str, slice]] = None,
         file_pattern: str = '*.nc',
         datatree:bool = False,
+        attrs:bool = False,
         sort_coords:bool = True,
         **load_kwargs
-) -> typing.Optional[typing.Union[xarray.Dataset,xarray.DataTree]]:
+) -> typing.Optional[typing.Union[xarray.Dataset,xarray.DataTree,dict]]:
     """
     Read netcdf data from a zipfile containing lots of netcdf files
     Args:
@@ -926,6 +927,7 @@ def read_radar_zipfile(
       :param region -- region to extract data from
       :param file_pattern: pattern to match files default is *.nc
       :param datatree -- If true read in data as a datatree.
+      :param attrs: If True return only the attributes. Only works when first_file is True
       :param sort_coords -- If true sort co-ords to be monotonically increasing.
     :param **load_kwargs: kwargs to be passed to xarray.open_mfdataset
     Returns: xarray dataset or None if nothing successfully read.
@@ -940,7 +942,9 @@ def read_radar_zipfile(
 
     my_logger.debug(f'Unzipping and reading in data {memory_use()} for {path}')
     if datatree and not first_file:
-        raise NotImplementedError('Datatree not yet implemented for muli file read')
+        raise NotImplementedError('Datatree not yet implemented for multi-file read')
+    if attrs and not first_file:
+        raise NotImplementedError('Attributes not yet implemented for multi-file read')
     datasets=[]
 
 
@@ -965,7 +969,7 @@ def read_radar_zipfile(
                 if datatree:
                     dtree = xarray.load_datatree(buf, engine='h5netcdf', **load_args)
                     dtree.close()
-                    return dtree # read it in and
+                    return dtree # read it in and return immediately
                 else:
                     ds = xarray.open_dataset(buf, engine='h5netcdf', **load_args)
                     ds = ds.drop_vars(drop_vars,errors='ignore')
@@ -978,7 +982,7 @@ def read_radar_zipfile(
                                 nd = v[d].size
                                 v = v.sortby(d).drop_duplicates(d)  # sort and remove duplicates for this dim.
                                 if v[d].size != nd:
-                                    my_logger.warning(f'Removed duplicates for {variab} on {d} from {path}')
+                                    my_logger.warning(f'Removed duplicates for dim {d} om {variab}  from {path}')
 
                             result[variab] = v
 
@@ -1940,7 +1944,7 @@ def write_out(
         time_unit: typing.Optional[str] = None,
         extra_attrs: typing.Optional[dict] = None,
         time_dim: typing.Optional[str] = 'time'
-) -> None:
+) -> xarray.Dataset | xarray.DataArray:
     """
     Write out data. Encoding and attributes are modified.
     :param data: data array or dataset to be written out
@@ -1948,7 +1952,7 @@ def write_out(
     :param outpath: path where data is to be written to
     :param extra_attrs: extra attributes for the dataset
     :param time_dim: time dimension
-    :return:
+    :return: data (modified input dataset)
     """
     data.load() # just in case!
     my_logger.debug(f"Loaded data")
@@ -1960,13 +1964,24 @@ def write_out(
         data[time_dim].attrs.pop("units", None)
         data[time_dim].encoding.update(units=time_unit, dtype='float64')
     data.encoding.update(zlib=True, complevel=4)
+    # add a _FillValue to all the integers  that have missing data.
+    for v in data.data_vars:
+        if data[v].dtype.kind in ['i', 'U']:
+            data.encoding.update({v:{"_FillValue":-9999}})
+            my_logger.debug(f"Setting _FillValue for {v} to -9999")
+    data.to_netcdf(outpath, mode='w', format='NETCDF4', unlimited_dims=['time'])
+    my_logger.debug(f"Wrote data to {outpath}")
     data.attrs.update(extra_attrs)
+    # add attributes for host, path and UTC time so we can (later) where file came from.
+    attrs=dict(hostname=hostname, path=str(outpath))
+    data.attrs.update(attrs)
     # make dir for output
     outpath.parent.mkdir(exist_ok=True, parents=True)
     data.to_netcdf(outpath, unlimited_dims=time_dim)
     if not outpath.exists():
         raise ValueError(f'Failed to write data {outpath}')
     my_logger.debug(f'Wrote data to {outpath}')
+    return data
 
 import matplotlib
 def std_fig_axs(fig_num,

@@ -166,6 +166,10 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
     ds_first = ds_first.drop_vars([ref_var])# drop here BEFORE drop_dims check below means corrected_reflectivity is not dropped.
     # We just want its attributes, though.
     calib_off = xarray.DataArray(float(ref.attrs.pop('calibration_offset', np.nan))).assign_attrs(ref.attrs)
+    if calib_off.attrs.get('calibration_comment', '') in ['time period not found in cal file']:
+        count_zero = int((calib_off == 0.0).sum())
+        calib_off = calib_off.where(calib_off != 0.0) # set zero values to nan
+        my_logger.info(f'Set {count_zero} calibration_offset values to nan in {file}')
     # Find vars that have time or sweep in their dims and drop them in future reads.
     drop_dims = {'time', 'sweep'}  # variable get dropped if they have these dims and are not in vars_to_keep
     drop_vars = [v for v in ds_first.data_vars if
