@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 """
 Test cases for process_reflectivity.
 

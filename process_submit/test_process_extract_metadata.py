@@ -1,4 +1,6 @@
-"""Boilerplate tests for process_extract_metadata."""
+#!/usr/bin/env python
+
+"""tests for process_extract_metadata."""
 import pathlib
 import sys
 import unittest

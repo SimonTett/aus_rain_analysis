@@ -119,7 +119,9 @@ def read_level1_meta(file: pathlib.Path) -> xarray.Dataset:
     if file.suffixes != ['.pvol','.zip']:
         raise ValueError(f"File {file} is not a level1 pvol zip file")
     dt = ausLib.read_radar_zipfile(file, first_file=True, datatree=True,file_pattern='*.h5')
-
+    if dt is None:
+        my_logger.warning(f"No data found in level1 file {file}")
+        return None
     bool_attribs = ['rapic_CLEARAIR']
     result = extract_convert(dt['dataset1/data1/how'].attrs,
                         keys=['rapic_VIDRES', 'rapic_DBZCOR', 'rapic_CLEARAIR', 'rapic_NOISETHRESH', "rapic_DBZLVL"],
@@ -258,6 +260,8 @@ if __name__ == "__main__":
         for f in zip_files[::5]: # every 5th day
             my_logger.debug(f'Processing {f}')
             ds = read_level1_meta(f)  # read the level 1 file to get the rapic and other useful attributes
+            if ds is None: # nothign found so skip further processing
+                continue
             # work out the ppi file.
             ppi_file =indir_ppi/f'{year:04d}'/f.name.replace('.pvol.zip','_ppi.zip')
             if ppi_file.exists():  # merge in the ppi file if it exists.
