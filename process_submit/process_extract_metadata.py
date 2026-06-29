@@ -53,7 +53,8 @@ def extract_convert(attributes:dict,
                     keys:typing.Optional[list[str]]=None,
                     time_range_attribs:typing.Optional[list[str]]=None,
                     bool_attribs:typing.Optional[list[str]] =None,
-                    index_attribs:typing.Optional[list[str] ]= None)-> dict[str,typing.Union[xarray.DataArray,float]]:
+                    index_attribs:typing.Optional[list[str] ]= None
+)-> dict[str,typing.Union[xarray.DataArray,float]]:
     """
     Extract and convert attributes from xarray dataset
     Args:
@@ -90,6 +91,8 @@ def extract_convert(attributes:dict,
             else:
                 result[name] = iso_to_timedelta64(value)
         elif isinstance(value, (np.ndarray,list)):  # deal with arrays. May want index.
+            if value is None:
+                continue # if got none don't want to do any thing with it.
             if len(value) > 1: # got a numpy array or list.
                 if isinstance(value,list):
                     value = [float(v) for v in value] # convert potn strings to floats.
@@ -104,6 +107,8 @@ def extract_convert(attributes:dict,
                                                     coords={f'{name}_index': np.arange(count)})
             else:
                 result[name] = float(value[0])
+        elif value is None:
+            pass # nothing to do for None
         else:
             result[name] = value
     # end loop over attribs
@@ -139,8 +144,8 @@ def read_level1_meta(file: pathlib.Path) -> xarray.Dataset:
 
     result['level1_file'] = str(file)
     ds = xarray.Dataset(result).expand_dims(time=[time]) # assign time coord to dataset.
-    ds['time'] = ds.time.dt.round("D")
-    my_logger.debug(f'Read data from level1 file {file}')
+    ds['time'] = ds.time.dt.floor("D")
+    my_logger.info(f'Read data from level1 file {file}')
 
     return ds
 
@@ -158,7 +163,7 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
         raise ValueError(f"File {file} is not a ppi zip file")
     global drop_variables # variables dropped from the dataset.
     vars_to_keep = ['azimuth', 'fixed_angle','elevation']
-    ds_first = ausLib.read_radar_zipfile(file, first_file=True,
+    ds_first = ausLib.read_radar_zipfile(file, first_file=True,sort_coords=False, # no need to sort corrds 
                                          drop_variables=drop_variables,concat_dim='time')  # just extract metadata from the first file.
     # do want to read corrected_reflectivity as want its attributes, so don't drop it.
     ref_var = 'corrected_reflectivity'
@@ -166,10 +171,6 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
     ds_first = ds_first.drop_vars([ref_var])# drop here BEFORE drop_dims check below means corrected_reflectivity is not dropped.
     # We just want its attributes, though.
     calib_off = xarray.DataArray(float(ref.attrs.pop('calibration_offset', np.nan))).assign_attrs(ref.attrs)
-    if calib_off.attrs.get('calibration_comment', '') in ['time period not found in cal file']:
-        count_zero = int((calib_off == 0.0).sum())
-        calib_off = calib_off.where(calib_off != 0.0) # set zero values to nan
-        my_logger.info(f'Set {count_zero} calibration_offset values to nan in {file}')
     # Find vars that have time or sweep in their dims and drop them in future reads.
     drop_dims = {'time', 'sweep'}  # variable get dropped if they have these dims and are not in vars_to_keep
     drop_vars = [v for v in ds_first.data_vars if
@@ -197,9 +198,9 @@ def read_ppi_meta(file: pathlib.Path) -> xarray.Dataset:
     min_time = ds_first.time.min()
     result['ppi_file'] = str(file)
 
-    result = xarray.Dataset(result).expand_dims(time=[min_time.dt.round("D").values])#
+    result = xarray.Dataset(result).expand_dims(time=[min_time.dt.floor("D").values])#
 
-    my_logger.debug(f'Read data from file {file}')
+    my_logger.info(f'Read data from ppi file {file}')
 
     return result
 
@@ -214,6 +215,7 @@ if __name__ == "__main__":
     parser.add_argument('--outdir', type=pathlib.Path,
                         help='output dir for metadata. If not provided worked out from site')
     parser.add_argument('--glob',  help='glob pattern for level1 data.',default='*.pvol.zip')
+    parser.add_argument('--step', type=int,  help='step size for files in each year',default=5)
     ausLib.add_std_arguments(parser,dask=False)  # add on the std args Very I/O intensive. Can't see DASK helping.
     args = parser.parse_args()
     my_logger = ausLib.process_std_arguments(args)  # set up the std stuff
@@ -261,10 +263,10 @@ if __name__ == "__main__":
         # files = [list(g)[0] for k, g in itertools.groupby(zip_files, key=month_sort)] # first day of the month. Legacy
         # now to build a year's worth of files.
         dataset = []
-        for f in zip_files[::5]: # every 5th day
+        for f in zip_files[::args.step]: # every step file
             my_logger.debug(f'Processing {f}')
             ds = read_level1_meta(f)  # read the level 1 file to get the rapic and other useful attributes
-            if ds is None: # nothign found so skip further processing
+            if ds is None: # nothing found so skip furter processing 
                 continue
             # work out the ppi file.
             ppi_file =indir_ppi/f'{year:04d}'/f.name.replace('.pvol.zip','_ppi.zip')
@@ -277,6 +279,5 @@ if __name__ == "__main__":
             dataset += [ds]
         # now processed a years' worth of files.
         # concat them all together and write out
-        # sometimes have no data present or it is missing.
-        dd = xarray.concat(dataset, 'time',data_vars='all',coords='minimal')
+        dd=ausLib.concat_Dataset(dataset,'time',-32768)
         ausLib.write_out(dd, outfile, extra_attrs=extra_attrs)

@@ -727,6 +727,7 @@ def read_zip(path: pathlib.Path | str,
             v = v.sortby(d).drop_duplicates(d)  # sort and remove duplicates for this dim.
             if v[d].size != nd:
                 my_logger.warning(f'Removed duplicates for {var} on {d} from {path} size was {nd} and is now {v[d].size}')
+                breakpoint()
 
         result[var] = v
     my_logger.debug(f'Sorted variables {list(result.keys())} ')
@@ -982,7 +983,7 @@ def read_radar_zipfile(
                                 nd = v[d].size
                                 v = v.sortby(d).drop_duplicates(d)  # sort and remove duplicates for this dim.
                                 if v[d].size != nd:
-                                    my_logger.warning(f'Removed duplicates for dim {d} om {variab}  from {path}')
+                                    my_logger.warning(f'Removed duplicates for dim {d} on {variab}  from {path}/{name}. Orig: {nd} Now:{v[d].size}')
 
                             result[variab] = v
 
@@ -1963,21 +1964,25 @@ def write_out(
     if time_dim is not None:
         data[time_dim].attrs.pop("units", None)
         data[time_dim].encoding.update(units=time_unit, dtype='float64')
+    # deal with per variable encodings for type.
+    for var in data.data_vars:
+        if data[var].dtype.kind ==  'm':# timedelta.
+            data[var].encoding['units']='nanoseconds'
+        # deal with ints & strings with missin data
+        fill_value = data[var].encoding.get('_FileValue')
+        if fill_value:
+            data[var]=data[var].fillna(fill_value)
+
     data.encoding.update(zlib=True, complevel=4)
-    # add a _FillValue to all the integers  that have missing data.
-    for v in data.data_vars:
-        if data[v].dtype.kind in ['i', 'U']:
-            data.encoding.update({v:{"_FillValue":-9999}})
-            my_logger.debug(f"Setting _FillValue for {v} to -9999")
-    data.to_netcdf(outpath, mode='w', format='NETCDF4', unlimited_dims=['time'])
-    my_logger.debug(f"Wrote data to {outpath}")
+    
+
     data.attrs.update(extra_attrs)
     # add attributes for host, path and UTC time so we can (later) where file came from.
     attrs=dict(hostname=hostname, path=str(outpath))
     data.attrs.update(attrs)
     # make dir for output
     outpath.parent.mkdir(exist_ok=True, parents=True)
-    data.to_netcdf(outpath, unlimited_dims=time_dim)
+    data.to_netcdf(outpath, mode='w', format='NETCDF4', unlimited_dims=['time'])
     if not outpath.exists():
         raise ValueError(f'Failed to write data {outpath}')
     my_logger.debug(f'Wrote data to {outpath}')
@@ -2204,5 +2209,39 @@ def fix_levels(radar_field:xarray.DataArray,levels:np.dtype[float|int]) -> xarra
     return truncated
 
 
+def concat_Dataset(datasets:list[xarray.Dataset],
+                   concat_dim:str,
+                   fill_value:int) -> xarray.Dataset:
 
+
+    """
+    Concat datasets. Handling missing datat fro ints and strings 
+
+    """
+    
+    # check nothing has a value == fill_value and extract types.
+    dtypes=dict()
+    for ds in datasets:
+        for var in ds.data_vars:
+            if (ds[var] == fill_value).any():
+                raise ValueError(f"Var: {var} contains {fill_value}")
+            dtype = ds[var].dtype
+            if dtype.kind == 'i':
+                da = da[var].astype(str(dtype).capitilize())
+                da.encoding('_FillValue']=fill_value
+            elif dtype.kind in ['S','U']:
+                da = da[var].astype('string')
+                da.encoding('_FillValue']='Null'
+            else:
+                pass
+
+            
+    merged = xarray.concat(datasets, dim=concat_dim,data_vars='all',
+                           join='outer',
+                           fill_value=fill_value,coords='minimal').sortby('time')
+
+
+    return merged # retrun the merged dataset
+        
+    
 

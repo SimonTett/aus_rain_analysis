@@ -61,63 +61,75 @@ for ds in dataset:
                 dask="parallelized",
                 output_dtypes=[float],
         )
-    # fix the occasional glitch in rapic_DBZLVL by forward filling up to 2 slots (10 days).
+    # fix the occasional glitch in rapic_DBZLVL by forward filling
+    
     variab = 'rapic_DBZLVL'
-    filled = ds[variab].ffill('time',limit=6)  # back fill up to 6 . Data being 5-day
+    if (variab in ds.data_vars) and (variab+"_count" in ds.data_vars):
+        filled = ds[variab].ffill('time',limit=6)  # forward fill up to 6 
+        # if we still have 0 rapid_DBZLVL then find cases with zero and fill them with median values.
+        count_levels = filled.notnull().sum(variab+"_index")
+        if count_levels.min() == 0:
+            my_logger.warning(f'Found {int((count_levels==0).sum())} cases with 0 levels in {variab} @ {ds.time.values[0]}. Filling with median value')
+            med = filled.median('time')
+            filled = filled.where(count_levels > 0, med)
 
-
-    # if we still have 0 rapid_DBZLVL then find cases with zero and fill them with median values.
-    count_levels = filled.notnull().sum(variab+"_index")
-    if count_levels.min() == 0:
-        my_logger.warning(f'Found {int((count_levels==0).sum())} cases with 0 levels in {variab} @ {ds.time.values[0]}. Filling with median value')
-        med = filled.median('time')
-        filled = filled.where(count_levels > 0, med)
-
-    ds[variab] = filled
+            ds[variab] = filled
 
 ## before merge we need to prep the data by generating "empty" variables.
 # dict of variables and their dimensions
 fill_value = -32768
-info=dict()
-info["dims"] = dict()
-info['types'] = dict()
-for ds in dataset:
-    for var in ds.data_vars:
-        info['dims'][var]=ds[var].dims
-        info['types'][var] = ds[var].dtype # will just use the last one.
+# info=dict()
+# info["dims"] = dict()
+# info['types'] = dict()
+# for ds in dataset:
+#     for var in ds.data_vars:
+#         if var not in info['types']: # want the first one
+#             info['dims'][var]=ds[var].dims
+#             info['types'][var] = ds[var].dtype # 
 
-for ds in dataset:
-    for var in info['types'].keys():
-        # Create with fill value for int vars
-        if var not in ds.data_vars and info['types'][var].kind in ['i','u']:
-            dtype = info['types'][var]
-            dims = info['dims'][var]
+# for ds in dataset:
+#     for var in info['types'].keys():
+#         # Create with fill value for int vars
+#         if var not in ds.data_vars and info['types'][var].kind in ['i','u']:
+#             dtype = info['types'][var]
+#             dims = info['dims'][var]
 
-            # Get the size for each dimension from existing variables in ds
-            shape = tuple(ds.sizes[d] for d in dims)
+#             # Get the size for each dimension from existing variables in ds
+#             shape = tuple(ds.sizes[d] for d in dims)
 
-            # Create the array with the appropriate fill value
-            data = np.full(shape, fill_value, dtype=dtype)
+#             # Create the array with the appropriate fill value
+#             data = np.full(shape, fill_value, dtype=dtype)
 
 
-            # Create DataArray preserving coords
-            coords = {d: ds.coords[d] for d in dims if d in ds.coords}
-            ds[var] = xarray.DataArray(data, dims=dims, coords=coords)
-            ds[var].attrs['_FillValue'] = fill_value
-        elif var in ds.data_vars and info['types'][var].kind in ['i','u']:
-            ds[var] = ds[var].fillna(fill_value)
+#             # Create DataArray preserving coords
+#             coords = {d: ds.coords[d] for d in dims if d in ds.coords}
+#             ds[var] = xarray.DataArray(data, dims=dims, coords=coords)
+#             ds[var].attrs['_FillValue'] = fill_value
+#         elif var in ds.data_vars and info['types'][var].kind in ['i','u']:
+#             ds[var] = ds[var].fillna(fill_value)
 
 
 ##
-merged = xarray.concat(dataset, dim='time',coords='minimal').sortby('time')
+merged = ausLib.concat_Dataset(dataset,'time',fill_value)
+
+    
+    
 # now have merged data lets do some fixes. Add in the number of levels and deal with cases with 0 which arise
 # from occasional glitch.
 # 1) for some string vars get nan.  Convert then to "NAN" and back to string
-merged = merged.map(lambda x: x.fillna("NAN") if x.dtype.kind in ['U','S','O'] else x)
-merged = merged.map(lambda x: x.astype("U") if x.dtype.kind == "O" else x)
+#merged = merged.map(lambda x: x.fillna("NAN") if x.dtype.kind in ['U','S','O'] else x)
+#merged = merged.map(lambda x: x.astype("U") if x.dtype.kind == "O" else x)
 # 2) Forward fill calibration_offset to fill in gaps.
 # then unlimited forward fill = "persist"
 merged['calibration_offset'] = merged['calibration_offset'].ffill('time', limit=None)
+# Forward fill rapic_DBZLVL too.
+# first count how many null values there are and store in the attributes
+var = 'rapic_DBZLVL'
+missing  = merged[var].isel({var+"_index":0}).isnull()
+if int(missing.any()):
+    merged[var]=merged[var].ffill('time',limit=None)
+    merged[var+'_ffiled']=missing
+    my_logger.warning(f"Forward filled {var} ")
 extra_attrs = dict(program_name=str(pathlib.Path(__file__).name),
                    utc_time=pd.Timestamp.utcnow().isoformat(),
                    program_args=[f'{k}: {v}' for k, v in vars(args).items()])
